@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import postgres from 'postgres';
 
-export const TEST_URL = 'postgres://cb@127.0.0.1:5434/claude_board_test';
+// CB_TEST_DB lets parallel worktrees test without wiping each other's data.
+export const TEST_URL = `postgres://cb@127.0.0.1:5434/${process.env.CB_TEST_DB ?? 'claude_board_test'}`;
 process.env.CB_DATABASE_URL = TEST_URL;
 
 let ready = false;

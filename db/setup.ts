@@ -8,7 +8,7 @@ import { databaseUrl } from '../server/db.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const isTest = process.argv.includes('--test');
-const url = new URL(isTest ? 'postgres://cb@127.0.0.1:5434/claude_board_test' : databaseUrl());
+const url = new URL(isTest ? `postgres://cb@127.0.0.1:5434/${process.env.CB_TEST_DB ?? 'claude_board_test'}` : databaseUrl());
 const dbName = url.pathname.slice(1);
 
 ensurePg();
