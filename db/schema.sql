@@ -192,7 +192,7 @@ begin
   changed := array(
     select n.key from jsonb_each(to_jsonb(new)) n
     where n.value is distinct from to_jsonb(old) -> n.key
-      and n.key not in ('rank', 'updated_at', 'status', 'done_at', 'blocked_on'));
+      and n.key not in ('rank', 'updated_at', 'status', 'done_at', 'blocked_on', 'created_at', 'created_by', 'id'));
   if new.status is distinct from old.status then
     insert into cb.events (actor, project, task_id, kind, summary, data)
     values (a, new.project, new.id, case when new.status = 'done' then 'done' else 'moved' end,

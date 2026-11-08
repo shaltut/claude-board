@@ -123,7 +123,7 @@
   }
   html {
     @apply font-sans antialiased;
-    font-feature-settings: "ss01", "tnum";
+
   }
   body {
     @apply bg-background text-foreground;

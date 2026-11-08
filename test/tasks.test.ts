@@ -126,3 +126,10 @@ test('mine sees cancellation once', async () => {
   assert.equal(rows.length, 1);
   assert.equal(rows[0].status, 'cancelled');
 });
+
+test('bookkeeping columns are not edits', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'T1')`;
+  await sql`update cb.tasks set created_at = now() - interval '1 day', created_by = 'x' where id = 1`;
+  assert.equal((await events(sql)).length, 1);
+});
