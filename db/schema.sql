@@ -336,3 +336,157 @@ begin
      and (t.status not in ('done', 'cancelled') or t.updated_at > now() - interval '24 hours')
    order by t.status, t.rank;
 end $$;
+
+-- ---------------------------------------------------------------- questions
+
+drop function if exists cb.questions_history cascade;
+drop function if exists cb.ask cascade;
+drop function if exists cb.answer cascade;
+drop function if exists cb.withdraw cascade;
+drop function if exists cb.answers_pending cascade;
+drop function if exists cb.answer_delivered cascade;
+drop function if exists cb.brief cascade;
+drop function if exists cb.seen cascade;
+drop function if exists cb.last_seen cascade;
+
+create function cb.questions_history() returns trigger language plpgsql as $$
+declare a text := coalesce(nullif(current_setting('cb.actor', true), ''), 'unknown');
+begin
+  if tg_op = 'INSERT' then
+    insert into cb.events (actor, project, task_id, question_id, kind, summary, data)
+    values (a, new.project, new.task_id, new.id, 'asked', left(new.body, 120),
+            jsonb_build_object('blocking', new.blocking, 'options', new.options));
+  elsif new.status = 'answered' and (old.status <> 'answered' or new.answer is distinct from old.answer) then
+    insert into cb.events (actor, project, task_id, question_id, kind, summary, data)
+    values (a, new.project, new.task_id, new.id, 'answered', left(new.answer, 120),
+            jsonb_build_object('edited', old.status = 'answered'));
+  elsif new.status is distinct from old.status and new.status in ('delivered', 'withdrawn') then
+    insert into cb.events (actor, project, task_id, question_id, kind, summary, data)
+    values (a, new.project, new.task_id, new.id, new.status,
+            case when new.status = 'delivered' then 'delivered to ' || coalesce(new.delivered_to, '?')
+                 else 'withdrew: ' || left(new.body, 100) end, '{}');
+  end if;
+  return null;
+end $$;
+
+create or replace trigger questions_history after insert or update on cb.questions
+  for each row execute function cb.questions_history();
+
+-- Ask Ahmed. Blocking + task_id parks the task in Blocked until delivery.
+create function cb.ask(project text, body text, options text[] default null, blocking boolean default false,
+                       task_id text default null, context text default null, reply_to jsonb default null,
+                       actor text default null)
+returns bigint language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); p text := cb.ensure_project(project);
+        tid bigint := case when task_id is null or trim(task_id) = '' then null else cb.norm_id(task_id) end;
+        qid bigint;
+begin
+  if coalesce(trim(body), '') = '' then raise exception 'question body is required'; end if;
+  if tid is not null and not exists (select 1 from cb.tasks t where t.id = tid) then
+    raise exception 'task #% not found', tid;
+  end if;
+  insert into cb.questions (project, task_id, asked_by, body, context, options, blocking, reply_to)
+  values (p, tid, a, trim(body), context,
+          case when options is null or cardinality(options) = 0 then null else to_jsonb(options) end,
+          coalesce(blocking, false), reply_to)
+  returning cb.questions.id into qid;
+  if coalesce(blocking, false) and tid is not null then
+    perform set_config('cb.note', 'blocked on Q' || qid, true);
+    update cb.tasks t set status = 'blocked', blocked_on = qid where t.id = tid;
+    perform set_config('cb.note', '', true);
+  end if;
+  return qid;
+end $$;
+
+-- Editable until delivered.
+create function cb.answer(id text, answer text, actor text default 'ahmed')
+returns void language plpgsql as $$
+#variable_conflict use_variable
+declare qid bigint := cb.norm_id(id); cur text;
+begin
+  perform cb.set_actor(actor);
+  if coalesce(trim(answer), '') = '' then raise exception 'answer is required'; end if;
+  select q.status into cur from cb.questions q where q.id = qid for update;
+  if cur is null then raise exception 'question Q% not found', qid; end if;
+  if cur in ('delivered', 'withdrawn') then raise exception 'question Q% is already %', qid, cur; end if;
+  update cb.questions q set status = 'answered', answer = trim(answer), answered_at = now() where q.id = qid;
+end $$;
+
+create function cb.withdraw(id text, actor text default null)
+returns void language plpgsql as $$
+#variable_conflict use_variable
+declare qid bigint := cb.norm_id(id);
+begin
+  perform cb.set_actor(actor);
+  update cb.questions q set status = 'withdrawn' where q.id = qid and q.status in ('open', 'answered');
+  if not found then raise exception 'question Q% not found or already delivered/withdrawn', qid; end if;
+  update cb.tasks t set status = 'next' where t.blocked_on = qid and t.status = 'blocked';
+end $$;
+
+create function cb.answers_pending(project text default null)
+returns setof cb.questions language plpgsql as $$
+#variable_conflict use_variable
+declare p text := nullif(lower(trim(coalesce(project, ''))), '');
+begin
+  return query select q.* from cb.questions q
+   where q.status = 'answered' and (p is null or q.project = p)
+   order by q.answered_at, q.id;
+end $$;
+
+-- Orchestrator: answer handed to the session. Idempotent. Unblocks the task.
+create function cb.answer_delivered(id text, delivered_to text default null, actor text default null)
+returns void language plpgsql as $$
+#variable_conflict use_variable
+declare qid bigint := cb.norm_id(id); cur text;
+begin
+  perform cb.set_actor(actor);
+  select q.status into cur from cb.questions q where q.id = qid for update;
+  if cur is null then raise exception 'question Q% not found', qid; end if;
+  if cur = 'delivered' then return; end if;
+  if cur <> 'answered' then raise exception 'question Q% is %, not answered', qid, cur; end if;
+  update cb.questions q set status = 'delivered', delivered_at = now(), delivered_to = delivered_to where q.id = qid;
+  perform set_config('cb.note', 'unblocked: Q' || qid || ' answered', true);
+  update cb.tasks t set status = 'next' where t.blocked_on = qid and t.status = 'blocked';
+  perform set_config('cb.note', '', true);
+end $$;
+
+-- Snapshot a session reads at start.
+create function cb.brief(project text default null)
+returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := nullif(lower(trim(coalesce(project, ''))), '');
+begin
+  return jsonb_build_object(
+    'in_progress', cb._brief_tasks(p, 'in_progress', 50),
+    'next', cb._brief_tasks(p, 'next', 10),
+    'blocked', cb._brief_tasks(p, 'blocked', 50),
+    'review', cb._brief_tasks(p, 'review', 50),
+    'open_questions', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body,
+        'blocking', q.blocking, 'asked_by', q.asked_by, 'task_id', q.task_id, 'options', q.options) order by q.blocking desc, q.id)
+      from cb.questions q where q.status = 'open' and (p is null or q.project = p)), '[]'),
+    'answered_pending', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body,
+        'answer', q.answer, 'asked_by', q.asked_by, 'reply_to', q.reply_to, 'task_id', q.task_id) order by q.id)
+      from cb.questions q where q.status = 'answered' and (p is null or q.project = p)), '[]'));
+end $$;
+
+drop function if exists cb._brief_tasks cascade;
+create function cb._brief_tasks(p text, s text, lim int) returns jsonb language sql stable as $$
+  select coalesce(jsonb_agg(x order by x.rank), '[]') from (
+    select t.id, t.project, t.title, t.priority, t.assignee, t.updated_at, t.blocked_on, t.rank
+      from cb.tasks t where t.status = s and (p is null or t.project = p)
+     order by t.rank limit lim) x
+$$;
+
+create function cb.seen(at timestamptz default now()) returns void language plpgsql as $$
+#variable_conflict use_variable
+begin
+  insert into cb.settings (key, value) values ('owner_last_seen_at', to_jsonb(at))
+  on conflict (key) do update set value = excluded.value;
+end $$;
+
+create function cb.last_seen() returns timestamptz language plpgsql stable as $$
+begin
+  return coalesce((select (s.value #>> '{}')::timestamptz from cb.settings s where s.key = 'owner_last_seen_at'),
+                  now() - interval '24 hours');
+end $$;
