@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- Postgres 16 on `127.0.0.1:5433`. Role `cb` / password `cb` with `createdb` (Ahmed creates it once). `DATABASE_URL=postgres://cb:cb@127.0.0.1:5433/claude_board`; tests use `claude_board_test`.
+- Postgres 16 **private cluster** in `.pgdata/` (gitignored), made with the installed PG16 binaries (`C:\Program Files\PostgreSQL\16\bin`): `initdb -U cb --auth=trust`, port **5434**, `listen_addresses=127.0.0.1`. Already initialised. `DATABASE_URL=postgres://cb@127.0.0.1:5434/claude_board`; tests use `claude_board_test`. The existing PG15/16 services are not used.
+- `db/pg.ts` exports `ensurePg(): void` — `pg_ctl -D .pgdata status`; if stopped, `pg_ctl -D .pgdata -o "-p 5434 -c listen_addresses=127.0.0.1" -l .pgdata/server.log start`. Called by `setup`, `start`, test helpers, and the CLI (on connection refused, then retry once).
 - Server listens on `127.0.0.1:4747` (`HOST`, `PORT` env override).
 - No auth, no TLS, no Docker for the app, no ORM, no migration framework. One idempotent `db/schema.sql`.
 - Server/CLI TypeScript is **erasable syntax only** (Node 24 type stripping): no enums, no parameter properties, no namespaces. Imports use `.ts` extensions.
@@ -59,7 +60,7 @@ claude-board/
 ### Task 1: Project skeleton, tables, setup script
 
 **Files:**
-- Create: `package.json`, `.env.example`, `db/schema.sql` (tables part), `db/setup.ts`, `server/db.ts`, `test/helpers.ts`, `test/tasks.test.ts`
+- Create: `package.json`, `.env.example`, `db/pg.ts`, `db/schema.sql` (tables part), `db/setup.ts`, `server/db.ts`, `test/helpers.ts`, `test/tasks.test.ts`
 
 **Interfaces:**
 - Produces:
@@ -330,7 +331,7 @@ test('setup twice keeps rows', async () => {
   - `session.md` (≤40 lines): set `CB_ACTOR` if not set; start with `cb brief <project>`; register everything in hand (`cb add ... -s in_progress`) and known next work (`-s next`/`backlog`); take work with `cb next <project>`; between steps run `cb mine` and obey moves/cancels; `cb move`/`cb done` with PR/commit links; `cb log` for notable findings; when unsure, `cb ask` (non-blocking by default, `--blocking --task` only if truly stuck) and **keep working on something else — never stop to wait**.
   - `orchestrator.md`: everything above, plus: between steps run `cb pending`, deliver each answer to `reply_to` via herdr (load the `herdr` skill), then `cb delivered <qid> <session>`; record on behalf of remote workers with `--as <session>@<machine>`; keep the Next queue in the order Ahmed set.
   - `claude-md-snippet.md`: 6–8 lines to paste into a project's CLAUDE.md.
-  - `README.md`: one-time role command, `pnpm i && pnpm run setup && pnpm start`, URL, CLI table, psql examples, HTTP example, troubleshooting (PATH restart, port in use).
+  - `README.md`: `pnpm i && pnpm run setup && pnpm start`, URL, CLI table, psql examples, HTTP example, troubleshooting (PATH restart, port in use).
 - [ ] **Step 1:** Write the files.
 - [ ] **Step 2:** Dry run: in a fresh terminal from `F:\Work`, follow `session.md` literally against seed data (add, next, ask, done) → all commands succeed and show on the board live.
 - [ ] **Step 3:** `pnpm test` all PASS; `pnpm build` passes.
