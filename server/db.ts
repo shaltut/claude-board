@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { hostname } from 'node:os';
 
 /** A KEY=value from the repo's .env (never cwd), so settings reach already-running sessions. */
-function dotenv(key: string): string | undefined {
+export function dotenv(key: string): string | undefined {
   try { return readFileSync(join(import.meta.dirname, '..', '.env'), 'utf8').match(new RegExp(`^${key}=(.+)$`, 'm'))?.[1].trim(); } catch {}
 }
 

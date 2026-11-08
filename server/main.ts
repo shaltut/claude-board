@@ -1,4 +1,5 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
+import { getCookie, setCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -13,6 +14,56 @@ const DIST = join(ROOT, 'web', 'dist');
 
 export const app = new Hono();
 const opt = (v?: string) => (v ? v : undefined);
+
+// Guests (Omar, Iman) reach the board through a tunnel. Default-deny: a request that isn't plainly
+// local needs a user link, and a user reaches only their own questions and tasks.
+// ponytail: a secret link is the whole login (Ahmed asked for simple); real auth if this goes beyond a few people.
+const isLocal = (c: Context) => !c.req.header('x-forwarded-for') && !c.req.header('x-forwarded-host') && !c.req.header('cf-connecting-ip')
+  && /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(c.req.header('host') ?? 'localhost');
+async function guestOf(c: Context) {
+  const t = getCookie(c, 'cb_user');
+  if (!t) return null;
+  const [u] = await sql`select name, display from cb.users where token = ${t}`;
+  return (u as { name: string; display: string } | undefined) ?? null;
+}
+
+app.use('*', async (c, next) => {
+  const token = c.req.query('u');
+  if (!token) return next();
+  const [u] = await sql`select name from cb.users where token = ${token}`;
+  if (!u) return c.text('This link is not valid any more. Ask Ahmed for a new one.', 401);
+  setCookie(c, 'cb_user', token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 90 * 86_400 });
+  return c.redirect('/', 302);
+});
+
+app.use('/api/*', async (c, next) => {
+  const local = isLocal(c);
+  if (c.req.path === '/api/whoami') {
+    if (local) return c.json({ role: 'local' });
+    const u = await guestOf(c);
+    return c.json(u ? { role: 'guest', user: u } : { role: 'anonymous' });
+  }
+  if (local) return next();
+  const u = await guestOf(c);
+  if (!u) return c.json({ ok: false, error: 'open the link Ahmed sent you' }, 401);
+  if (c.req.path === '/api/stream') return next();
+  if (c.req.path === '/api/me') return c.json(await q.me(u.name));
+  const fn = c.req.method === 'POST' && /^\/api\/rpc\/(answer|log)$/.exec(c.req.path)?.[1];
+  if (!fn) return c.json({ ok: false, error: 'not available to guests' }, 403);
+  const args = await c.req.json().catch(() => ({}));
+  const id = Number(String(fn === 'answer' ? args.id : args.task_id ?? '').replace(/^[#q]/i, ''));
+  const [mine] = fn === 'answer'
+    ? await sql`select project from cb.questions where id = ${id} and assigned_to = ${u.name}`
+    : await sql`select project from cb.tasks where id = ${id} and assignee = ${u.name}`;
+  if (!mine) return c.json({ ok: false, error: fn === 'answer' ? 'that question is not assigned to you' : 'that task is not assigned to you' }, 403);
+  try {
+    const safe = fn === 'answer' ? { id: String(id), answer: args.answer, actor: u.name }
+      : { project: mine.project, summary: args.summary, task_id: String(id), actor: u.name };
+    return c.json({ ok: true, result: await callFn(fn, safe) });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e?.message ?? String(e) }, 400);
+  }
+});
 
 app.post('/api/rpc/:fn', async (c) => {
   try {

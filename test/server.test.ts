@@ -106,3 +106,54 @@ test('GET /api/huddles lists huddles; /api/huddles/:id has the thread; Today lea
   const today = await (await app.request('/api/today?project=ihop')).json();
   assert.equal(today.events.filter((e: any) => e.kind === 'huddle').length, 0);
 });
+
+// Guests reach the board through a tunnel: default-deny, then only their own items.
+const remote = (path: string, init: RequestInit & { cookie?: string } = {}) =>
+  app.request(path, { ...init, headers: { 'x-forwarded-for': '1.2.3.4', host: 'abc.ngrok-free.app',
+    ...(init.cookie ? { cookie: `cb_user=${init.cookie}` } : {}), ...(init.headers as any) } });
+
+test('through a tunnel, nothing is readable or writable without a user link', async () => {
+  await db();
+  for (const p of ['/api/tasks', '/api/projects', '/api/sessions', '/api/huddles', '/api/events', '/api/today', '/api/questions', '/api/me'])
+    assert.equal((await remote(p)).status, 401, p);
+  assert.equal((await remote('/api/rpc/task_add', { method: 'POST', body: '{}' })).status, 401);
+  assert.equal((await remote('/api/whoami')).status, 200);
+  assert.deepEqual(await (await remote('/api/whoami')).json(), { role: 'anonymous' });
+  // locally everything works as before
+  assert.equal((await app.request('/api/tasks')).status, 200);
+  assert.deepEqual(await (await app.request('/api/whoami')).json(), { role: 'local' });
+});
+
+test('a guest link sets a cookie; the guest sees and answers only what is assigned to them', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'PO sign-off on E1-E12', assignee => 'omar')`;
+  await sql`select cb.task_add(project => 'ihop', title => 'internal')`;
+  const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
+  await sql`select cb.user_add('iman', 'Iman')`;
+  await sql`select cb.ask(project => 'ihop', body => 'E1 scope?', options => ${sql.json([{ label: 'A' }, { label: 'B' }])}, to_user => 'omar', actor => 'orch@shaltoot')`;
+  await sql`select cb.ask(project => 'ihop', body => 'for Ahmed', actor => 'orch@shaltoot')`;
+  await sql`select cb.ask(project => 'ihop', body => 'for Iman', to_user => 'iman', actor => 'orch@shaltoot')`;
+
+  const land = await remote(`/?u=${token}`);
+  assert.equal(land.status, 302);
+  assert.match(land.headers.get('set-cookie') ?? '', /cb_user=[^;]+;.*HttpOnly/i);
+  assert.equal((await remote('/api/tasks', { cookie: 'wrong' })).status, 401);
+  assert.deepEqual(await (await remote('/api/whoami', { cookie: token })).json(), { role: 'guest', user: { name: 'omar', display: 'Omar' } });
+
+  const me = await (await remote('/api/me', { cookie: token })).json();
+  assert.deepEqual(me.questions.map((q: any) => q.body), ['E1 scope?']);
+  assert.deepEqual(me.tasks.map((t: any) => t.title), ['PO sign-off on E1-E12']);
+  assert.equal((await remote('/api/tasks', { cookie: token })).status, 403, 'guests get no board-wide reads');
+
+  const rpc = (fn: string, args: object) => remote(`/api/rpc/${fn}`, { cookie: token, method: 'POST', body: JSON.stringify(args), headers: { 'content-type': 'application/json' } });
+  assert.equal((await rpc('answer', { id: '2', answer: 'x', actor: 'ahmed' })).status, 403, 'not assigned to omar');
+  assert.equal((await rpc('answer', { id: '3', answer: 'x' })).status, 403, "iman's question");
+  assert.equal((await rpc('task_add', { project: 'ihop', title: 'x' })).status, 403);
+  assert.equal((await rpc('log', { project: 'ihop', summary: 'x', task_id: '2' })).status, 403, 'not his task');
+  assert.equal((await rpc('answer', { id: '1', answer: 'A', actor: 'ahmed' })).status, 200);
+  assert.equal((await rpc('log', { project: 'ihop', summary: 'signed', task_id: '1', actor: 'ahmed' })).status, 200);
+  const [q] = await sql`select status, answer, answered_by from cb.questions where id = 1`;
+  assert.deepEqual({ ...q }, { status: 'answered', answer: 'A', answered_by: 'omar' }, 'actor is the guest, whatever the body says');
+  const [e] = await sql`select actor from cb.events where kind = 'note'`;
+  assert.equal(e.actor, 'omar');
+});

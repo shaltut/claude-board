@@ -77,3 +77,13 @@ export async function huddle(id: number) {
                            where kind = 'huddle' and (data ->> 'huddle')::bigint = ${id} order by id`;
   return { ...h, lines };
 }
+
+/** A guest's own page: questions handed to them (open, and answered this week) and their open tasks. */
+export async function me(user: string) {
+  const [questions, tasks] = await Promise.all([
+    sql`select * from cb.questions where assigned_to = ${user}
+          and (status = 'open' or answered_at > now() - interval '7 days') order by status = 'open' desc, id desc`,
+    sql`select * from cb.tasks where assignee = ${user} and status not in ('done', 'cancelled') order by priority, rank, id`,
+  ]);
+  return { questions, tasks };
+}

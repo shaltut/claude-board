@@ -57,6 +57,8 @@ function post(text: string): Promise<void> {
   });
 }
 
+// Ahmed's answers carry his authority; anyone else's (a guest like Omar) must say so.
+const who = (a: any) => (!a.answered_by || a.answered_by === 'ahmed' ? 'Ahmed' : `${a.answered_by} (not Ahmed)`);
 const cut = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
 function format(i: any): string {
@@ -73,9 +75,9 @@ function format(i: any): string {
     if (open.length) lines.push(`  (reply: cb huddle say ${open[0]} "..."; whole thread: cb huddle show ${open[0]})`);
   }
   for (const a of i.answers)
-    lines.push(`Ahmed answered Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: ${a.answer}`, `  You asked: ${cut(a.body, 200)}`);
+    lines.push(`${who(a)} answered Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: ${a.answer}`, `  You asked: ${cut(a.body, 200)}`);
   for (const c of i.answer_copies ?? [])
-    lines.push(`Ahmed answered ${c.asked_by}'s Q${c.id}${c.task_id ? ` (task #${c.task_id})` : ''}: ${c.answer}`,
+    lines.push(`${who(c)} answered ${c.asked_by}'s Q${c.id}${c.task_id ? ` (task #${c.task_id})` : ''}: ${c.answer}`,
       `  They asked: ${cut(c.body, 200)}`, `  (copy for you as orchestrator; ${c.asked_by} gets it directly)`);
   for (const e of i.events) {
     const what = ({ note: 'noted on', done: 'closed', moved: 'moved', task_created: 'created for you' } as any)[e.kind] ?? 'edited';

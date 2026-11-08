@@ -174,3 +174,24 @@ test('cb ask needs options (Ahmed answers by clicking); --free allows an open qu
   const [{ n }] = await sql`select count(*)::int as n from cb.questions`;
   assert.equal(n, 2);
 });
+
+test('cb user add prints a link; cb ask --to and cb assign hand questions and tasks to a user', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'PO sign-off')`;
+  const u = cb(['user', 'add', 'omar', 'Omar'], { CB_PUBLIC_URL: 'https://board.example.app' });
+  assert.equal(u.code, 0, u.err);
+  const [{ token }] = await sql`select token from cb.users where name = 'omar'`;
+  assert.ok(u.out.startsWith(`Omar's link: https://board.example.app/?u=${token}\n`), u.out);
+  assert.match(cb(['users']).out, /omar\s+Omar/);
+  assert.equal(cb(['ask', 'demo', 'E1 scope?', '-o', 'A=x', '-o', 'B=y', '--to', 'omar']).code, 0);
+  assert.equal(cb(['ask', 'demo', 'mine', '-o', 'A=x', '-o', 'B=y']).code, 0);
+  assert.equal(cb(['assign', 'Q2', 'omar']).out, 'Q2 → omar');
+  assert.equal(cb(['assign', '1', 'omar']).out, '#1 → omar');
+  assert.match(cb(['assign', 'Q1', 'nobody']).err, /unknown user nobody/);
+  assert.equal(cb(['assign', 'Q2', 'ahmed']).out, 'Q2 → ahmed');
+  const rows = await sql`select id, assigned_to from cb.questions order by id`;
+  assert.deepEqual(rows.map((r: any) => [Number(r.id), r.assigned_to]), [[1, 'omar'], [2, null]]);
+  const [t] = await sql`select assignee from cb.tasks where id = 1`;
+  assert.equal(t.assignee, 'omar');
+  assert.match(cb(['brief', 'demo']).out, /Q1 .*E1 scope\? \(for omar\)/);
+});

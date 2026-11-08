@@ -4,7 +4,7 @@ import { hostname } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { callFn } from '../server/rpc.ts';
-import { sql, databaseUrl, machine } from '../server/db.ts';
+import { sql, databaseUrl, machine, dotenv } from '../server/db.ts';
 
 const HELP = `cb — Claude Board (http://localhost:4747)
 
@@ -25,6 +25,8 @@ const HELP = `cb — Claude Board (http://localhost:4747)
   cb huddle open "<topic>" <session>... [-t id]   discussion group with other sessions (same project)
   cb huddle say|add|close|show <id> ...      talk / add members / close "summary" / read the thread
   cb huddles [project]                       open huddles (and the last week's closed ones)
+  cb user add <name> ["Display"] / cb users   people who answer through a link (Omar, Iman)
+  cb assign <Q12|#34> <user|ahmed>           hand a question or task to a user; ask --to <user> does it at ask time
   cb sessions [project]                      every session: relay, what it holds, who went quiet (orchestrator)
   cb session <name>                          one session: open tasks, questions, last 10 actions
   cb pending [project]                       answered questions to deliver (orchestrator)
@@ -41,7 +43,7 @@ const OPTIONS = {
   link: { type: 'string', multiple: true }, pr: { type: 'string' }, commit: { type: 'string' }, branch: { type: 'string' },
   title: { type: 'string' }, assignee: { type: 'string' }, project: { type: 'string' },
   task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
-  multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, context: { type: 'string', short: 'c' },
+  multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, to: { type: 'string' }, context: { type: 'string', short: 'c' },
   'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' },
 } as const;
 
@@ -120,7 +122,7 @@ function printBrief(b: any) {
   sec('NEXT (take with `cb next`)', b.next, line);
   sec('BLOCKED', b.blocked, (t) => `${line(t)}${t.blocked_on ? ` — on Q${t.blocked_on}` : ''}`);
   sec('REVIEW', b.review, line);
-  sec('WAITING ON AHMED', b.open_questions, (q) => `Q${q.id}${q.blocking ? ' [blocking]' : ''} ${q.body} · ${q.project}`);
+  sec('WAITING ON AHMED', b.open_questions, (q) => `Q${q.id}${q.blocking ? ' [blocking]' : ''} ${q.body}${q.assigned_to ? ` (for ${q.assigned_to})` : ''} · ${q.project}`);
   sec('BROADCASTS (24h)', b.broadcasts ?? [], (x) => `${x.actor}${x.project ? ` to ${x.project}` : ' to everyone'}: ${x.summary}`);
   sec('ANSWERED — DELIVER THESE', b.answered_pending, (q) =>
     `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}: ${q.answer}`);
@@ -145,6 +147,34 @@ async function run(): Promise<unknown> {
       const now: any = await callFn('task_tag', { id: args[0], actor,
         add: tags.filter((x) => !x.startsWith('-')), remove: tags.filter((x) => x.startsWith('-')).map((x) => x.slice(1)) });
       return { out: `#${args[0].replace(/^#/, '')} tags: ${now.length ? now.join(', ') : '(none)'}`, json: now };
+    }
+    case 'user': {
+      need(2, 'user add <name> ["Display Name"]   e.g. cb user add omar "Omar"');
+      if (args[0] !== 'add') throw new Error('user add <name> ["Display Name"]');
+      const token: any = await callFn('user_add', { name: args[1], display: args[2] ?? null });
+      const [u] = await sql`select name, display from cb.users where token = ${token}`;
+      const base = (process.env.CB_PUBLIC_URL || dotenv('PUBLIC_URL') || 'http://localhost:4747').replace(/\/$/, '');
+      return { out: `${u.display}'s link: ${base}/?u=${token}
+Send it privately: anyone with it can answer ${u.display}'s questions.`, json: { ...u, token } };
+    }
+    case 'users': {
+      const rows = await sql`select u.name, u.display,
+        (select count(*)::int from cb.questions q where q.assigned_to = u.name and q.status = 'open') as open_questions,
+        (select count(*)::int from cb.tasks t where t.assignee = u.name and t.status not in ('done','cancelled')) as open_tasks
+        from cb.users u order by u.name`;
+      return { out: rows.map((r: any) => `${r.name.padEnd(12)} ${r.display}: ${r.open_questions} questions, ${r.open_tasks} tasks open`).join('\n') || 'no users (cb user add omar "Omar")', json: rows };
+    }
+    case 'assign': {
+      need(2, 'assign <Q12|#34> <user|ahmed>   hand a question or task to a user (ahmed takes a question back)');
+      const target = args[0], to = args[1] === 'ahmed' ? null : args[1];
+      if (/^q\d+$/i.test(target)) {
+        await callFn('question_assign', { id: target.slice(1), to_user: to, actor });
+        return { out: `Q${target.slice(1)} → ${to ?? 'ahmed'}` };
+      }
+      await guard(target);
+      if (to && !(await sql`select 1 from cb.users where name = ${to}`).length) throw new Error(`unknown user ${to}: see cb users`);
+      await callFn('task_update', { id: target, fields: { assignee: to }, actor });
+      return { out: `#${target.replace(/^#/, '')} → ${to ?? 'nobody'}` };
     }
     case 'huddles': {
       const rows: any = await callFn('huddles_list', { project: args[0] ?? sessionProject ?? null });
@@ -295,7 +325,7 @@ async function run(): Promise<unknown> {
           'Only a question with no possible choices (a fact, a URL, a name) goes as --free.');
       const reply_to = replyTo();
       const id = await callFn('ask', { project: args[0], body: args.slice(1).join(' '), options: o.option ? options() : null,
-        multi: !!o.multi, blocking: !!o.blocking, task_id: o.task ?? null, context: o.context ?? null, reply_to, actor });
+        multi: !!o.multi, blocking: !!o.blocking, task_id: o.task ?? null, context: o.context ?? null, reply_to, actor, to_user: o.to ?? null });
       return { out: `Q${id} posted — keep working; the answer arrives in this session by itself once \`cb relay\` is on, else via \`cb pending\``, json: id };
     }
     case 'pending': {

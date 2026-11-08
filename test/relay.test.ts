@@ -323,3 +323,14 @@ test('an answer reaches the asker and a copy reaches the project orchestrator, o
   await sql`select cb.broadcast_seen('pc', 'w2:p2', ${orch.answer_copies.at(-1).event_id})`;
   assert.equal((await box('pc', 'w2:p2')).answer_copies.length, 0);
 });
+
+test('an answer from a guest user is attributed to them, not to Ahmed', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
+  await sql`select cb.iam('mac', 'w1:p3', 'W2@macbook', 'ihop')`;
+  await sql`select cb.user_add('omar', 'Omar')`;
+  await sql`select cb.ask(project => 'ihop', body => 'E1?', reply_to => ${sql.json({ machine: 'mac', pane: 'w1:p3' })}, to_user => 'omar', actor => 'W2@macbook')`;
+  await sql`select cb.answer('1', 'B', 'omar')`;
+  const [{ i }] = await sql`select cb.inbox('mac', 'w1:p3', 0) as i`;
+  assert.deepEqual(i.answers.map((a: any) => [a.answer, a.answered_by]), [['B', 'omar']]);
+});

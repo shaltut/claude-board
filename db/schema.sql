@@ -23,6 +23,13 @@ create table if not exists cb.project_aliases (
   tags  text[] not null default '{}'
 );
 
+create table if not exists cb.users (
+  name       text primary key,
+  display    text not null,
+  token      text not null unique default gen_random_uuid()::text,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists cb.questions (
   id           bigint generated always as identity primary key,
   project      text not null references cb.projects(slug) on update cascade,
@@ -457,7 +464,11 @@ end $$;
 -- ---------------------------------------------------------------- questions
 
 drop function if exists cb.questions_history cascade;
+alter table cb.questions add column if not exists assigned_to text references cb.users(name) on update cascade on delete set null;
+alter table cb.questions add column if not exists answered_by text;
 drop function if exists cb.ask cascade;
+drop function if exists cb.user_add cascade;
+drop function if exists cb.question_assign cascade;
 drop function if exists cb.answer cascade;
 drop function if exists cb.withdraw cascade;
 drop function if exists cb.answers_pending cascade;
@@ -494,7 +505,7 @@ create or replace trigger questions_history after insert or update on cb.questio
 -- Blocking + task_id parks the task in Blocked until delivery.
 create function cb.ask(project text, body text, options jsonb default null, blocking boolean default false,
                        task_id text default null, context text default null, reply_to jsonb default null,
-                       multi boolean default false, actor text default null)
+                       multi boolean default false, actor text default null, to_user text default null)
 returns bigint language plpgsql as $$
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); p text := cb.ensure_project(project);
@@ -502,20 +513,23 @@ declare a text := cb.set_actor(actor); p text := cb.ensure_project(project);
         qid bigint;
 begin
   if coalesce(trim(body), '') = '' then raise exception 'question body is required'; end if;
+  if to_user is not null and not exists (select 1 from cb.users u where u.name = to_user) then
+    raise exception 'unknown user %: see cb users', to_user;
+  end if;
   if tid is not null and not exists (select 1 from cb.tasks t where t.id = tid) then
     raise exception 'task #% not found', tid;
   end if;
   if options is not null and jsonb_typeof(options) <> 'array' then
     raise exception 'options must be a JSON array of strings or {label, description} objects';
   end if;
-  insert into cb.questions (project, task_id, asked_by, body, context, options, blocking, reply_to, multi)
+  insert into cb.questions (project, task_id, asked_by, body, context, options, blocking, reply_to, multi, assigned_to)
   values (p, tid, a, trim(body), context,
           (select jsonb_agg(case when jsonb_typeof(o) = 'string'
                                  then jsonb_build_object('label', o #>> '{}', 'description', null)
                                  else jsonb_build_object('label', o ->> 'label', 'description', o ->> 'description') end
                             order by i)
              from jsonb_array_elements(options) with ordinality as e(o, i)),
-          coalesce(blocking, false), reply_to, coalesce(multi, false))
+          coalesce(blocking, false), reply_to, coalesce(multi, false), to_user)
   returning cb.questions.id into qid;
   if coalesce(blocking, false) and tid is not null then
     perform set_config('cb.note', 'blocked on Q' || qid, true);
@@ -529,14 +543,14 @@ end $$;
 create function cb.answer(id text, answer text, actor text default 'ahmed')
 returns void language plpgsql as $$
 #variable_conflict use_variable
-declare qid bigint := cb.norm_id(id); cur text;
+declare qid bigint := cb.norm_id(id); cur text; a text;
 begin
-  perform cb.set_actor(actor);
+  a := cb.set_actor(actor);
   if coalesce(trim(answer), '') = '' then raise exception 'answer is required'; end if;
   select q.status into cur from cb.questions q where q.id = qid for update;
   if cur is null then raise exception 'question Q% not found', qid; end if;
   if cur in ('delivered', 'withdrawn') then raise exception 'question Q% is already %', qid, cur; end if;
-  update cb.questions q set status = 'answered', answer = trim(answer), answered_at = now() where q.id = qid;
+  update cb.questions q set status = 'answered', answer = trim(answer), answered_at = now(), answered_by = a where q.id = qid;
 end $$;
 
 create function cb.withdraw(id text, actor text default null)
@@ -591,7 +605,7 @@ begin
     'blocked', cb._brief_tasks(p, tg, 'blocked', 50),
     'review', cb._brief_tasks(p, tg, 'review', 50),
     'open_questions', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body,
-        'blocking', q.blocking, 'asked_by', q.asked_by, 'task_id', q.task_id, 'options', q.options) order by q.blocking desc, q.id)
+        'blocking', q.blocking, 'asked_by', q.asked_by, 'task_id', q.task_id, 'options', q.options, 'assigned_to', q.assigned_to) order by q.blocking desc, q.id)
       from cb.questions q where q.status = 'open' and (p is null or q.project = p)), '[]'),
     'answered_pending', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body,
         'answer', q.answer, 'asked_by', q.asked_by, 'reply_to', q.reply_to, 'task_id', q.task_id) order by q.id)
@@ -659,7 +673,7 @@ begin
                            where e.kind = 'message' and e.data ->> 'to' = me and e.id > seen
                              and e.at > now() - interval '24 hours'), '[]'),
     -- the orchestrator (orch@*, same convention as huddle admin) gets a copy of Ahmed's answers to its workers
-    'answer_copies', coalesce((select jsonb_agg(jsonb_build_object('event_id', e.id, 'id', q.id, 'task_id', q.task_id, 'asked_by', q.asked_by,
+    'answer_copies', coalesce((select jsonb_agg(jsonb_build_object('event_id', e.id, 'id', q.id, 'task_id', q.task_id, 'asked_by', q.asked_by, 'answered_by', q.answered_by,
                                                                    'body', q.body, 'answer', q.answer) order by e.id)
                                  from cb.events e join cb.questions q on q.id = e.question_id
                                 where e.kind = 'answered' and (me like 'orch@%' or me = 'orch') and e.project = proj
@@ -673,7 +687,7 @@ begin
                           where e.kind = 'huddle' and e.actor <> me and e.id > seen and e.id >= hm.from_event
                             and e.at > now() - interval '24 hours'), '[]'),
     'answers', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'task_id', q.task_id, 'project', q.project,
-                                                             'body', q.body, 'answer', q.answer) order by q.id)
+                                                             'body', q.body, 'answer', q.answer, 'answered_by', q.answered_by) order by q.id)
                            from cb.questions q
                           where q.status = 'answered' and lower(q.reply_to ->> 'machine') = m and q.reply_to ->> 'pane' = pane), '[]'),
     'events', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'task_id', e.task_id, 'kind', e.kind, 'summary', e.summary,
@@ -752,7 +766,7 @@ begin
       union select t.assignee from cb.tasks t where t.assignee is not null and t.status not in ('done', 'cancelled') and (p is null or t.project = p)
     ) a
     left join lateral (select * from cb.sessions s3 where s3.actor = a.actor order by s3.last_seen desc limit 1) s on true
-    where a.actor is not null and a.actor not in ('ahmed', 'relay', 'unknown')
+    where a.actor is not null and a.actor not in ('ahmed', 'relay', 'unknown') and a.actor not in (select u.name from cb.users u)
   ) x), '[]');
 end $$;
 
@@ -896,4 +910,28 @@ begin
     order by h.status desc, h.opened_at desc)
     from cb.huddles h
    where (p is null or h.project = p) and (h.status = 'open' or h.closed_at > now() - interval '7 days')), '[]');
+end $$;
+
+-- People who answer through a guest link (Omar, Iman). The link carries the token.
+create function cb.user_add(name text, display text default null) returns text language plpgsql as $$
+#variable_conflict use_variable
+declare n text := lower(trim(name)); t text;
+begin
+  if n !~ '^[a-z][a-z0-9_-]*$' then raise exception 'user name: lowercase letters, digits, - or _ (e.g. omar)'; end if;
+  insert into cb.users (name, display) values (n, coalesce(nullif(trim(display), ''), initcap(n)))
+  on conflict on constraint users_pkey do update set display = coalesce(nullif(trim(user_add.display), ''), cb.users.display)
+  returning cb.users.token into t;
+  return t;
+end $$;
+
+-- Hand an open question to a user (null hands it back to Ahmed).
+create function cb.question_assign(id text, to_user text, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); qid bigint := cb.norm_id(id);
+begin
+  if to_user is not null and not exists (select 1 from cb.users u where u.name = to_user) then
+    raise exception 'unknown user %: see cb users', to_user;
+  end if;
+  update cb.questions q set assigned_to = to_user where q.id = qid;
+  if not found then raise exception 'question Q% not found', qid; end if;
 end $$;
