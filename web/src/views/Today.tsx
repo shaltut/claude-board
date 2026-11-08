@@ -30,14 +30,17 @@ function useAnchor() {
   return [anchor, setAnchor] as const
 }
 
+// The anchor lives here, not in Briefing: Today stays mounted across Today ↔ "See every question",
+// so visiting the questions list doesn't count as leaving and doesn't move the marker.
 export function Today({ route }: { route: Route }) {
+  const anchorState = useAnchor()
   if (route.view === 'questions') return <AllQuestions route={route} />
-  return <Briefing route={route} />
+  return <Briefing route={route} anchorState={anchorState} />
 }
 
-function Briefing({ route }: { route: Route }) {
+function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnType<typeof useAnchor> }) {
   const qc = useQueryClient()
-  const [anchor, setAnchor] = useAnchor()
+  const [anchor, setAnchor] = anchorState
   const [editing, setEditing] = useState<number | null>(null)
   const { data: open = [] } = useQuestions(route.project, 'open')
   const { data: answered = [] } = useQuestions(route.project, 'answered')

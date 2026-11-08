@@ -15,6 +15,8 @@ On top of that:
    - deliver the answer to the session in `reply_to` through herdr, quoting the question and answer
    - then `cb delivered <qid> <session>` (this also unblocks its task back to Next)
    - if `reply_to` is empty, deliver it to whoever asked (`asked_by`), or act on it yourself
+   Asking on a worker's behalf? Say where the answer goes, or it comes back to you:
+   `cb ask <project> "<q>" -o ... --as W2@macbook --reply-to macbook:<worker pane id>`
 6. Questions you would put to Ahmed go on the board with options and explanations:
    `cb ask <project> "<question>" -o "<Label (Recommended)>=<why>" -o "<Label>=<tradeoff>" -c "<context>"`
    Then go back to managing the other sessions.

@@ -70,3 +70,35 @@ test('unreachable remote board fails fast with a clear message', () => {
   assert.match(r.err, /keep working/);
   assert.ok(Date.now() - t0 < 15_000, `took ${Date.now() - t0}ms`);
 });
+
+test('unknown flag fails with a readable message, no stack', async () => {
+  await db();
+  const r = cb(['add', 'demo', 'x', '--label', 'foo']);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /^cb: unknown option --label/);
+  assert.doesNotMatch(r.err, /\n\s+at /);
+});
+
+test('text that starts with a dash is text', async () => {
+  const sql = await db();
+  const r = cb(['log', 'demo', '-5% latency after fix']);
+  assert.equal(r.code, 0, r.err);
+  const [e] = await sql`select summary from cb.events where kind = 'note'`;
+  assert.equal(e.summary, '-5% latency after fix');
+});
+
+test('unknown command exits 1', async () => {
+  await db();
+  const r = cb(['list']);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /unknown command "list"/);
+});
+
+test('--reply-to sets where the answer goes; --as alone does not use my pane', async () => {
+  const sql = await db();
+  cb(['ask', 'demo', 'for a worker?', '--as', 'W2@mac', '--reply-to', 'macbook:w1:p3'], { HERDR_PANE_ID: 'orchpane' });
+  cb(['ask', 'demo', 'no target', '--as', 'W2@mac'], { HERDR_PANE_ID: 'orchpane' });
+  const rows = await sql`select reply_to from cb.questions order by id`;
+  assert.deepEqual(rows[0].reply_to, { machine: 'macbook', pane: 'w1:p3' });
+  assert.equal(rows[1].reply_to, null);
+});

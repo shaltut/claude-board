@@ -48,7 +48,7 @@ test('pending then delivered unblocks', async () => {
   const [row] = await sql`select * from cb.questions where id = ${q}`;
   assert.equal(row.status, 'delivered');
   const [t] = await sql`select * from cb.tasks where id = 1`;
-  assert.equal(t.status, 'next');
+  assert.equal(t.status, 'in_progress'); // its assignee keeps it (review #5)
   assert.equal(t.blocked_on, null);
   assert.equal((await sql`select * from cb.answers_pending()`).length, 0);
 });
@@ -99,4 +99,28 @@ test('multi flag stored', async () => {
   const [{ q }] = await sql`select cb.ask(project => 'demo', body => 'Which?', options => ${sql.json(['a', 'b'])}, multi => true) as q`;
   const [row] = await sql`select multi from cb.questions where id = ${q}`;
   assert.equal(row.multi, true);
+});
+
+test('delivered answer gives the task back to its assignee, not to Next', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'T1', status => 'next')`;
+  await sql`select * from cb.task_claim('demo', 'W1')`;
+  await sql`select cb.ask(project => 'demo', body => 'q?', blocking => true, task_id => '1', actor => 'W1')`;
+  await sql`select cb.answer('1', 'yes')`;
+  await sql`select cb.answer_delivered('1', 'W1')`;
+  const [t] = await sql`select status, assignee from cb.tasks where id = 1`;
+  assert.deepEqual({ ...t }, { status: 'in_progress', assignee: 'W1' });
+  assert.equal((await sql`select * from cb.task_claim('demo', 'W2')`).length, 0);
+});
+
+test('read paths normalize project like writes and reject unknown projects', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'Demo API', title => 'one', status => 'next')`;
+  const [{ b }] = await sql`select cb.brief('Demo API') as b`;
+  assert.equal(b.next.length, 1);
+  assert.equal((await sql`select * from cb.answers_pending('Demo API')`).length, 0);
+  await assert.rejects(sql`select cb.brief('ihpo')`, /unknown project "ihpo"; known: demo-api/);
+  await assert.rejects(sql`select * from cb.task_claim('ihpo', 'W1')`, /unknown project "ihpo"/);
+  const [c] = await sql`select * from cb.task_claim('Demo API', 'W1')`;
+  assert.equal(c.title, 'one');
 });

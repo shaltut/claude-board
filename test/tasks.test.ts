@@ -96,8 +96,7 @@ test('claim takes top of next', async () => {
   assert.equal(t.title, 'C');
   assert.equal(t.status, 'in_progress');
   assert.equal(t.assignee, 'W1');
-  const none = await sql`select * from cb.task_claim('other', 'W1')`;
-  assert.equal(none.length, 0);
+  await assert.rejects(sql`select * from cb.task_claim('other', 'W1')`, /unknown project "other"/); // review #2
 });
 
 test('claim is exclusive', async () => {
@@ -150,4 +149,15 @@ test('adding in_progress work assigns it to the actor', async () => {
   assert.deepEqual(mine.map((r: any) => Number(r.id)), [Number(id)]);
   const [t] = await sql`select assignee from cb.tasks where id = ${other}`;
   assert.equal(t.assignee, null);
+});
+
+test('a task reassigned away still shows in the old assignee\'s mine for a day', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'T', status => 'next')`;
+  await sql`select * from cb.task_claim('demo', 'W1')`;
+  await sql`select cb.task_update('1', ${sql.json({ assignee: 'W3' })}, 'ahmed')`;
+  const mine = await sql`select id, assignee from cb.mine('W1')`;
+  assert.deepEqual(mine.map((r: any) => [Number(r.id), r.assignee]), [[1, 'W3']]);
+  const [e] = await sql`select data from cb.events where kind = 'updated'`;
+  assert.deepEqual(e.data.assignee, { from: 'W1', to: 'W3' });
 });

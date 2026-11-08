@@ -10,7 +10,7 @@ import { ChevronDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { rpc, useTasks, type Status, type Task } from '@/lib/api'
 import { STATUS } from '@/lib/format'
-import { rankAt } from '@/lib/rank'
+import { dropIndex, rankAt } from '@/lib/rank'
 import { go, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { StatusDot } from '@/components/Chips'
@@ -93,9 +93,8 @@ export function Board({ route }: { route: Route }) {
     if (!t || !e.over) return
     const to = (e.over.data.current?.status ?? t.status) as Status
     const list = columns[to].filter((x) => x.id !== t.id)
-    const overIndex = list.findIndex((x) => x.id === e.over!.id)
-    const index = overIndex === -1 ? list.length : overIndex
-    if (to === t.status && columns[to].findIndex((x) => x.id === t.id) === index) return
+    const index = dropIndex(columns[to], t.id, e.over.id, to === t.status)
+    if (index === null) return
     const rank = to === 'done' ? null : rankAt(list, index)
     setOptimistic({ id: t.id, status: to, rank: rank ?? t.rank })
     try {

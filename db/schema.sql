@@ -86,6 +86,8 @@ drop function if exists cb.norm_status cascade;
 drop function if exists cb.norm_priority cascade;
 drop function if exists cb.norm_id cascade;
 drop function if exists cb.ensure_project cascade;
+drop function if exists cb.slug cascade;
+drop function if exists cb.read_project cascade;
 drop function if exists cb.tasks_before cascade;
 drop function if exists cb.tasks_history cascade;
 drop function if exists cb.notify cascade;
@@ -145,9 +147,24 @@ begin
   return v::bigint;
 end $$;
 
+-- One normalization for every path: "Demo API" → demo-api.
+create function cb.slug(project text) returns text language sql immutable as $$
+  select regexp_replace(lower(trim(coalesce(project, ''))), '[^a-z0-9_.-]+', '-', 'g')
+$$;
+
+-- Read-side project filter: null/empty = all projects; an unknown slug is an error, not empty work.
+create function cb.read_project(project text) returns text language plpgsql stable as $$
+#variable_conflict use_variable
+declare s text := nullif(cb.slug(project), '');
+begin
+  if s is null or exists (select 1 from cb.projects p where p.slug = s) then return s; end if;
+  raise exception 'unknown project "%"; known: %', s,
+    coalesce((select string_agg(p.slug, ', ' order by p.slug) from cb.projects p), 'none yet (cb add creates one)');
+end $$;
+
 create function cb.ensure_project(project text) returns text language plpgsql as $$
 #variable_conflict use_variable
-declare slug text := regexp_replace(lower(trim(coalesce(project, ''))), '[^a-z0-9_.-]+', '-', 'g');
+declare slug text := cb.slug(project);
 begin
   if slug = '' then raise exception 'project is required'; end if;
   insert into cb.projects (slug, name) values (slug, initcap(replace(slug, '-', ' ')))
@@ -194,6 +211,10 @@ begin
     select n.key from jsonb_each(to_jsonb(new)) n
     where n.value is distinct from to_jsonb(old) -> n.key
       and n.key not in ('rank', 'updated_at', 'status', 'done_at', 'blocked_on', 'created_at', 'created_by', 'id'));
+  -- Who had it before: lets cb.mine show a task taken from you.
+  if new.assignee is distinct from old.assignee then
+    extra := jsonb_build_object('assignee', jsonb_build_object('from', old.assignee, 'to', new.assignee)) || extra;
+  end if;
   if new.status is distinct from old.status then
     insert into cb.events (actor, project, task_id, kind, summary, data)
     values (a, new.project, new.id, case when new.status = 'done' then 'done' else 'moved' end,
@@ -316,7 +337,7 @@ end $$;
 create function cb.task_claim(project text default null, actor text default null)
 returns setof cb.tasks language plpgsql as $$
 #variable_conflict use_variable
-declare a text := cb.set_actor(actor); p text := nullif(lower(trim(coalesce(project, ''))), ''); tid bigint;
+declare a text := cb.set_actor(actor); p text := cb.read_project(project); tid bigint;
 begin
   select t.id into tid from cb.tasks t
    where t.status = 'next' and (p is null or t.project = p)
@@ -336,8 +357,11 @@ returns setof cb.tasks language plpgsql as $$
 declare a text := coalesce(nullif(trim(actor), ''), nullif(current_setting('cb.actor', true), ''), 'unknown');
 begin
   return query select t.* from cb.tasks t
-   where t.assignee = a
-     and (t.status not in ('done', 'cancelled') or t.updated_at > now() - interval '24 hours')
+   where (t.assignee = a
+          and (t.status not in ('done', 'cancelled') or t.updated_at > now() - interval '24 hours'))
+      or (t.assignee is distinct from a and exists (
+            select 1 from cb.events e where e.task_id = t.id and e.data -> 'assignee' ->> 'from' = a
+               and e.at > now() - interval '24 hours'))
    order by t.status, t.rank;
 end $$;
 
@@ -434,13 +458,14 @@ begin
   perform cb.set_actor(actor);
   update cb.questions q set status = 'withdrawn' where q.id = qid and q.status in ('open', 'answered');
   if not found then raise exception 'question Q% not found or already delivered/withdrawn', qid; end if;
-  update cb.tasks t set status = 'next' where t.blocked_on = qid and t.status = 'blocked';
+  update cb.tasks t set status = case when t.assignee is null then 'next' else 'in_progress' end
+   where t.blocked_on = qid and t.status = 'blocked';
 end $$;
 
 create function cb.answers_pending(project text default null)
 returns setof cb.questions language plpgsql as $$
 #variable_conflict use_variable
-declare p text := nullif(lower(trim(coalesce(project, ''))), '');
+declare p text := cb.read_project(project);
 begin
   return query select q.* from cb.questions q
    where q.status = 'answered' and (p is null or q.project = p)
@@ -460,7 +485,8 @@ begin
   if cur <> 'answered' then raise exception 'question Q% is %, not answered', qid, cur; end if;
   update cb.questions q set status = 'delivered', delivered_at = now(), delivered_to = delivered_to where q.id = qid;
   perform set_config('cb.note', 'unblocked: Q' || qid || ' answered', true);
-  update cb.tasks t set status = 'next' where t.blocked_on = qid and t.status = 'blocked';
+  update cb.tasks t set status = case when t.assignee is null then 'next' else 'in_progress' end
+   where t.blocked_on = qid and t.status = 'blocked';
   perform set_config('cb.note', '', true);
 end $$;
 
@@ -468,7 +494,7 @@ end $$;
 create function cb.brief(project text default null)
 returns jsonb language plpgsql stable as $$
 #variable_conflict use_variable
-declare p text := nullif(lower(trim(coalesce(project, ''))), '');
+declare p text := cb.read_project(project);
 begin
   return jsonb_build_object(
     'in_progress', cb._brief_tasks(p, 'in_progress', 50),

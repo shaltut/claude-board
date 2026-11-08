@@ -1,5 +1,6 @@
-// Starts the private Postgres 16 cluster in .pgdata if it isn't running.
+// Starts the private Postgres 16 cluster in .pgdata if it isn't running; creates it if missing.
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ROOT = join(import.meta.dirname, '..');
@@ -7,8 +8,14 @@ const PGDATA = join(ROOT, '.pgdata');
 const BIN = process.env.CB_PG_BIN ?? 'C:/Program Files/PostgreSQL/16/bin';
 const pgCtl = join(BIN, 'pg_ctl.exe');
 
-export function ensurePg(): void {
-  if (spawnSync(pgCtl, ['-D', PGDATA, 'status'], { stdio: 'ignore' }).status === 0) return;
-  const r = spawnSync(pgCtl, ['-D', PGDATA, '-o', '-p 5434', '-l', join(PGDATA, 'server.log'), '-w', 'start'], { stdio: 'pipe', encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`could not start Postgres in ${PGDATA}: ${r.stderr || r.stdout}`);
+export function ensurePg(dir = PGDATA, port = 5434): void {
+  if (!existsSync(join(dir, 'PG_VERSION'))) {
+    const i = spawnSync(join(BIN, 'initdb.exe'), ['-D', dir, '-U', 'cb', '--auth=trust', '-E', 'UTF8'], { stdio: 'pipe', encoding: 'utf8' });
+    if (i.status !== 0) throw new Error(`could not create Postgres cluster in ${dir}: ${i.stderr || i.stdout}`);
+  }
+  if (spawnSync(pgCtl, ['-D', dir, 'status'], { stdio: 'ignore' }).status === 0) return;
+  // stdio 'ignore': the postmaster inherits pg_ctl's handles, so a pipe here never closes and spawnSync hangs.
+  const log = join(dir, 'server.log');
+  const r = spawnSync(pgCtl, ['-D', dir, '-o', `-p ${port}`, '-l', log, '-w', 'start'], { stdio: 'ignore' });
+  if (r.status !== 0) throw new Error(`could not start Postgres in ${dir}; see ${log}`);
 }

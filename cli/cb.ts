@@ -18,24 +18,48 @@ const HELP = `cb — Claude Board (http://localhost:4747)
   cb pending [project]                       answered questions to deliver (orchestrator)
   cb delivered <qid> [session]               mark an answer delivered (unblocks its task)
   cb withdraw <qid>
+  ask on behalf of a worker (orchestrator): add --as <worker> --reply-to <machine>:<pane>
 
   --as <name>   actor (default: $CB_ACTOR, else <pane>@<host>)     --json   raw JSON output`;
 
-const { values: o, positionals: pos } = parseArgs({
-  allowPositionals: true,
-  options: {
-    as: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
-    status: { type: 'string', short: 's' }, priority: { type: 'string', short: 'p' },
-    body: { type: 'string', short: 'b' }, labels: { type: 'string', short: 'l' },
-    link: { type: 'string', multiple: true }, pr: { type: 'string' }, commit: { type: 'string' }, branch: { type: 'string' },
-    title: { type: 'string' }, assignee: { type: 'string' }, project: { type: 'string' },
-    task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
-    multi: { type: 'boolean' }, blocking: { type: 'boolean' }, context: { type: 'string', short: 'c' },
-  },
-});
+const OPTIONS = {
+  as: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+  status: { type: 'string', short: 's' }, priority: { type: 'string', short: 'p' },
+  body: { type: 'string', short: 'b' }, labels: { type: 'string', short: 'l' },
+  link: { type: 'string', multiple: true }, pr: { type: 'string' }, commit: { type: 'string' }, branch: { type: 'string' },
+  title: { type: 'string' }, assignee: { type: 'string' }, project: { type: 'string' },
+  task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
+  multi: { type: 'boolean' }, blocking: { type: 'boolean' }, context: { type: 'string', short: 'c' },
+  'reply-to': { type: 'string' },
+} as const;
+
+// Text like "-5% latency" is text, not a flag: only --name, --name=x and -x look like options.
+const TEXT = '\u0001';
+const isFlag = (a: string) => /^--[a-z][a-z-]*(=.*)?$/.test(a) || /^-[a-zA-Z]$/.test(a);
+const unmark = (v: any): any => typeof v === 'string' ? v.replace(TEXT, '') : Array.isArray(v) ? v.map(unmark) : v;
+
+let parsed;
+try {
+  parsed = parseArgs({ allowPositionals: true, options: OPTIONS,
+    args: process.argv.slice(2).map((a) => a.startsWith('-') && a !== '--' && !isFlag(a) ? TEXT + a : a) });
+} catch (e: any) {
+  const name = /Unknown option '([^']+)'/.exec(e?.message)?.[1];
+  console.error(`cb: ${name ? `unknown option ${name}` : e?.message}. Run \`cb help\` for valid options.`);
+  process.exit(1);
+}
+const o: any = Object.fromEntries(Object.entries(parsed.values).map(([k, v]) => [k, unmark(v)]));
+const pos: string[] = parsed.positionals.map(unmark);
 
 const actor = o.as || process.env.CB_ACTOR || `${process.env.HERDR_PANE_ID || 'session'}@${hostname()}`;
 const [cmd, ...args] = pos;
+
+/** Where the orchestrator delivers the answer: --reply-to machine:pane, else my own pane (not when acting --as someone else). */
+function replyTo() {
+  const r = o['reply-to'];
+  if (r) { const i = r.indexOf(':'); return i > 0 ? { machine: r.slice(0, i), pane: r.slice(i + 1) } : { machine: null, pane: r }; }
+  if (o.as || !process.env.HERDR_PANE_ID) return null;
+  return { machine: hostname(), pane: process.env.HERDR_PANE_ID };
+}
 
 function need(n: number, usage: string) {
   if (args.length < n) throw new Error(`usage: cb ${usage}`);
@@ -118,7 +142,7 @@ async function run(): Promise<unknown> {
     }
     case 'ask': {
       need(2, 'ask <project> "question"');
-      const reply_to = process.env.HERDR_PANE_ID ? { machine: hostname(), pane: process.env.HERDR_PANE_ID } : null;
+      const reply_to = replyTo();
       const id = await callFn('ask', { project: args[0], body: args.slice(1).join(' '), options: o.option ? options() : null,
         multi: !!o.multi, blocking: !!o.blocking, task_id: o.task ?? null, context: o.context ?? null, reply_to, actor });
       return { out: `Q${id} posted — keep working; the answer arrives via the orchestrator (or \`cb pending\`)`, json: id };
@@ -143,8 +167,10 @@ async function run(): Promise<unknown> {
       printBrief(b);
       return {};
     }
-    default:
+    case undefined: case 'help':
       return { out: HELP };
+    default:
+      throw new Error(`unknown command "${cmd}". Run \`cb help\` for the commands.`);
   }
 }
 
