@@ -2,7 +2,7 @@
 import { parseArgs } from 'node:util';
 import { hostname } from 'node:os';
 import { callFn } from '../server/rpc.ts';
-import { sql } from '../server/db.ts';
+import { sql, databaseUrl } from '../server/db.ts';
 
 const HELP = `cb — Claude Board (http://localhost:4747)
 
@@ -154,7 +154,13 @@ async function main() {
   try {
     r = await run();
   } catch (e: any) {
-    if (e?.code !== 'ECONNREFUSED') throw e;
+    const host = new URL(databaseUrl()).hostname;
+    const local = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host);
+    const network = ['ECONNREFUSED', 'ETIMEDOUT', 'CONNECT_TIMEOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND'].includes(e?.code);
+    if (!network) throw e;
+    // A remote board (another machine) can't be started from here: say so and let the session carry on.
+    if (!local) throw new Error(`board unreachable at ${host} (${e.code}). The board machine may be asleep: keep working and register this later.`);
+    if (e.code !== 'ECONNREFUSED') throw e;
     (await import('../db/pg.ts')).ensurePg();
     r = await run();
   }

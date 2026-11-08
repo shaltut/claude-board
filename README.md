@@ -82,6 +82,21 @@ curl -s localhost:4747/api/rpc/task_add -H 'content-type: application/json' \
 Reads: `GET /api/projects`, `/api/tasks?project=&status=`, `/api/tasks/<id>`, `/api/questions`,
 `/api/events?project=&actor=&kind=&q=&before=`, `/api/today`. Live changes stream on `/api/stream` (SSE).
 
+## Workers on the MacBook
+
+The board's Postgres also accepts the MacBook over Tailscale, from its IP only:
+
+- `.pgdata/postgresql.auto.conf`: `listen_addresses = 'localhost,100.75.18.74'` (this PC's Tailscale IP)
+- `.pgdata/pg_hba.conf`: `host claude_board cb 100.78.139.58/32 trust` (the MacBook)
+
+Both live in the cluster, not the repo: a recreated `.pgdata` needs them again. On the Mac,
+`~/Work/claude-board` holds a copy of the CLI (`pnpm i --prod`), and `~/.zshrc` sets PATH and
+`CB_DATABASE_URL=postgres://cb@100.75.18.74:5434/claude_board`. The deny hook is in the Mac's
+`~/.claude/settings.json` too. After changing `cli/`, `server/db.ts`, `server/rpc.ts` or `hooks/`, copy them again.
+
+If this PC is asleep, `cb` on the Mac fails within 5 seconds with "board unreachable" and the
+session keeps working.
+
 ## Troubleshooting
 
 - **`cb: command not found`** after setup: open a new terminal. PATH changes only reach new shells.
