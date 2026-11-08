@@ -47,7 +47,7 @@ those answers. Claude finds the board easier to update than to skip.
 ## Constraints
 
 - Runs on Ahmed's Windows 11 PC (`shaltoot`). Node 24.21 (Volta), pnpm, bun available.
-- Postgres **16** service already running on **port 5433** (PG15 on 5432, not used).
+- Postgres **16**: a private cluster in `.pgdata/` on **port 5434** (trust auth), started on demand by the app. (Changed at build time: the existing services' postgres password was unavailable.)
   `psql` is at `C:\Program Files\PostgreSQL\16\bin\psql.exe`, not on PATH.
   Database: `claude_board`, schema `cb`. Connection string lives in `.env`
   (`DATABASE_URL`); Ahmed supplies the `postgres` password at setup.
