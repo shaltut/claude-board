@@ -23,6 +23,8 @@ On top of that:
    `cb ask <project> "<q>" -o ... --as W2@macbook --reply-to macbook:<worker pane id>`
 6. Questions you would put to Ahmed go on the board with options and explanations:
    `cb ask <project> "<question>" -o "<Label (Recommended)>=<why>" -o "<Label>=<tradeoff>" -c "<context>"`
+   Options are required: Ahmed answers by clicking. Only a question with no possible choices (a fact,
+   a URL, a name) may go as `--free`.
    Then go back to managing the other sessions.
 7. When a worker finishes, check its `cb done` has a summary and links. If not, add them.
 8. Keep running. Waiting on Ahmed is never a reason to stop: his answers arrive as [Claude Board] messages.

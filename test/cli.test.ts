@@ -96,8 +96,8 @@ test('unknown command exits 1', async () => {
 
 test('--reply-to sets where the answer goes; --as alone does not use my pane', async () => {
   const sql = await db();
-  cb(['ask', 'demo', 'for a worker?', '--as', 'W2@mac', '--reply-to', 'macbook:w1:p3'], { HERDR_PANE_ID: 'orchpane' });
-  cb(['ask', 'demo', 'no target', '--as', 'W2@mac'], { HERDR_PANE_ID: 'orchpane' });
+  cb(['ask', 'demo', 'for a worker?', '--free', '--as', 'W2@mac', '--reply-to', 'macbook:w1:p3'], { HERDR_PANE_ID: 'orchpane' });
+  cb(['ask', 'demo', 'no target', '--free', '--as', 'W2@mac'], { HERDR_PANE_ID: 'orchpane' });
   const rows = await sql`select reply_to from cb.questions order by id`;
   assert.deepEqual(rows[0].reply_to, { machine: 'macbook', pane: 'w1:p3' });
   assert.equal(rows[1].reply_to, null);
@@ -161,4 +161,16 @@ test('cb huddle: open, say, add, show, close; cb huddles lists it', async () => 
   assert.equal(cb(['huddle', 'close', '1', 'indeterminate'], as).out, 'huddle #1 closed');
   assert.match(cb(['huddles', 'demo']).out, /huddle #1 \[closed\] Hijri dates \(task #1\) .* 4 lines\n  outcome: indeterminate/);
   assert.match(cb(['huddle', 'say', '1', 'late'], as).err, /huddle #1 is closed/);
+});
+
+test('cb ask needs options (Ahmed answers by clicking); --free allows an open question', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'seed')`;
+  const r = cb(['ask', 'demo', 'Shall W4 draft the rows or will you?']);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /give Ahmed options to click: -o "Label \(Recommended\)=why" -o "Label=tradeoff"/);
+  assert.equal(cb(['ask', 'demo', 'What is the NPHIES sandbox URL?', '--free']).code, 0);
+  assert.equal(cb(['ask', 'demo', 'Who drafts?', '-o', 'W4 drafts (Recommended)=fast', '-o', 'Ahmed writes=his wording']).code, 0);
+  const [{ n }] = await sql`select count(*)::int as n from cb.questions`;
+  assert.equal(n, 2);
 });

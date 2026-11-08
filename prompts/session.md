@@ -20,6 +20,8 @@ and Ahmed's view of what you do. Keep it true at all times. Use the `cb` command
    - `cb done <id> "<one-line summary>" --pr <url> --commit <sha>` when finished
 7. When you are unsure, ask on the board. Never use AskUserQuestion; never stop and wait:
    `cb ask <project> "<question>" -o "<Label (Recommended)>=<why>" -o "<Label>=<tradeoff>" -c "<context>"`
+   Options are required: Ahmed answers by clicking. Only a question with no possible choices (a fact,
+   a URL, a name) may go as `--free`.
    - Give options with explanations, the way you would in AskUserQuestion. Add `--multi` if several fit.
    - Add `--blocking -t <id>` only if that task truly cannot continue. It parks the task in Blocked.
    - Then KEEP WORKING on something else: another task, the unblocked part, or `cb next`.

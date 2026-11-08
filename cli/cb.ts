@@ -20,7 +20,7 @@ const HELP = `cb — Claude Board (http://localhost:4747)
   cb done <id> "summary" [--pr x] [--commit x] [--branch x] [--link k=v]
   cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x]
   cb log <project> "what happened" [-t id]
-  cb ask <project> "question" [-o "Label=why"]... [--multi] [-c "context"] [--blocking -t id]
+  cb ask <project> "question" -o "Label (Recommended)=why" -o "Label=tradeoff"... [--multi] [-c "context"] [--blocking -t id] [--free: no options]
   cb tell <session> "<msg>"                  message one session; it arrives in that session by itself
   cb huddle open "<topic>" <session>... [-t id]   discussion group with other sessions (same project)
   cb huddle say|add|close|show <id> ...      talk / add members / close "summary" / read the thread
@@ -41,7 +41,7 @@ const OPTIONS = {
   link: { type: 'string', multiple: true }, pr: { type: 'string' }, commit: { type: 'string' }, branch: { type: 'string' },
   title: { type: 'string' }, assignee: { type: 'string' }, project: { type: 'string' },
   task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
-  multi: { type: 'boolean' }, blocking: { type: 'boolean' }, context: { type: 'string', short: 'c' },
+  multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, context: { type: 'string', short: 'c' },
   'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' },
 } as const;
 
@@ -290,6 +290,9 @@ async function run(): Promise<unknown> {
     }
     case 'ask': {
       need(2, 'ask <project> "question"');
+      if (!o.option && !o.free)
+        throw new Error('give Ahmed options to click: -o "Label (Recommended)=why" -o "Label=tradeoff" (2-4 of them). ' +
+          'Only a question with no possible choices (a fact, a URL, a name) goes as --free.');
       const reply_to = replyTo();
       const id = await callFn('ask', { project: args[0], body: args.slice(1).join(' '), options: o.option ? options() : null,
         multi: !!o.multi, blocking: !!o.blocking, task_id: o.task ?? null, context: o.context ?? null, reply_to, actor });
