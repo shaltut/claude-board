@@ -298,3 +298,24 @@ test('huddles: open, add, say reach members only, once; close; admin and project
   const [{ l }] = await sql`select cb.huddles_list('ihop') as l`;
   assert.deepEqual(l.map((r: any) => [r.id, r.status, r.members.length, r.messages]), [[1, 'closed', 3, 4]]);
 });
+
+test('an answer reaches the asker and a copy reaches the project orchestrator, once', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
+  await sql`select cb.task_add(project => 'board', title => 'seed2')`;
+  for (const [m, p, a, pr] of [['pc', 'w2:p2', 'orch@shaltoot', 'ihop'], ['mac', 'w1:p3', 'W2@macbook', 'ihop'], ['pc', 'w3:pA', 'orch@pc2', 'board']]) {
+    await sql`select cb.iam(${m}, ${p}, ${a}, ${pr})`; await sql`select cb.inbox(${m}, ${p}, 0)`;
+  }
+  await sql`select cb.ask(project => 'ihop', body => 'Merge #2786 now?', reply_to => ${sql.json({ machine: 'mac', pane: 'w1:p3' })}, task_id => '1', actor => 'W2@macbook')`;
+  await sql`select cb.ask(project => 'ihop', body => 'my own q', reply_to => ${sql.json({ machine: 'pc', pane: 'w2:p2' })}, actor => 'orch@shaltoot')`;
+  await sql`select cb.answer('1', 'Merge now, owe the rest')`;
+  await sql`select cb.answer('2', 'yes')`;
+  const box = async (m: string, p: string) => (await sql`select cb.inbox(${m}, ${p}, 0) as i`)[0].i;
+  const orch = await box('pc', 'w2:p2');
+  assert.deepEqual(orch.answer_copies.map((a: any) => [a.id, a.asked_by, a.answer, a.body, a.task_id]),
+    [[1, 'W2@macbook', 'Merge now, owe the rest', 'Merge #2786 now?', 1]], 'copy of the worker\'s answer, not of its own');
+  assert.equal((await box('mac', 'w1:p3')).answer_copies.length, 0, 'workers get their own answer, no copies');
+  assert.equal((await box('pc', 'w3:pA')).answer_copies.length, 0, 'other projects\' orchestrators get nothing');
+  await sql`select cb.broadcast_seen('pc', 'w2:p2', ${orch.answer_copies.at(-1).event_id})`;
+  assert.equal((await box('pc', 'w2:p2')).answer_copies.length, 0);
+});

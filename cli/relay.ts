@@ -74,6 +74,9 @@ function format(i: any): string {
   }
   for (const a of i.answers)
     lines.push(`Ahmed answered Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: ${a.answer}`, `  You asked: ${cut(a.body, 200)}`);
+  for (const c of i.answer_copies ?? [])
+    lines.push(`Ahmed answered ${c.asked_by}'s Q${c.id}${c.task_id ? ` (task #${c.task_id})` : ''}: ${c.answer}`,
+      `  They asked: ${cut(c.body, 200)}`, `  (copy for you as orchestrator; ${c.asked_by} gets it directly)`);
   for (const e of i.events) {
     const what = ({ note: 'noted on', done: 'closed', moved: 'moved', task_created: 'created for you' } as any)[e.kind] ?? 'edited';
     lines.push(`${e.actor} ${what} #${e.task_id} "${cut(e.title, 80)}" (now ${e.status}): ${cut(e.summary, 200)}`);
@@ -83,6 +86,7 @@ function format(i: any): string {
     lines.push(`New work in your project's Next: ${list}. You have nothing in progress: take it with \`cb next\`.`);
   }
   if (i.answers.length) lines.push('Act on these now. The answers are marked delivered.');
+  else if (i.answer_copies?.length) lines.push('The worker acts on it; update your plan, tasks or priorities if the answer changes them.');
   else if (i.messages.length || i.huddles?.length) lines.push('Act on this now if it needs you; a teammate wrote it, not Ahmed.');
   else if (i.events.length) lines.push('Act on this now (check `cb mine`).');
   else if (!i.next_work.length) lines.push('Follow it now if it applies to you.');
@@ -96,7 +100,8 @@ async function check() {
     do {
       again = false;
       const [{ i }] = await sql`select cb.inbox(${M}, ${PANE}, ${after}) as i`;
-      const read = [...i.broadcasts, ...i.messages, ...(i.huddles ?? [])].map((x: any) => Number(x.id));
+      const read = [...i.broadcasts, ...i.messages, ...(i.huddles ?? [])].map((x: any) => Number(x.id))
+        .concat((i.answer_copies ?? []).map((x: any) => Number(x.event_id)));
       if (i.answers.length || i.events.length || read.length || i.next_work.length) {
         await post(format(i));
         if (read.length) await sql`select cb.broadcast_seen(${M}, ${PANE}, ${Math.max(...read)})`;

@@ -656,6 +656,12 @@ begin
                             from cb.events e
                            where e.kind = 'message' and e.data ->> 'to' = me and e.id > seen
                              and e.at > now() - interval '24 hours'), '[]'),
+    -- the orchestrator (orch@*, same convention as huddle admin) gets a copy of Ahmed's answers to its workers
+    'answer_copies', coalesce((select jsonb_agg(jsonb_build_object('event_id', e.id, 'id', q.id, 'task_id', q.task_id, 'asked_by', q.asked_by,
+                                                                   'body', q.body, 'answer', q.answer) order by e.id)
+                                 from cb.events e join cb.questions q on q.id = e.question_id
+                                where e.kind = 'answered' and (me like 'orch@%' or me = 'orch') and e.project = proj
+                                  and q.asked_by <> me and e.id > seen and e.at > now() - interval '24 hours'), '[]'),
     -- huddle lines for huddles I'm in; a member added later hears only from its own 'add' on
     'huddles', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'huddle', h.id, 'topic', h.topic, 'action', e.data ->> 'action',
                                                              'actor', e.actor, 'summary', e.summary) order by e.id)
