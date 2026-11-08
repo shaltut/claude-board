@@ -144,3 +144,21 @@ test('cb tell sends to one session and says whether it is live', async () => {
   const [e] = await sql`select actor, summary from cb.events where kind = 'message'`;
   assert.deepEqual([e.actor, e.summary], ['W1@test', 'take #19 next']);
 });
+
+test('cb huddle: open, say, add, show, close; cb huddles lists it', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'Hijri')`;
+  for (const [p, a] of [['w1:p3', 'W2@macbook'], ['w1:p4', 'W3@macbook'], ['w1:p5', 'W4@macbook']]) await sql`select cb.iam('mac', ${p}, ${a}, 'demo')`;
+  const as = { CB_ACTOR: 'W2@macbook' };
+  const o = cb(['huddle', 'open', 'Hijri dates', 'W3@macbook', '-t', '1'], as);
+  assert.equal(o.code, 0, o.err);
+  assert.equal(o.out, 'huddle #1 open with W3@macbook; talk with: cb huddle say 1 "..."');
+  assert.equal(cb(['huddle', 'say', '1', 'partial', 'dates?'], as).code, 0);
+  assert.equal(cb(['huddle', 'add', '1', 'W4@macbook'], as).out, 'huddle #1: added W4@macbook');
+  const s = cb(['huddle', 'show', '1']);
+  assert.match(s.out, /huddle #1 \[open\] Hijri dates \(task #1\) · demo · W2@macbook, W3@macbook, W4@macbook/);
+  assert.match(s.out, /W2@macbook: partial dates\?/);
+  assert.equal(cb(['huddle', 'close', '1', 'indeterminate'], as).out, 'huddle #1 closed');
+  assert.match(cb(['huddles', 'demo']).out, /huddle #1 \[closed\] Hijri dates \(task #1\) .* 4 lines\n  outcome: indeterminate/);
+  assert.match(cb(['huddle', 'say', '1', 'late'], as).err, /huddle #1 is closed/);
+});

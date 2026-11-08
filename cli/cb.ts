@@ -22,6 +22,9 @@ const HELP = `cb — Claude Board (http://localhost:4747)
   cb log <project> "what happened" [-t id]
   cb ask <project> "question" [-o "Label=why"]... [--multi] [-c "context"] [--blocking -t id]
   cb tell <session> "<msg>"                  message one session; it arrives in that session by itself
+  cb huddle open "<topic>" <session>... [-t id]   discussion group with other sessions (same project)
+  cb huddle say|add|close|show <id> ...      talk / add members / close "summary" / read the thread
+  cb huddles [project]                       open huddles (and the last week's closed ones)
   cb sessions [project]                      every session: relay, what it holds, who went quiet (orchestrator)
   cb session <name>                          one session: open tasks, questions, last 10 actions
   cb pending [project]                       answered questions to deliver (orchestrator)
@@ -142,6 +145,46 @@ async function run(): Promise<unknown> {
       const now: any = await callFn('task_tag', { id: args[0], actor,
         add: tags.filter((x) => !x.startsWith('-')), remove: tags.filter((x) => x.startsWith('-')).map((x) => x.slice(1)) });
       return { out: `#${args[0].replace(/^#/, '')} tags: ${now.length ? now.join(', ') : '(none)'}`, json: now };
+    }
+    case 'huddles': {
+      const rows: any = await callFn('huddles_list', { project: args[0] ?? sessionProject ?? null });
+      const out = rows.map((h: any) => `huddle #${h.id} [${h.status}] ${h.topic}${h.task_id ? ` (task #${h.task_id})` : ''} · ${h.members.join(', ')} · ${h.messages} lines` +
+        (h.summary ? `\n  outcome: ${h.summary}` : h.last ? `\n  last: ${h.last.actor}: ${h.last.summary}` : ''));
+      return { out: out.join('\n') || 'no huddles', json: rows };
+    }
+    case 'huddle': {
+      const sub = args[0];
+      if (sub === 'open') {
+        need(2, 'huddle open "<topic>" <session>... [-t task]   e.g. cb huddle open "Hijri dates" W3@macbook -t 59');
+        if (o.task) await guard(o.task);
+        const id = await callFn('huddle_open', { topic: args[1], members: args.slice(2), task: o.task ?? null, actor });
+        return { out: `huddle #${id} open with ${args.slice(2).join(', ') || 'nobody yet'}; talk with: cb huddle say ${id} "..."`, json: id };
+      }
+      need(2, 'huddle say|add|close|show <id> ...');
+      const id = args[1].replace(/^#/, '');
+      if (sub === 'say') {
+        need(3, 'huddle say <id> "<message>"');
+        await callFn('huddle_say', { id, message: args.slice(2).join(' '), actor });
+        return { out: `said in huddle #${id}` };
+      }
+      if (sub === 'add') {
+        need(3, 'huddle add <id> <session>...');
+        const added: any = await callFn('huddle_add', { id, members: args.slice(2), actor });
+        return { out: `huddle #${id}: added ${added.join(', ') || 'nobody new'}`, json: added };
+      }
+      if (sub === 'close') {
+        await callFn('huddle_close', { id, summary: args.slice(2).join(' ') || null, actor });
+        return { out: `huddle #${id} closed` };
+      }
+      if (sub === 'show') {
+        const [h] = await sql`select * from cb.huddles where id = ${Number(id)}`;
+        if (!h) throw new Error(`no huddle #${id}`);
+        const lines = await sql`select at, actor, summary from cb.events where kind = 'huddle' and (data ->> 'huddle')::bigint = ${Number(id)} order by id`;
+        const members = await sql`select actor from cb.huddle_members where huddle_id = ${Number(id)} order by added_at`;
+        const head = `huddle #${h.id} [${h.status}] ${h.topic}${h.task_id ? ` (task #${h.task_id})` : ''} · ${h.project} · ${members.map((m: any) => m.actor).join(', ')}`;
+        return { out: [head, ...lines.map((l: any) => `  ${new Date(l.at).toISOString().slice(11, 16)} ${l.actor}: ${l.summary}`)].join('\n'), json: { huddle: h, lines } };
+      }
+      throw new Error(`unknown huddle command "${sub}": open, say, add, close, show`);
     }
     case 'tell': {
       need(2, 'tell <session> "<message>"   e.g. cb tell W2@macbook "take #19 next"');

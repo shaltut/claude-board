@@ -90,3 +90,19 @@ test('GET /api/sessions lists sessions for a project', async () => {
   const rows = await res.json();
   assert.deepEqual(rows.map((r: any) => [r.actor, r.doing.length]), [['W6@macbook', 1]]);
 });
+
+test('GET /api/huddles lists huddles; /api/huddles/:id has the thread; Today leaves huddle chatter out', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
+  await sql`select cb.iam('pc', 'w2:p2', 'orch', 'ihop')`;
+  await sql`select cb.iam('mac', 'w1:p3', 'W2@macbook', 'ihop')`;
+  await sql`select cb.huddle_open('Hijri dates', ${sql.json(['W2@macbook'])}, '1', 'orch')`;
+  await sql`select cb.huddle_say('1', 'indeterminate?', 'W2@macbook')`;
+  const list = await (await app.request('/api/huddles?project=ihop')).json();
+  assert.deepEqual(list.map((h: any) => [h.id, h.topic, h.members]), [[1, 'Hijri dates', ['orch', 'W2@macbook']]]);
+  const one = await (await app.request('/api/huddles/1')).json();
+  assert.deepEqual(one.lines.map((l: any) => [l.actor, l.summary]), [['orch', 'opened: Hijri dates'], ['W2@macbook', 'indeterminate?']]);
+  assert.equal((await app.request('/api/huddles/99')).status, 404);
+  const today = await (await app.request('/api/today?project=ihop')).json();
+  assert.equal(today.events.filter((e: any) => e.kind === 'huddle').length, 0);
+});

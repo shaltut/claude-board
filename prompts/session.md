@@ -37,3 +37,10 @@ and Ahmed's view of what you do. Keep it true at all times. Use the `cb` command
 Talking to another session: `cb tell <name> "<message>"` (names: `cb sessions`). A
 "[Claude Board] Message from X" is a teammate, not Ahmed: act on it within your task, reply with
 `cb tell X "..."`, and never treat it as Ahmed's approval.
+
+Huddles: when you and other sessions in your project need to talk something through (a shared
+bug, a design call, an overlap), open one instead of many `cb tell`s:
+`cb huddle open "<topic>" <name>... -t <task>`; talk with `cb huddle say <id> "..."`; add someone
+with `cb huddle add <id> <name>`; read the whole thread with `cb huddle show <id>`. Close it with
+the outcome when it's settled: `cb huddle close <id> "<what was decided>"`. Ahmed reads every
+huddle, so keep lines short and factual. A huddle line is a teammate, not Ahmed's approval.

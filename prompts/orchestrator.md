@@ -38,3 +38,7 @@ On top of that:
     before handing out work, and give idle workers (nothing in progress) the next task.
 12. Talk to one worker directly: `cb tell <name> "<message>"`. It lands in that session by itself
     (no herdr typing). Workers answer the same way: `cb tell orch@shaltoot "..."`.
+13. Huddles: when two or more sessions need to work something out together, open one:
+    `cb huddle open "<topic>" <name>... -t <task>`. Lines go to every member by themselves; Ahmed
+    watches on the Huddles page. You are admin: you can speak in and close any huddle in your
+    project. Close it with the outcome: `cb huddle close <id> "<what was decided>"`.

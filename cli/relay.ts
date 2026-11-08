@@ -63,6 +63,15 @@ function format(i: any): string {
   const lines = ['[Claude Board]'];
   for (const b of i.broadcasts) lines.push(`Broadcast from ${b.actor}${b.project ? ` to ${b.project}` : ' to everyone'}: ${b.summary}`);
   for (const m of i.messages) lines.push(`Message from ${m.actor}: ${m.summary}`, `  (reply: cb tell ${m.actor} "...")`);
+  for (const h of i.huddles ?? []) {
+    const line = h.action === 'say' ? `${h.actor}: ${h.summary}`
+      : h.action === 'open' ? `${h.actor} opened it and added you` : `${h.actor} ${h.summary}`;
+    lines.push(`Huddle #${h.huddle} "${cut(h.topic, 60)}": ${line}`);
+  }
+  if (i.huddles?.length) {
+    const open = [...new Set(i.huddles.filter((h: any) => h.action !== 'close').map((h: any) => h.huddle))];
+    if (open.length) lines.push(`  (reply: cb huddle say ${open[0]} "..."; whole thread: cb huddle show ${open[0]})`);
+  }
   for (const a of i.answers)
     lines.push(`Ahmed answered Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: ${a.answer}`, `  You asked: ${cut(a.body, 200)}`);
   for (const e of i.events) {
@@ -74,7 +83,7 @@ function format(i: any): string {
     lines.push(`New work in your project's Next: ${list}. You have nothing in progress: take it with \`cb next\`.`);
   }
   if (i.answers.length) lines.push('Act on these now. The answers are marked delivered.');
-  else if (i.messages.length) lines.push('Act on this now.');
+  else if (i.messages.length || i.huddles?.length) lines.push('Act on this now if it needs you; a teammate wrote it, not Ahmed.');
   else if (i.events.length) lines.push('Act on this now (check `cb mine`).');
   else if (!i.next_work.length) lines.push('Follow it now if it applies to you.');
   return lines.join('\n');
@@ -87,12 +96,12 @@ async function check() {
     do {
       again = false;
       const [{ i }] = await sql`select cb.inbox(${M}, ${PANE}, ${after}) as i`;
-      const read = [...i.broadcasts, ...i.messages].map((x: any) => x.id);
+      const read = [...i.broadcasts, ...i.messages, ...(i.huddles ?? [])].map((x: any) => Number(x.id));
       if (i.answers.length || i.events.length || read.length || i.next_work.length) {
         await post(format(i));
         if (read.length) await sql`select cb.broadcast_seen(${M}, ${PANE}, ${Math.max(...read)})`;
         for (const a of i.answers) await sql`select cb.answer_delivered(${String(a.id)}, ${i.actor ?? `${PANE}@${M}`}, ${'relay'})`;
-        log(`pushed ${i.messages.length} messages, ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next`);
+        log(`pushed ${i.huddles?.length ?? 0} huddle lines, ${i.messages.length} messages, ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next`);
       }
       after = Number(i.last_event);
     } while (again);

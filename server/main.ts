@@ -42,6 +42,11 @@ app.get('/api/today', async (c) => {
 });
 app.get('/api/last-seen', async (c) => c.json(await q.lastSeen()));
 app.get('/api/sessions', async (c) => c.json(await q.sessions(opt(c.req.query('project')))));
+app.get('/api/huddles', async (c) => c.json(await q.huddles(opt(c.req.query('project')))));
+app.get('/api/huddles/:id', async (c) => {
+  const r = await q.huddle(Number(c.req.param('id')));
+  return r ? c.json(r) : c.json({ ok: false, error: 'not found' }, 404);
+});
 
 // Live updates: one LISTEN connection fanned out to every open page.
 type Client = (table: string) => void;

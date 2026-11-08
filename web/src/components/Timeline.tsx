@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleDot, HelpCircle, MessageSquareReply, PencilLine, Plus, Send, StickyNote, XCircle, Megaphone, MessageCircle } from 'lucide-react'
+import { CheckCircle2, CircleDot, HelpCircle, MessageSquareReply, PencilLine, Plus, Send, StickyNote, XCircle, Megaphone, MessageCircle, MessagesSquare } from 'lucide-react'
 import type { CbEvent, Status } from '@/lib/api'
 import { clock, day, STATUS } from '@/lib/format'
 import { go } from '@/lib/route'
@@ -7,7 +7,7 @@ import { ActorChip, ProjectDot, StatusDot, TaskId } from './Chips'
 
 const ICON: Record<CbEvent['kind'], typeof Plus> = {
   task_created: Plus, moved: CircleDot, updated: PencilLine, done: CheckCircle2, note: StickyNote,
-  asked: HelpCircle, answered: MessageSquareReply, delivered: Send, withdrawn: XCircle, broadcast: Megaphone, message: MessageCircle,
+  asked: HelpCircle, answered: MessageSquareReply, delivered: Send, withdrawn: XCircle, broadcast: Megaphone, message: MessageCircle, huddle: MessagesSquare,
 }
 
 /** The DB's default move summary is "next → in_progress"; show it with the board's labels. */

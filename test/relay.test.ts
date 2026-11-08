@@ -94,6 +94,13 @@ test('relay pushes an answer into its session and marks it delivered', { timeout
     await sql`select cb.task_add(project => 'demo', title => 'nudge', actor => 'orch')`; // any change wakes the relay
     await new Promise((r) => setTimeout(r, 1200));
     assert.equal(inbox.got.length, 2, 'message must not be pushed twice');
+    // a huddle line from another member is pushed too
+    await sql`select cb.iam('testbox', 'p9', ${me}, 'demo')`;
+    await sql`select cb.iam('pc', 'w2:p2', 'orch', 'demo')`;
+    await sql`select cb.huddle_open('rollout', ${sql.json([me])}, null, 'orch', 'demo')`;
+    await sql`select cb.huddle_say('1', 'ship Monday?', 'orch')`;
+    for (let i = 0; i < 50 && !/ship Monday/.test(inbox.got.at(-1)?.message.content ?? ''); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.match(inbox.got.at(-1).message.content, /Huddle #1 "rollout": orch: ship Monday\?[\s\S]*cb huddle say 1/);
   } finally {
     await inbox.close(); // session gone → relay exits on its own
     await Promise.race([exited, new Promise((r) => setTimeout(r, 8000))]);
@@ -248,4 +255,46 @@ test('tell: a direct message reaches only its recipient, once; unknown names are
   assert.equal(e.project, 'ihop');
   assert.equal(e.data.to, 'W2@macbook');
   await assert.rejects(sql`select cb.tell('nobody@x', 'hi', 'orch')`, /unknown session nobody@x/);
+});
+
+test('huddles: open, add, say reach members only, once; close; admin and project rules', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'SC64 kit')`;
+  await sql`select cb.task_add(project => 'board', title => 'seed')`;
+  const bind = [['pc', 'w2:p2', 'orch@shaltoot', 'ihop'], ['mac', 'w1:p3', 'W2@macbook', 'ihop'], ['mac', 'w1:p4', 'W3@macbook', 'ihop'],
+                ['mac', 'w1:p5', 'W4@macbook', 'ihop'], ['pc', 'w3:pA', 'board-dev', 'board']];
+  for (const [m, p, a, pr] of bind) { await sql`select cb.iam(${m}, ${p}, ${a}, ${pr})`; await sql`select cb.inbox(${m}, ${p}, 0)`; }
+  const box = async (m: string, p: string) => (await sql`select cb.inbox(${m}, ${p}, 0) as i`)[0].i.huddles;
+
+  const [{ h }] = await sql`select cb.huddle_open('Hijri dates', ${sql.json(['W3@macbook'])}, '1', 'W2@macbook') as h`;
+  assert.equal(Number(h), 1);
+  assert.deepEqual((await box('mac', 'w1:p4')).map((x: any) => [x.action, x.actor, x.topic]), [['open', 'W2@macbook', 'Hijri dates']]);
+  assert.equal((await box('mac', 'w1:p3')).length, 0, 'the sender does not get its own line');
+  assert.equal((await box('mac', 'w1:p5')).length, 0, 'not a member yet');
+
+  await sql`select cb.huddle_say('1', 'partial dates: indeterminate?', 'W3@macbook')`;
+  await sql`select cb.huddle_add('1', ${sql.json(['W4@macbook'])}, 'W3@macbook')`;
+  const w4 = await box('mac', 'w1:p5');
+  assert.deepEqual(w4.map((x: any) => x.action), ['add'], 'a new member hears they were added, not the backlog');
+  assert.match(w4[0].summary, /W4@macbook/);
+  const w2 = await box('mac', 'w1:p3');
+  assert.deepEqual(w2.map((x: any) => [x.action, x.summary]), [['say', 'partial dates: indeterminate?'], ['add', 'added W4@macbook']]);
+  await sql`select cb.broadcast_seen('mac', 'w1:p3', ${w2.at(-1).id})`;
+  assert.equal((await box('mac', 'w1:p3')).length, 0);
+
+  // transcript lands on the task; members outside the project or unknown are refused; non-members can't talk
+  const [{ n }] = await sql`select count(*)::int as n from cb.events where kind = 'huddle' and task_id = 1 and project = 'ihop'`;
+  assert.equal(n, 3);
+  await assert.rejects(sql`select cb.huddle_add('1', ${sql.json(['board-dev'])}, 'W2@macbook')`, /board-dev works in board, not ihop/);
+  await assert.rejects(sql`select cb.huddle_add('1', ${sql.json(['ghost'])}, 'W2@macbook')`, /unknown session ghost/);
+  await assert.rejects(sql`select cb.huddle_say('1', 'hi', 'board-dev')`, /board-dev is not in huddle #1/);
+
+  // the orchestrator is admin: it can speak in and close any huddle in its project
+  await sql`select cb.huddle_close('1', 'indeterminate; W2 ships it', 'orch@shaltoot')`;
+  const [x] = await sql`select status, summary from cb.huddles where id = 1`;
+  assert.deepEqual({ ...x }, { status: 'closed', summary: 'indeterminate; W2 ships it' });
+  assert.equal((await box('mac', 'w1:p4')).at(-1).action, 'close');
+  await assert.rejects(sql`select cb.huddle_say('1', 'late', 'W2@macbook')`, /huddle #1 is closed/);
+  const [{ l }] = await sql`select cb.huddles_list('ihop') as l`;
+  assert.deepEqual(l.map((r: any) => [r.id, r.status, r.members.length, r.messages]), [[1, 'closed', 3, 4]]);
 });

@@ -10,6 +10,7 @@ import { Board } from '@/views/Board'
 import { Backlog } from '@/views/Backlog'
 import { History } from '@/views/History'
 import { Sessions } from '@/views/Sessions'
+import { Huddles } from '@/views/Huddles'
 
 const typing = (e: KeyboardEvent) => {
   const el = e.target as HTMLElement
@@ -27,7 +28,7 @@ export default function App() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setMenu((m) => !m); return }
       if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return
       const i = Number(e.key) - 1
-      if (i >= 0 && i < VIEWS.length) go({ view: VIEWS[i], task: undefined, actor: undefined })
+      if (i >= 0 && i < VIEWS.length) go({ view: VIEWS[i], task: undefined, actor: undefined, huddle: undefined })
       else if (e.key === 'c') { e.preventDefault(); setNewTask(true) }
       else if (e.key === '/') { e.preventDefault(); setMenu(true) }
     }
@@ -35,7 +36,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  const View = { today: Today, questions: Today, board: Board, backlog: Backlog, sessions: Sessions, history: History }[route.view]
+  const View = { today: Today, questions: Today, board: Board, backlog: Backlog, sessions: Sessions, huddles: Huddles, history: History }[route.view]
 
   return (
     <div className="min-h-dvh">

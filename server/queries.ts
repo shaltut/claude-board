@@ -31,11 +31,12 @@ export function questions(project?: string, status?: string) {
     order by (status = 'open') desc, blocking desc, created_at`;
 }
 
-export function events(f: { project?: string; actor?: string; kind?: string; since?: string; before?: string; q?: string; limit?: number }) {
+export function events(f: { project?: string; actor?: string; kind?: string; notKind?: string; since?: string; before?: string; q?: string; limit?: number }) {
   const kinds = f.kind ? f.kind.split(',') : null;
   return sql`select * from cb.events where true ${proj(f.project)}
     ${f.actor ? sql`and actor = ${f.actor}` : sql``}
     ${kinds ? sql`and kind in ${sql(kinds)}` : sql``}
+    ${f.notKind ? sql`and kind <> ${f.notKind}` : sql``}
     ${f.since ? sql`and at > ${f.since}` : sql``}
     ${f.before ? sql`and at < ${f.before}` : sql``}
     ${f.q ? sql`and summary ilike ${'%' + f.q + '%'}` : sql``}
@@ -48,7 +49,7 @@ export async function today(project: string | undefined, since: string) {
         (select count(*)::int from cb.tasks where status = 'done' and done_at > ${since} ${proj(project)}) as done,
         (select count(*)::int from cb.tasks where status = 'in_progress' ${proj(project)}) as active,
         (select count(*)::int from cb.tasks where status = 'blocked' ${proj(project)}) as blocked`,
-    events({ project, since, limit: 500 }),
+    events({ project, since, limit: 500, notKind: 'huddle' }), // huddle chatter lives on its task and the Huddles page
   ]);
   return { since, counts, events: evs };
 }
@@ -61,4 +62,18 @@ export async function lastSeen() {
 export async function sessions(project?: string) {
   const [{ o }] = await sql`select cb.sessions_overview(${project ?? null}) as o`;
   return o;
+}
+
+export async function huddles(project?: string) {
+  const [{ l }] = await sql`select cb.huddles_list(${project ?? null}) as l`;
+  return l;
+}
+
+export async function huddle(id: number) {
+  const [h] = await sql`select h.*, (select coalesce(json_agg(m.actor order by m.added_at), '[]') from cb.huddle_members m where m.huddle_id = h.id) as members
+                         from cb.huddles h where h.id = ${id}`;
+  if (!h) return null;
+  const lines = await sql`select id, at, actor, summary, data ->> 'action' as action from cb.events
+                           where kind = 'huddle' and (data ->> 'huddle')::bigint = ${id} order by id`;
+  return { ...h, lines };
 }

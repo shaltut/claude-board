@@ -14,7 +14,7 @@ create table if not exists cb.projects (
 );
 
 alter table cb.events drop constraint if exists events_kind_check;
-alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message'));
+alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle'));
 
 -- Old or alternative names for a project: "tawuniya" → ihop. New work through an alias gets its tags.
 create table if not exists cb.project_aliases (
@@ -131,6 +131,13 @@ drop function if exists cb.inbox cascade;
 drop function if exists cb.broadcast cascade;
 drop function if exists cb.sessions_overview cascade;
 drop function if exists cb.tell cascade;
+drop function if exists cb.huddle_open cascade;
+drop function if exists cb.huddle_add cascade;
+drop function if exists cb.huddle_say cascade;
+drop function if exists cb.huddle_close cascade;
+drop function if exists cb.huddles_list cascade;
+drop function if exists cb._huddle_post cascade;
+drop function if exists cb._huddle_join cascade;
 drop function if exists cb.broadcast_seen cascade;
 drop function if exists cb._broadcasts cascade;
 
@@ -649,6 +656,14 @@ begin
                             from cb.events e
                            where e.kind = 'message' and e.data ->> 'to' = me and e.id > seen
                              and e.at > now() - interval '24 hours'), '[]'),
+    -- huddle lines for huddles I'm in; a member added later hears only from its own 'add' on
+    'huddles', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'huddle', h.id, 'topic', h.topic, 'action', e.data ->> 'action',
+                                                             'actor', e.actor, 'summary', e.summary) order by e.id)
+                           from cb.events e
+                           join cb.huddles h on h.id = (e.data ->> 'huddle')::bigint
+                           join cb.huddle_members hm on hm.huddle_id = h.id and hm.actor = me
+                          where e.kind = 'huddle' and e.actor <> me and e.id > seen and e.id >= hm.from_event
+                            and e.at > now() - interval '24 hours'), '[]'),
     'answers', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'task_id', q.task_id, 'project', q.project,
                                                              'body', q.body, 'answer', q.answer) order by q.id)
                            from cb.questions q
@@ -748,4 +763,129 @@ begin
   insert into cb.events (actor, project, kind, summary, data) values (a, p, 'message', trim(message), jsonb_build_object('to', to_actor))
   returning cb.events.id into new_id;
   return new_id;
+end $$;
+
+-- Huddles: a discussion group of sessions on one topic (optionally one task). Lines are events
+-- (kind 'huddle'), so they carry the task id and land on that task's timeline; the relay pushes each
+-- line to the other members.
+create table if not exists cb.huddles (
+  id         bigint generated always as identity primary key,
+  project    text not null references cb.projects(slug) on update cascade,
+  topic      text not null,
+  task_id    bigint references cb.tasks(id) on delete set null,
+  opened_by  text not null,
+  status     text not null default 'open' check (status in ('open', 'closed')),
+  summary    text,
+  opened_at  timestamptz not null default now(),
+  closed_at  timestamptz
+);
+create table if not exists cb.huddle_members (
+  huddle_id  bigint not null references cb.huddles(id) on delete cascade,
+  actor      text not null,
+  added_by   text not null,
+  from_event bigint not null default 0, -- the line that added them: they're pushed lines from here on
+  added_at   timestamptz not null default now(),
+  primary key (huddle_id, actor)
+);
+create or replace trigger huddles_notify after insert or update or delete on cb.huddles
+  for each statement execute function cb.notify();
+
+-- ponytail: admin = Ahmed or the orchestrator by naming convention (orch@<machine>); a roles table if that stops holding.
+create function cb._huddle_post(h cb.huddles, action text, message text, a text) returns bigint language plpgsql as $$
+declare new_id bigint;
+begin
+  if h.status = 'closed' then raise exception 'huddle #% is closed', h.id; end if;
+  if not (a = 'ahmed' or a like 'orch@%' or a = 'orch'
+          or exists (select 1 from cb.huddle_members m where m.huddle_id = h.id and m.actor = a)) then
+    raise exception '% is not in huddle #% (members can talk; cb huddle show %)', a, h.id, h.id;
+  end if;
+  insert into cb.events (actor, project, task_id, kind, summary, data)
+  values (a, h.project, h.task_id, 'huddle', message, jsonb_build_object('huddle', h.id, 'action', action))
+  returning id into new_id;
+  return new_id;
+end $$;
+
+-- Add members (must be known sessions of the huddle's project). Returns the names actually added.
+create function cb._huddle_join(h cb.huddles, members jsonb, a text, from_event bigint) returns text[] language plpgsql as $$
+declare who text; p text; added text[] := '{}';
+begin
+  for who in select trim(x) from jsonb_array_elements_text(coalesce(members, '[]')) x where trim(x) <> '' loop
+    select s.project into p from cb.sessions s where s.actor = who order by s.last_seen desc limit 1;
+    if not found then
+      if not exists (select 1 from cb.events e where e.actor = who) and not exists (select 1 from cb.tasks t where t.assignee = who)
+        then raise exception 'unknown session %: see cb sessions for names', who; end if;
+    elsif p is distinct from h.project then
+      raise exception '% works in %, not %: huddles stay inside one project', who, coalesce(p, 'no project'), h.project;
+    end if;
+    insert into cb.huddle_members (huddle_id, actor, added_by, from_event) values (h.id, who, a, from_event)
+    on conflict do nothing;
+    if found then added := added || who; end if;
+  end loop;
+  return added;
+end $$;
+
+create function cb.huddle_open(topic text, members jsonb default '[]', task text default null, actor text default null, project text default null)
+returns bigint language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); tid bigint := case when task is null then null else cb.norm_id(task) end; p text; h cb.huddles; ev bigint;
+begin
+  if coalesce(trim(topic), '') = '' then raise exception 'topic is required'; end if;
+  if tid is not null then
+    select t.project into p from cb.tasks t where t.id = tid;
+    if not found then raise exception 'no task #%', tid; end if;
+  end if;
+  p := coalesce(p, cb.read_project(project), (select s.project from cb.sessions s where s.actor = a order by s.last_seen desc limit 1));
+  if p is null then raise exception 'which project? pass a task (-t) or bind this session (cb iam)'; end if;
+  insert into cb.huddles (project, topic, task_id, opened_by) values (p, trim(topic), tid, a) returning * into h;
+  insert into cb.huddle_members (huddle_id, actor, added_by) values (h.id, a, a);
+  ev := cb._huddle_post(h, 'open', 'opened: ' || h.topic, a);
+  perform cb._huddle_join(h, members, a, ev);
+  return h.id;
+end $$;
+
+create function cb.huddle_add(id text, members jsonb, actor text default null) returns text[] language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); h cb.huddles; ev bigint;
+begin
+  select * into h from cb.huddles x where x.id = cb.norm_id(id);
+  if not found then raise exception 'no huddle #%', id; end if;
+  ev := cb._huddle_post(h, 'add', 'added ' || (select string_agg(trim(x), ', ') from jsonb_array_elements_text(members) x), a);
+  return cb._huddle_join(h, members, a, ev);
+end $$;
+
+create function cb.huddle_say(id text, message text, actor text default null) returns bigint language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); h cb.huddles;
+begin
+  if coalesce(trim(message), '') = '' then raise exception 'message is required'; end if;
+  select * into h from cb.huddles x where x.id = cb.norm_id(id);
+  if not found then raise exception 'no huddle #%', id; end if;
+  return cb._huddle_post(h, 'say', trim(message), a);
+end $$;
+
+create function cb.huddle_close(id text, summary text default null, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); h cb.huddles; s text := nullif(trim(summary), '');
+begin
+  select * into h from cb.huddles x where x.id = cb.norm_id(id);
+  if not found then raise exception 'no huddle #%', id; end if;
+  perform cb._huddle_post(h, 'close', coalesce('closed: ' || s, 'closed'), a);
+  update cb.huddles x set status = 'closed', closed_at = now(), summary = s where x.id = h.id;
+end $$;
+
+-- Open huddles first, then the last week's closed ones.
+create function cb.huddles_list(project text default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb.read_project(project);
+begin
+  return coalesce((select jsonb_agg(jsonb_build_object(
+      'id', h.id, 'project', h.project, 'topic', h.topic, 'task_id', h.task_id, 'opened_by', h.opened_by, 'status', h.status,
+      'summary', h.summary, 'opened_at', h.opened_at, 'closed_at', h.closed_at,
+      'members', (select coalesce(jsonb_agg(m.actor order by m.added_at), '[]') from cb.huddle_members m where m.huddle_id = h.id),
+      'messages', (select count(*) from cb.events e where e.kind = 'huddle' and (e.data ->> 'huddle')::bigint = h.id),
+      'last', (select jsonb_build_object('actor', e.actor, 'summary', e.summary, 'at', e.at) from cb.events e
+                where e.kind = 'huddle' and (e.data ->> 'huddle')::bigint = h.id order by e.id desc limit 1))
+    order by h.status desc, h.opened_at desc)
+    from cb.huddles h
+   where (p is null or h.project = p) and (h.status = 'open' or h.closed_at > now() - interval '7 days')), '[]');
 end $$;
