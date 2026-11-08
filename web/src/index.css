@@ -1,0 +1,149 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/schibsted-grotesk";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Claude Board — "night shift handover".
+   Indigo night for the chrome, dawn amber reserved for what waits on Ahmed. */
+
+@theme inline {
+  --font-sans: 'Schibsted Grotesk Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --color-raised: var(--raised);
+
+  --color-dawn: var(--dawn);
+  --color-dawn-soft: var(--dawn-soft);
+  --color-dawn-ink: var(--dawn-ink);
+  --color-st-backlog: var(--st-backlog);
+  --color-st-next: var(--st-next);
+  --color-st-progress: var(--st-progress);
+  --color-st-blocked: var(--st-blocked);
+  --color-st-review: var(--st-review);
+  --color-st-done: var(--st-done);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+/* Light: paper and ink. */
+:root {
+  --radius: 0.5rem;
+  --background: #f5f6fa;
+  --foreground: #1b2033;
+  --card: #ffffff;
+  --card-foreground: #1b2033;
+  --raised: #eceef5;
+  --popover: #ffffff;
+  --popover-foreground: #1b2033;
+  --primary: #2b3566;
+  --primary-foreground: #f5f6fa;
+  --secondary: #e7e9f2;
+  --secondary-foreground: #1b2033;
+  --muted: #e7e9f2;
+  --muted-foreground: #5d6482;
+  --accent: #e3e6f2;
+  --accent-foreground: #1b2033;
+  --destructive: #c4412f;
+  --border: #dcdfeb;
+  --input: #d3d7e6;
+  --ring: #6f7fe0;
+
+  --dawn: #b9790a;
+  --dawn-soft: #fbf1dc;
+  --dawn-ink: #6b4500;
+  --st-backlog: #8a90a8;
+  --st-next: #5b6bd6;
+  --st-progress: #4b5fe0;
+  --st-blocked: #d4513f;
+  --st-review: #9a5bc9;
+  --st-done: #3f9a6c;
+}
+
+/* Dark: indigo night. */
+.dark {
+  --background: #141a2e;
+  --foreground: #e7e9f3;
+  --card: #1c2340;
+  --card-foreground: #e7e9f3;
+  --raised: #252d4f;
+  --popover: #1f2747;
+  --popover-foreground: #e7e9f3;
+  --primary: #c9d0ff;
+  --primary-foreground: #141a2e;
+  --secondary: #252d4f;
+  --secondary-foreground: #e7e9f3;
+  --muted: #212948;
+  --muted-foreground: #8c93b3;
+  --accent: #2a3358;
+  --accent-foreground: #e7e9f3;
+  --destructive: #f07a6a;
+  --border: #2a3256;
+  --input: #323b63;
+  --ring: #8ea2ff;
+
+  --dawn: #f2b33d;
+  --dawn-soft: #2e2a2a;
+  --dawn-ink: #ffd88a;
+  --st-backlog: #6f7697;
+  --st-next: #a8b5ff;
+  --st-progress: #8ea2ff;
+  --st-blocked: #f07a6a;
+  --st-review: #c79bf0;
+  --st-done: #7fc8a0;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans antialiased;
+    font-feature-settings: "ss01", "tnum";
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* Markdown bodies (task descriptions, question context). */
+.prose-cb { @apply text-sm leading-relaxed; }
+.prose-cb p { @apply my-2; }
+.prose-cb ul { @apply my-2 list-disc pl-5; }
+.prose-cb ol { @apply my-2 list-decimal pl-5; }
+.prose-cb code { @apply rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]; }
+.prose-cb pre { @apply my-2 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs; }
+.prose-cb pre code { @apply bg-transparent p-0; }
+.prose-cb a { @apply underline underline-offset-2; }
+.prose-cb h1, .prose-cb h2, .prose-cb h3 { @apply mt-3 mb-1 font-semibold; }

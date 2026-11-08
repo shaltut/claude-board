@@ -73,10 +73,12 @@ app.get('*', (c) =>
     ? c.html(readFileSync(join(DIST, 'index.html'), 'utf8'))
     : c.text('UI not built yet: run `pnpm build`', 503));
 
-if (import.meta.main) {
+export async function start() {
   const { ensurePg } = await import('../db/pg.ts');
   ensurePg();
   const port = Number(process.env.PORT ?? 4747);
   const hostname = process.env.HOST ?? '127.0.0.1';
-  serve({ fetch: app.fetch, port, hostname }, () => console.log(`Claude Board → http://localhost:${port}`));
+  serve({ fetch: app.fetch, port, hostname }, () => console.log(`Claude Board: http://localhost:${port}`));
 }
+
+if (import.meta.main) await start();

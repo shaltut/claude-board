@@ -1,0 +1,47 @@
+import { useEffect, useState } from 'react'
+import { useLive } from '@/lib/live'
+import { go, useRoute, VIEWS } from '@/lib/route'
+import { TopBar } from '@/components/TopBar'
+import { CommandMenu } from '@/components/CommandMenu'
+import { Today } from '@/views/Today'
+import { Board } from '@/views/Board'
+import { Backlog } from '@/views/Backlog'
+import { History } from '@/views/History'
+
+const typing = (e: KeyboardEvent) => {
+  const el = e.target as HTMLElement
+  return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+}
+
+export default function App() {
+  const route = useRoute()
+  const live = useLive()
+  const [menu, setMenu] = useState(false)
+  const [newTask, setNewTask] = useState(false)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setMenu((m) => !m); return }
+      if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return
+      const i = Number(e.key) - 1
+      if (i >= 0 && i < VIEWS.length) go({ view: VIEWS[i], task: undefined })
+      else if (e.key === 'c') { e.preventDefault(); setNewTask(true) }
+      else if (e.key === '/') { e.preventDefault(); setMenu(true) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const View = { today: Today, questions: Today, board: Board, backlog: Backlog, history: History }[route.view]
+
+  return (
+    <div className="min-h-dvh">
+      <TopBar route={route} live={live} onSearch={() => setMenu(true)} />
+      <main className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
+        <View route={route} />
+      </main>
+      <CommandMenu open={menu} onOpenChange={setMenu} onNewTask={() => setNewTask(true)} />
+      {newTask && null /* NewTask dialog arrives with the board (Task 8) */}
+    </div>
+  )
+}

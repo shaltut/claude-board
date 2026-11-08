@@ -8,6 +8,10 @@
   },
   "scripts": {
     "setup": "node db/setup.ts",
+    "start": "node server/start.ts",
+    "dev": "pnpm -C web dev",
+    "build": "pnpm -C web build",
+    "seed": "node db/seed.ts",
     "test": "node --test --test-concurrency=1 test/*.test.ts"
   },
   "dependencies": {
