@@ -689,7 +689,8 @@ begin
     'answers', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'task_id', q.task_id, 'project', q.project,
                                                              'body', q.body, 'answer', q.answer, 'answered_by', q.answered_by) order by q.id)
                            from cb.questions q
-                          where q.status = 'answered' and lower(q.reply_to ->> 'machine') = m and q.reply_to ->> 'pane' = pane), '[]'),
+                          where q.status = 'answered' and ((lower(q.reply_to ->> 'machine') = m and q.reply_to ->> 'pane' = pane)
+                                 or (coalesce(q.reply_to ->> 'pane', '') = '' and q.asked_by = me))), '[]'),
     'events', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'task_id', e.task_id, 'kind', e.kind, 'summary', e.summary,
                                                             'actor', e.actor, 'title', t.title, 'status', t.status) order by e.id)
                           from cb.events e join cb.tasks t on t.id = e.task_id

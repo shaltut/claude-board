@@ -334,3 +334,15 @@ test('an answer from a guest user is attributed to them, not to Ahmed', async ()
   const [{ i }] = await sql`select cb.inbox('mac', 'w1:p3', 0) as i`;
   assert.deepEqual(i.answers.map((a: any) => [a.answer, a.answered_by]), [['B', 'omar']]);
 });
+
+test('an answer with no reply address reaches the session that asked it', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
+  await sql`select cb.iam('pc', 'w2:p2', 'orch@shaltoot', 'ihop')`;
+  await sql`select cb.iam('mac', 'w1:p3', 'W2@macbook', 'ihop')`;
+  await sql`select cb.ask(project => 'ihop', body => 'Merge #2796?', actor => 'orch@shaltoot')`; // asked with --as: no reply_to
+  await sql`select cb.answer('1', 'Merge it')`;
+  const box = async (m: string, p: string) => (await sql`select cb.inbox(${m}, ${p}, 0) as i`)[0].i;
+  assert.deepEqual((await box('pc', 'w2:p2')).answers.map((a: any) => a.answer), ['Merge it']);
+  assert.equal((await box('mac', 'w1:p3')).answers.length, 0);
+});
