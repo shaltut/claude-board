@@ -13,6 +13,13 @@ create table if not exists cb.projects (
   created_at timestamptz not null default now()
 );
 
+-- Old or alternative names for a project: "tawuniya" → ihop. New work through an alias gets its tags.
+create table if not exists cb.project_aliases (
+  alias text primary key,
+  slug  text not null references cb.projects(slug) on update cascade on delete cascade,
+  tags  text[] not null default '{}'
+);
+
 create table if not exists cb.questions (
   id           bigint generated always as identity primary key,
   project      text not null references cb.projects(slug) on update cascade,
@@ -88,6 +95,8 @@ drop function if exists cb.norm_id cascade;
 drop function if exists cb.ensure_project cascade;
 drop function if exists cb.slug cascade;
 drop function if exists cb.read_project cascade;
+drop function if exists cb.resolve cascade;
+drop function if exists cb.project_alias cascade;
 drop function if exists cb.tasks_before cascade;
 drop function if exists cb.tasks_history cascade;
 drop function if exists cb.notify cascade;
@@ -152,10 +161,47 @@ create function cb.slug(project text) returns text language sql immutable as $$
   select regexp_replace(lower(trim(coalesce(project, ''))), '[^a-z0-9_.-]+', '-', 'g')
 $$;
 
+-- slug, then follow an alias: "OCR Arena" → ocr-arena → ihop.
+create function cb.resolve(project text) returns text language sql stable as $$
+  select coalesce((select a.slug from cb.project_aliases a where a.alias = cb.slug(project)), cb.slug(project))
+$$;
+
+-- Register alias → target. If a project already exists under the alias, merge it into the target:
+-- its tasks (tagged with tags), questions and history move over quietly, with one summary event.
+create function cb.project_alias(alias text, target text, tags jsonb default '[]') returns text language plpgsql as $$
+#variable_conflict use_variable
+declare
+  a text := cb.slug(alias); t text := cb.resolve(target); n int := 0;
+  tg text[] := array(select jsonb_array_elements_text(coalesce(tags, '[]')));
+begin
+  if a = '' or t = '' then raise exception 'alias and target are required'; end if;
+  if a = t then raise exception 'a project cannot be an alias of itself'; end if;
+  perform cb.ensure_project(t);
+  if exists (select 1 from cb.projects p where p.slug = a) then
+    perform set_config('cb.quiet', 'on', true);
+    update cb.tasks x set project = t, labels = x.labels || array(select g from unnest(tg) g where g <> all(x.labels))
+     where x.project = a;
+    get diagnostics n = row_count;
+    update cb.questions q set project = t where q.project = a;
+    update cb.events e set project = t where e.project = a;
+    update cb.project_aliases pa set slug = t where pa.slug = a;
+    delete from cb.projects p where p.slug = a;
+    perform set_config('cb.quiet', '', true);
+    insert into cb.events (actor, project, kind, summary, data)
+    values (coalesce(nullif(current_setting('cb.actor', true), ''), 'ahmed'), t, 'note',
+            format('Merged %s into %s: %s tasks moved%s', a, t, n,
+                   case when cardinality(tg) > 0 then ', tagged ' || array_to_string(tg, ', ') else '' end),
+            jsonb_build_object('merged', a, 'tags', tg));
+  end if;
+  insert into cb.project_aliases (alias, slug, tags) values (a, t, tg)
+  on conflict on constraint project_aliases_pkey do update set slug = excluded.slug, tags = excluded.tags;
+  return t;
+end $$;
+
 -- Read-side project filter: null/empty = all projects; an unknown slug is an error, not empty work.
 create function cb.read_project(project text) returns text language plpgsql stable as $$
 #variable_conflict use_variable
-declare s text := nullif(cb.slug(project), '');
+declare s text := nullif(cb.resolve(project), '');
 begin
   if s is null or exists (select 1 from cb.projects p where p.slug = s) then return s; end if;
   raise exception 'unknown project "%"; known: %', s,
@@ -164,7 +210,7 @@ end $$;
 
 create function cb.ensure_project(project text) returns text language plpgsql as $$
 #variable_conflict use_variable
-declare slug text := cb.slug(project);
+declare slug text := cb.resolve(project);
 begin
   if slug = '' then raise exception 'project is required'; end if;
   insert into cb.projects (slug, name) values (slug, initcap(replace(slug, '-', ' ')))
@@ -201,6 +247,7 @@ declare
   extra jsonb := coalesce(nullif(current_setting('cb.data', true), '')::jsonb, '{}');
   changed text[];
 begin
+  if current_setting('cb.quiet', true) = 'on' then return null; end if;  -- bulk moves log one summary event
   if tg_op = 'INSERT' then
     insert into cb.events (actor, project, task_id, kind, summary, data)
     values (a, new.project, new.id, 'task_created', coalesce(note, new.title),
@@ -258,11 +305,14 @@ create function cb.task_add(project text, title text, body text default '', stat
 returns bigint language plpgsql as $$
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); p text := cb.ensure_project(project); new_id bigint;
+  l text[] := array(select jsonb_array_elements_text(coalesce(labels, '[]')));
 begin
   if coalesce(trim(title), '') = '' then raise exception 'title is required'; end if;
+  -- work added through an alias ("tawuniya") keeps that stream's tags
+  l := l || array(select g from cb.project_aliases pa, unnest(pa.tags) g where pa.alias = cb.slug(project) and g <> all(l));
   insert into cb.tasks (project, title, body, status, priority, labels, links, assignee, created_by)
   values (p, trim(title), coalesce(body, ''), cb.norm_status(status), cb.norm_priority(priority),
-          array(select jsonb_array_elements_text(coalesce(labels, '[]'))), coalesce(links, '{}'),
+          l, coalesce(links, '{}'),
           coalesce(assignee, case when cb.norm_status(status) = 'in_progress' then a end), a)
   returning cb.tasks.id into new_id;
   return new_id;

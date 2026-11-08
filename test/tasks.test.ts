@@ -175,3 +175,25 @@ test('claim skips Next tasks assigned to someone else', async () => {
   const [w6] = await sql`select status, assignee from cb.tasks where title = 'W6 owns'`;
   assert.deepEqual({ ...w6 }, { status: 'next', assignee: 'W6' });
 });
+
+test('project aliases resolve to the product and tag new work', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'base')`;
+  await sql`select cb.task_add(project => 'ocr-arena', title => 'old', labels => ${sql.json(['ocr'])})`;
+  await sql`select cb.ask(project => 'ocr-arena', body => 'q?')`;
+  const before = (await sql`select count(*)::int n from cb.events`)[0].n;
+  await sql`select cb.project_alias('OCR Arena', 'ihop', ${sql.json(['ocr'])})`;
+  // existing work moved, tagged once, one summary event instead of one per task
+  const [old] = await sql`select project, labels from cb.tasks where title = 'old'`;
+  assert.deepEqual({ ...old }, { project: 'ihop', labels: ['ocr'] });
+  assert.equal((await sql`select project from cb.questions`)[0].project, 'ihop');
+  assert.equal((await sql`select count(*)::int n from cb.events`)[0].n, before + 1);
+  assert.equal((await sql`select count(*)::int n from cb.events where project = 'ocr-arena'`)[0].n, 0);
+  const [{ id }] = await sql`select cb.task_add(project => 'ocr-arena', title => 'via alias', status => 'next', labels => ${sql.json(['urgent'])}) as id`;
+  const [t] = await sql`select project, labels from cb.tasks where id = ${id}`;
+  assert.deepEqual({ ...t }, { project: 'ihop', labels: ['urgent', 'ocr'] });
+  const [{ b }] = await sql`select cb.brief('ocr-arena') as b`;
+  assert.equal(b.next.length, 1);
+  assert.equal((await sql`select * from cb.task_claim('OCR Arena', 'W1')`)[0].title, 'via alias');
+  assert.deepEqual((await sql`select slug from cb.projects`).map((r: any) => r.slug), ['ihop']);
+});
