@@ -119,6 +119,15 @@ function printBrief(b: any) {
     `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}: ${q.answer}`);
 }
 
+/** Projects are namespaces: a session bound to one project never changes another project's tasks. */
+async function guard(id: string | undefined) {
+  const n = Number(String(id ?? '').replace(/^#/, ''));
+  if (!sessionProject || !Number.isInteger(n)) return;
+  const [t] = await sql`select project from cb.tasks where id = ${n}`;
+  if (t && t.project !== sessionProject)
+    throw new Error(`#${n} is in ${t.project}; this session works in ${sessionProject}. Check the id; only ${t.project}'s own sessions change it.`);
+}
+
 async function run(): Promise<unknown> {
   await resolveActor();
   switch (cmd) {
@@ -149,14 +158,17 @@ async function run(): Promise<unknown> {
     }
     case 'move':
       need(2, 'move <id> <status> ["note"]');
+      await guard(args[0]);
       await callFn('task_move', { id: args[0], status: args[1], note: args.slice(2).join(' ') || null, actor });
       return { out: `#${args[0].replace('#', '')} → ${args[1]}` };
     case 'done':
       need(2, 'done <id> "summary"');
+      await guard(args[0]);
       await callFn('task_done', { id: args[0], summary: args.slice(1).join(' '), links: links(), actor });
       return { out: `#${args[0].replace('#', '')} done` };
     case 'edit': {
       need(1, 'edit <id> --title/--body/--priority/--assignee/--project');
+      await guard(args[0]);
       const fields: Record<string, unknown> = {};
       for (const k of ['title', 'body', 'priority', 'assignee', 'project'] as const) if (o[k] !== undefined) fields[k] = o[k];
       if (o.labels) fields.labels = o.labels.split(',');
@@ -166,6 +178,7 @@ async function run(): Promise<unknown> {
     }
     case 'log':
       need(2, 'log <project> "summary"');
+      await guard(o.task);
       await callFn('log', { project: args[0], summary: args.slice(1).join(' '), task_id: o.task ?? null, actor });
       return { out: 'logged' };
     case 'next': {

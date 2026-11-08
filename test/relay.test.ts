@@ -153,3 +153,20 @@ test('inbox: a task created for me, and new Next work when I am idle', async () 
   i = await box();
   assert.equal(i.next_work.length, 0);
 });
+
+test('a session cannot change another project\'s tasks', async () => {
+  const sql = await db();
+  const env = { ...process.env, CB_DATABASE_URL: TEST_URL, CB_ACTOR: '', HERDR_PANE_ID: 'w3:pA', CB_MACHINE: 'pc' };
+  const run = (args: string[]) => spawnSync('node', ['cli/cb.ts', ...args], { encoding: 'utf8', env });
+  await sql`select cb.task_add(project => 'ihop', title => 'builders task', status => 'in_progress', assignee => 'builder')`;
+  await sql`select cb.task_add(project => 'board', title => 'mine', status => 'in_progress')`;
+  run(['iam', 'board-dev', 'board']);
+  for (const args of [['done', '1', 'oops'], ['move', '1', 'review'], ['edit', '1', '--priority', 'P0'], ['log', 'ihop', 'x', '-t', '1']]) {
+    const r = run(args);
+    assert.equal(r.status, 1, args.join(' '));
+    assert.match(r.stderr, /#1 is in ihop; this session works in board/);
+  }
+  const [t] = await sql`select status, priority from cb.tasks where id = 1`;
+  assert.deepEqual({ ...t }, { status: 'in_progress', priority: 'P2' });
+  assert.equal(run(['done', '2', 'fine']).status, 0);
+});
