@@ -1,6 +1,8 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -61,6 +63,8 @@ test('relay pushes an answer into its session and marks it delivered', { timeout
   const path = process.platform === 'win32' ? String.raw`\\.\pipe\cb-relay-test-` + process.pid : join(tmpdir(), `cb-relay-${process.pid}.sock`);
   const inbox = fakeInbox(path, 'tok');
   await sql`select cb.ask(project => 'demo', body => 'Rotate keys?', reply_to => ${sql.json({ machine: 'testbox', pane: 'p9' })}, actor => 'W9')`;
+  // a previous relay of this session exited and left an empty lock (pid 0 must not count as running)
+  fs.writeFileSync(join(tmpdir(), `cb-relay-${createHash('sha1').update(path).digest('hex').slice(0, 12)}.pid`), '');
   const relay = spawn('node', ['cli/relay.ts', '--child'], {
     stdio: 'ignore',
     env: { ...process.env, CB_DATABASE_URL: TEST_URL, CB_MACHINE: 'testbox', HERDR_PANE_ID: 'p9',
@@ -126,4 +130,26 @@ test('broadcasts reach every session once, filtered by project', async () => {
   assert.equal((await box('p2')).broadcasts.length, 1); // only p1 acknowledged
   const [{ b }] = await sql`select cb.brief('ihop') as b`;
   assert.deepEqual(b.broadcasts.map((x: any) => x.summary), ['ihop only', 'relay is live, run cb relay']);
+});
+
+test('inbox: a task created for me, and new Next work when I am idle', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
+  await sql`select cb.task_add(project => 'other', title => 'seed2')`;
+  await sql`select cb.iam('pc', 'p1', 'W1', 'ihop')`;
+  const [{ start }] = await sql`select max(id) as start from cb.events`;
+  await sql`select cb.task_add(project => 'ihop', title => 'for W1', status => 'backlog', assignee => 'W1', actor => 'orch')`;
+  await sql`select cb.task_add(project => 'ihop', title => 'free work', status => 'next', actor => 'orch')`;
+  await sql`select cb.task_add(project => 'ihop', title => 'W2s work', status => 'next', assignee => 'W2', actor => 'orch')`;
+  await sql`select cb.task_add(project => 'other', title => 'other project', status => 'next', actor => 'orch')`;
+  await sql`select cb.task_add(project => 'ihop', title => 'moved up', actor => 'ahmed')`;
+  await sql`select cb.task_move('7', 'next', null, 'ahmed')`;
+  const box = async () => (await sql`select cb.inbox('pc', 'p1', ${start}) as i`)[0].i;
+  let i = await box();
+  assert.deepEqual(i.events.map((e: any) => [e.kind, e.title]), [['task_created', 'for W1']]);
+  assert.deepEqual(i.next_work.map((t: any) => t.title), ['free work', 'moved up']);
+  // busy (something in progress): no Next pings
+  await sql`select cb.task_add(project => 'ihop', title => 'busy', status => 'in_progress', actor => 'W1')`;
+  i = await box();
+  assert.equal(i.next_work.length, 0);
 });

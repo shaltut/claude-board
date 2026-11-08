@@ -5,7 +5,7 @@
 // Exits when the session's inbox disappears (session ended).
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,14 +21,22 @@ const LOCK = join(tmpdir(), `cb-relay-${key}.pid`);
 const LOG = join(tmpdir(), `cb-relay-${key}.log`);
 const log = (m: string) => { try { appendFileSync(LOG, `${new Date().toISOString()} ${m}\n`); } catch {} };
 
-// The hook must return at once: re-launch detached and exit.
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const lockPid = () => { try { return Number(readFileSync(LOCK, 'utf8')) || 0; } catch { return 0; } };
+const relaunch = () => spawn(process.execPath, [import.meta.filename, '--child'], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+
+// The hook must return at once: re-launch detached and exit. --restart replaces a running relay.
 if (!process.argv.includes('--child')) {
-  spawn(process.execPath, [import.meta.filename, '--child'], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  if (process.argv.includes('--restart')) {
+    const old = lockPid();
+    if (old && alive(old)) try { process.kill(old); } catch {}
+    writeFileSync(LOCK, '');
+  }
+  relaunch();
   process.exit(0);
 }
 
-const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-try { if (alive(Number(readFileSync(LOCK, 'utf8')))) process.exit(0); } catch {} // one relay per session
+{ const held = lockPid(); if (held > 0 && held !== process.pid && alive(held)) process.exit(0); } // one relay per session (empty lock = none)
 writeFileSync(LOCK, String(process.pid));
 
 const M = machine();
@@ -57,11 +65,16 @@ function format(i: any): string {
   for (const a of i.answers)
     lines.push(`Ahmed answered Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: ${a.answer}`, `  You asked: ${cut(a.body, 200)}`);
   for (const e of i.events) {
-    const what = e.kind === 'note' ? 'noted on' : e.kind === 'done' ? 'closed' : e.kind === 'moved' ? 'moved' : 'edited';
+    const what = ({ note: 'noted on', done: 'closed', moved: 'moved', task_created: 'created for you' } as any)[e.kind] ?? 'edited';
     lines.push(`${e.actor} ${what} #${e.task_id} "${cut(e.title, 80)}" (now ${e.status}): ${cut(e.summary, 200)}`);
   }
-  lines.push(i.answers.length ? 'Act on these now. The answers are marked delivered.'
-           : i.events.length ? 'Act on this now (check `cb mine`).' : 'Follow it now if it applies to you.');
+  if (i.next_work.length) {
+    const list = i.next_work.map((t: any) => `#${t.id} ${t.priority} ${cut(t.title, 60)}`).join('; ');
+    lines.push(`New work in your project's Next: ${list}. You have nothing in progress: take it with \`cb next\`.`);
+  }
+  if (i.answers.length) lines.push('Act on these now. The answers are marked delivered.');
+  else if (i.events.length) lines.push('Act on this now (check `cb mine`).');
+  else if (!i.next_work.length) lines.push('Follow it now if it applies to you.');
   return lines.join('\n');
 }
 
@@ -72,11 +85,11 @@ async function check() {
     do {
       again = false;
       const [{ i }] = await sql`select cb.inbox(${M}, ${PANE}, ${after}) as i`;
-      if (i.answers.length || i.events.length || i.broadcasts.length) {
+      if (i.answers.length || i.events.length || i.broadcasts.length || i.next_work.length) {
         await post(format(i));
         if (i.broadcasts.length) await sql`select cb.broadcast_seen(${M}, ${PANE}, ${i.broadcasts.at(-1).id})`;
         for (const a of i.answers) await sql`select cb.answer_delivered(${String(a.id)}, ${i.actor ?? `${PANE}@${M}`}, ${'relay'})`;
-        log(`pushed ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts`);
+        log(`pushed ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next`);
       }
       after = Number(i.last_event);
     } while (again);
@@ -94,9 +107,23 @@ await sql.listen('cb', soon, soon).catch((e) => log(`listen failed: ${e?.message
 log(`relay up for ${PANE}@${M}`);
 await check();
 setInterval(check, 30_000); // safety net if a notify is missed while reconnecting
+// Board updates reach running sessions: when this code changes (and has settled), hand over to a fresh relay.
+const CODE = [import.meta.filename, join(import.meta.dirname, '..', 'server', 'db.ts')];
+const version = () => CODE.map((f) => { try { return statSync(f).mtimeMs; } catch { return 0; } });
+const born = version().join();
+
 setInterval(() => {
-  if (existsSync(SOCKET)) return;
-  log('session inbox gone; exiting');
-  try { if (readFileSync(LOCK, 'utf8') === String(process.pid)) writeFileSync(LOCK, ''); } catch {}
-  process.exit(0);
+  const release = () => { try { if (lockPid() === process.pid) writeFileSync(LOCK, ''); } catch {} };
+  if (!existsSync(SOCKET)) {
+    log('session inbox gone; exiting');
+    release();
+    process.exit(0);
+  }
+  const v = version();
+  if (v.join() !== born && Date.now() - Math.max(...v) > 3000) {
+    log('relay code changed; restarting');
+    release();
+    relaunch();
+    process.exit(0);
+  }
 }, 2000);

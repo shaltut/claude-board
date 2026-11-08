@@ -9,7 +9,7 @@ import { sql, databaseUrl, machine } from '../server/db.ts';
 const HELP = `cb — Claude Board (http://localhost:4747)
 
   cb broadcast "<message>" [--project p]     a message to every session (or one project's), pushed by relays
-  cb relay                                   push answers and task changes into this session (once per session)
+  cb relay [--restart]                       push answers, task changes, broadcasts and new work into this session
   cb iam <name> [project]                    name this session once (e.g. W1@macbook ihop); later commands act as it, in that project
   cb brief [project]                         what's in progress / next / blocked / waiting
   cb next [project]                          claim the top task in Next (sets in_progress + you)
@@ -35,7 +35,7 @@ const OPTIONS = {
   title: { type: 'string' }, assignee: { type: 'string' }, project: { type: 'string' },
   task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
   multi: { type: 'boolean' }, blocking: { type: 'boolean' }, context: { type: 'string', short: 'c' },
-  'reply-to': { type: 'string' },
+  'reply-to': { type: 'string' }, restart: { type: 'boolean' },
 } as const;
 
 // Text like "-5% latency" is text, not a flag: only --name, --name=x and -x look like options.
@@ -130,7 +130,7 @@ async function run(): Promise<unknown> {
     case 'relay': {
       if (!process.env.CLAUDE_CODE_MESSAGING_SOCKET) throw new Error('no session inbox here: run cb relay from a Claude Code session (2.1.234+)');
       if (!pane) throw new Error('cb relay needs a herdr pane ($HERDR_PANE_ID)');
-      spawnSync(process.execPath, [join(import.meta.dirname, 'relay.ts')], { stdio: 'ignore' });
+      spawnSync(process.execPath, [join(import.meta.dirname, 'relay.ts'), ...(o.restart ? ['--restart'] : [])], { stdio: 'ignore' });
       return { out: `relay on for ${pane}@${machine()}: answers and changes to your tasks now arrive in this session` };
     }
     case 'iam': {

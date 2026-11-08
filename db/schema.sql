@@ -644,8 +644,17 @@ begin
                                                             'actor', e.actor, 'title', t.title, 'status', t.status) order by e.id)
                           from cb.events e join cb.tasks t on t.id = e.task_id
                          where me is not null and e.id > after_event and e.actor <> me
-                           and e.kind in ('moved', 'updated', 'done', 'note')
+                           and e.kind in ('task_created', 'moved', 'updated', 'done', 'note')
                            and (t.assignee = me or e.data -> 'assignee' ->> 'from' = me)), '[]'),
+    -- New work in my project's Next (unassigned or mine), only while I have nothing in progress.
+    'next_work', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'priority', t.priority) order by t.priority, t.rank)
+                             from cb.tasks t
+                            where me is not null and proj is not null and t.project = proj and t.status = 'next'
+                              and (t.assignee is null or t.assignee = me)
+                              and exists (select 1 from cb.events e where e.task_id = t.id and e.id > after_event and e.actor <> me
+                                            and ((e.kind = 'task_created' and e.data ->> 'status' = 'next')
+                                                 or (e.kind = 'moved' and e.data ->> 'to' = 'next')))
+                              and not exists (select 1 from cb.tasks w where w.assignee = me and w.status = 'in_progress')), '[]'),
     'last_event', (select coalesce(max(e.id), 0) from cb.events e));
 end $$;
 
