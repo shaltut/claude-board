@@ -87,3 +87,22 @@ test('relay pushes an answer into its session and marks it delivered', { timeout
     assert.notEqual(relay.exitCode, null, 'relay should exit when its session inbox disappears');
   }
 });
+
+test('a session belongs to one project: cb next/brief default to it, never pull other work', async () => {
+  const sql = await db();
+  const env = { ...process.env, CB_DATABASE_URL: TEST_URL, CB_ACTOR: '', HERDR_PANE_ID: 'w1:p1', CB_MACHINE: 'pc' };
+  const run = (args: string[], pane = 'w1:p1') =>
+    spawnSync('node', ['cli/cb.ts', ...args], { encoding: 'utf8', env: { ...env, HERDR_PANE_ID: pane } });
+  await sql`select cb.task_add(project => 'board', title => 'board work', status => 'next', priority => 'P0')`;
+  await sql`select cb.task_add(project => 'ihop', title => 'ihop work', status => 'next')`;
+  assert.equal(run(['iam', 'W1', 'ihop']).status, 0);
+  const [s] = await sql`select project from cb.sessions`;
+  assert.equal(s.project, 'ihop');
+  assert.match(run(['brief']).stdout, /ihop work/);
+  assert.doesNotMatch(run(['brief']).stdout, /board work/);
+  assert.match(run(['next']).stdout, /ihop work/);
+  const loose = run(['next'], 'w9:p9'); // not bound to a project
+  assert.equal(loose.status, 1);
+  assert.match(loose.stderr, /no project/);
+  assert.equal(run(['iam', 'W1', 'nope']).status, 1); // unknown project
+});

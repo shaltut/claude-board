@@ -80,6 +80,8 @@ create table if not exists cb.sessions (
   last_seen  timestamptz not null default now(),
   primary key (machine, pane)
 );
+-- Projects are namespaces: a session works in one project; cb defaults to it.
+alter table cb.sessions add column if not exists project text references cb.projects(slug) on update cascade on delete set null;
 
 create table if not exists cb.settings (
   key   text primary key,
@@ -594,12 +596,14 @@ begin
 end $$;
 
 -- Bind a session (machine + herdr pane) to an actor. Machine names compare case-insensitively.
-create function cb.iam(machine text, pane text, actor text) returns text language plpgsql as $$
+create function cb.iam(machine text, pane text, actor text, project text default null) returns text language plpgsql as $$
 #variable_conflict use_variable
+declare p text := cb.read_project(project);  -- unknown project raises; null keeps the session's current one
 begin
   if coalesce(trim(actor), '') = '' or coalesce(trim(pane), '') = '' then raise exception 'pane and actor are required'; end if;
-  insert into cb.sessions (machine, pane, actor) values (lower(trim(machine)), trim(pane), trim(actor))
-  on conflict on constraint sessions_pkey do update set actor = excluded.actor, started_at = now(), last_seen = now();
+  insert into cb.sessions (machine, pane, actor, project) values (lower(trim(machine)), trim(pane), trim(actor), p)
+  on conflict on constraint sessions_pkey do update
+    set actor = excluded.actor, project = coalesce(excluded.project, cb.sessions.project), started_at = now(), last_seen = now();
   return trim(actor);
 end $$;
 

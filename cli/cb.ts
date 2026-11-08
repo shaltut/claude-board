@@ -9,7 +9,7 @@ import { sql, databaseUrl, machine } from '../server/db.ts';
 const HELP = `cb — Claude Board (http://localhost:4747)
 
   cb relay                                   push answers and task changes into this session (once per session)
-  cb iam <name>                              name this session once (e.g. W1@macbook); later commands act as it
+  cb iam <name> [project]                    name this session once (e.g. W1@macbook ihop); later commands act as it, in that project
   cb brief [project]                         what's in progress / next / blocked / waiting
   cb next [project]                          claim the top task in Next (sets in_progress + you)
   cb mine                                    your tasks (re-check between steps; obey moves/cancels)
@@ -60,10 +60,14 @@ let actor = o.as || process.env.CB_ACTOR || `${pane || 'session'}@${hostname()}`
 const explicitActor = !!(o.as || process.env.CB_ACTOR);
 const [cmd, ...args] = pos;
 
+let sessionProject: string | null = null;
+
+/** This pane's binding (cb iam): its actor, unless --as/$CB_ACTOR say otherwise, and its project. */
 async function resolveActor() {
-  if (explicitActor || !pane) return;
-  const [s] = await sql`select actor from cb.sessions where machine = ${machine()} and pane = ${pane}`;
-  if (s) actor = s.actor;
+  if (!pane) return;
+  const [s] = await sql`select actor, project from cb.sessions where machine = ${machine()} and pane = ${pane}`;
+  if (s && !explicitActor) actor = s.actor;
+  sessionProject = s?.project ?? null;
 }
 
 /** Where the orchestrator delivers the answer: --reply-to machine:pane, else my own pane (not when acting --as someone else). */
@@ -123,10 +127,11 @@ async function run(): Promise<unknown> {
       return { out: `relay on for ${pane}@${machine()}: answers and changes to your tasks now arrive in this session` };
     }
     case 'iam': {
-      need(1, 'iam <name>   e.g. cb iam W1@macbook');
+      need(1, 'iam <name> [project]   e.g. cb iam W1@macbook ihop');
       if (!pane) throw new Error('cb iam needs a herdr pane ($HERDR_PANE_ID); use --as <name> on each command instead');
-      await callFn('iam', { machine: machine(), pane, actor: args[0] });
-      return { out: `this pane (${pane}@${machine()}) is ${args[0]}` };
+      const p = await callFn('iam', { machine: machine(), pane, actor: args[0], project: args[1] ?? null });
+      const [b] = await sql`select project from cb.sessions where machine = ${machine()} and pane = ${pane}`;
+      return { out: `this pane (${pane}@${machine()}) is ${p}${b?.project ? `, working on ${b.project}` : ' (no project: add one, cb iam <name> <project>)'}` };
     }
     case 'add': {
       need(2, 'add <project> "<title>"');
@@ -157,7 +162,9 @@ async function run(): Promise<unknown> {
       await callFn('log', { project: args[0], summary: args.slice(1).join(' '), task_id: o.task ?? null, actor });
       return { out: 'logged' };
     case 'next': {
-      const rows: any = await callFn('task_claim', { project: args[0] ?? null, actor });
+      const project = args[0] ?? sessionProject;
+      if (!project) throw new Error('no project: say which (cb next ihop) or bind this session once (cb iam <name> <project>)');
+      const rows: any = await callFn('task_claim', { project, actor });
       if (!rows.length) return { out: 'nothing to claim', json: null };
       const t = rows[0];
       return { out: `${line(t)}${t.body ? '\n\n' + t.body : ''}`, json: t };
@@ -174,7 +181,7 @@ async function run(): Promise<unknown> {
       return { out: `Q${id} posted — keep working; the answer arrives in this session by itself once \`cb relay\` is on, else via \`cb pending\``, json: id };
     }
     case 'pending': {
-      const rows: any = await callFn('answers_pending', { project: args[0] ?? null });
+      const rows: any = await callFn('answers_pending', { project: args[0] ?? sessionProject });
       return { out: rows.length ? rows.map((q: any) =>
         `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}\n  asked: ${q.body}\n  answer: ${q.answer}`).join('\n')
         : 'no answers waiting', json: rows };
@@ -188,7 +195,7 @@ async function run(): Promise<unknown> {
       await callFn('withdraw', { id: args[0].replace(/^q/i, ''), actor });
       return { out: `Q${args[0].replace(/^q/i, '')} withdrawn` };
     case 'brief': {
-      const b = await callFn('brief', { project: args[0] ?? null });
+      const b = await callFn('brief', { project: args[0] ?? sessionProject });
       if (o.json) return { json: b };
       printBrief(b);
       return {};
