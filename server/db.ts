@@ -14,7 +14,11 @@ export function databaseUrl(): string {
 }
 
 export function connect(url: string = databaseUrl()) {
-  return postgres(url, { onnotice: () => {}, max: 10 });
+  // int8 → Number: ids and counts stay well below 2^53 and must be JSON-friendly.
+  return postgres(url, {
+    onnotice: () => {}, max: 10,
+    types: { int8: { to: 20, from: [20], serialize: (x: number) => String(x), parse: (x: string) => Number(x) } } as any,
+  });
 }
 
 export const sql = connect();
