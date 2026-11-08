@@ -17,7 +17,8 @@ const TABS: { view: View; label: string; key: string }[] = [
 
 export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' | 'reconnecting'; onSearch: () => void }) {
   const { theme, toggle } = useTheme()
-  const { data: open = [] } = useQuestions(route.project, 'open')
+  const { data: all = [] } = useQuestions(route.project, 'open')
+  const open = all.filter((q) => !q.assigned_to) // questions handed to Omar/Iman aren't waiting on Ahmed
 
   return (
     <header className="sticky top-0 z-30 border-b bg-background/90 backdrop-blur">

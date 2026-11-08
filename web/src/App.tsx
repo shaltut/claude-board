@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { get, type User } from '@/lib/api'
+import { Guest } from '@/views/Guest'
 import { useLive } from '@/lib/live'
 import { go, useRoute, VIEWS } from '@/lib/route'
 import { TopBar } from '@/components/TopBar'
@@ -15,6 +18,27 @@ import { Huddles } from '@/views/Huddles'
 const typing = (e: KeyboardEvent) => {
   const el = e.target as HTMLElement
   return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+}
+
+type Who = { role: 'local' } | { role: 'guest'; user: User } | { role: 'anonymous' }
+
+/** The full board only on this machine; a guest link gets the guest page; anyone else gets nothing. */
+export function Gate() {
+  const { data } = useQuery({ queryKey: ['whoami'], queryFn: () => get<Who>('/api/whoami'), staleTime: Infinity })
+  if (!data) return null
+  if (data.role === 'local') return <App />
+  if (data.role === 'guest') return <GuestLive user={data.user} />
+  return (
+    <main className="mx-auto max-w-md px-4 py-20 text-center">
+      <h1 className="text-lg font-semibold">Claude Board</h1>
+      <p className="mt-2 text-sm text-muted-foreground">Open the personal link Ahmed sent you to see your questions.</p>
+    </main>
+  )
+}
+
+function GuestLive({ user }: { user: User }) {
+  useLive()
+  return <Guest user={user} />
 }
 
 export default function App() {
