@@ -629,7 +629,9 @@ create function cb.iam(machine text, pane text, actor text, project text default
 declare p text := cb.read_project(project);  -- unknown project raises; null keeps the session's current one
 begin
   if coalesce(trim(actor), '') = '' or coalesce(trim(pane), '') = '' then raise exception 'pane and actor are required'; end if;
-  insert into cb.sessions (machine, pane, actor, project) values (lower(trim(machine)), trim(pane), trim(actor), p)
+  -- a new session starts from now: it never gets broadcasts or messages sent before it existed
+  insert into cb.sessions (machine, pane, actor, project, broadcast_seen)
+  values (lower(trim(machine)), trim(pane), trim(actor), p, coalesce((select max(e.id) from cb.events e), 0))
   on conflict on constraint sessions_pkey do update
     set actor = excluded.actor, project = coalesce(excluded.project, cb.sessions.project), started_at = now(), last_seen = now();
   return trim(actor);
@@ -641,16 +643,16 @@ create function cb.inbox(machine text, pane text, after_event bigint default 0) 
 #variable_conflict use_variable
 declare m text := lower(trim(machine)); me text; proj text; seen bigint;
 begin
-  -- a new session (relay before cb iam) starts with the last 24h of broadcasts
+  -- a new session (relay before cb iam) starts from now; until it joins a project it hears no broadcasts
   insert into cb.sessions (machine, pane, actor, broadcast_seen)
-  values (m, pane, pane || '@' || m, coalesce((select max(e.id) from cb.events e where e.kind = 'broadcast' and e.at < now() - interval '24 hours'), 0))
+  values (m, pane, pane || '@' || m, coalesce((select max(e.id) from cb.events e), 0))
   on conflict on constraint sessions_pkey do update set last_seen = now()
   returning cb.sessions.actor, cb.sessions.project, cb.sessions.broadcast_seen into me, proj, seen;
   return jsonb_build_object(
     'actor', me,
     'broadcasts', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'actor', e.actor, 'project', e.project, 'summary', e.summary) order by e.id)
                               from cb.events e
-                             where e.kind = 'broadcast' and e.id > seen and (e.project is null or e.project = proj)
+                             where e.kind = 'broadcast' and e.id > seen and proj is not null and (e.project is null or e.project = proj)
                                and e.actor is distinct from me), '[]'),
     'messages', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'actor', e.actor, 'summary', e.summary) order by e.id)
                             from cb.events e

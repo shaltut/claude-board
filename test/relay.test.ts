@@ -138,8 +138,12 @@ test('broadcasts reach every session once, filtered by project', async () => {
   const box = async (pane: string) => (await sql`select cb.inbox('pc', ${pane}, 0) as i`)[0].i;
   assert.deepEqual((await box('p1')).broadcasts.map((b: any) => b.summary), ['relay is live, run cb relay', 'ihop only']);
   assert.deepEqual((await box('p2')).broadcasts.map((b: any) => b.summary), ['relay is live, run cb relay']);
-  // an unknown pane (relay before cb iam) gets a session row and recent broadcasts
-  assert.deepEqual((await box('p9')).broadcasts.map((b: any) => b.summary), ['relay is live, run cb relay']);
+  // a session not on the board (relay, no cb iam) hears nothing; joining later doesn't replay old broadcasts
+  assert.deepEqual((await box('p9')).broadcasts, []);
+  await sql`select cb.iam('pc', 'p9', 'late', 'ihop')`;
+  assert.deepEqual((await box('p9')).broadcasts, []);
+  await sql`select cb.iam('pc', 'p8', 'fresh', 'ihop')`; // a brand-new session bound straight away
+  assert.deepEqual((await box('p8')).broadcasts, []);
   const last = (await box('p1')).broadcasts.at(-1).id;
   await sql`select cb.broadcast_seen('pc', 'p1', ${last})`;
   assert.equal((await box('p1')).broadcasts.length, 0);
