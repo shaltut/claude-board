@@ -161,3 +161,17 @@ test('a task reassigned away still shows in the old assignee\'s mine for a day',
   const [e] = await sql`select data from cb.events where kind = 'updated'`;
   assert.deepEqual(e.data.assignee, { from: 'W1', to: 'W3' });
 });
+
+test('claim skips Next tasks assigned to someone else', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'W6 owns', status => 'next', priority => 'P0', assignee => 'W6')`;
+  await sql`select cb.task_add(project => 'demo', title => 'mine', status => 'next', assignee => 'W1')`;
+  await sql`select cb.task_add(project => 'demo', title => 'free', status => 'next')`;
+  const [a] = await sql`select * from cb.task_claim('demo', 'W1')`;
+  assert.equal(a.title, 'mine');
+  const [b] = await sql`select * from cb.task_claim('demo', 'W1')`;
+  assert.equal(b.title, 'free');
+  assert.equal((await sql`select * from cb.task_claim('demo', 'W1')`).length, 0);
+  const [w6] = await sql`select status, assignee from cb.tasks where title = 'W6 owns'`;
+  assert.deepEqual({ ...w6 }, { status: 'next', assignee: 'W6' });
+});

@@ -341,6 +341,7 @@ declare a text := cb.set_actor(actor); p text := cb.read_project(project); tid b
 begin
   select t.id into tid from cb.tasks t
    where t.status = 'next' and (p is null or t.project = p)
+     and (t.assignee is null or t.assignee = a)  -- never take a task queued for someone else
    order by t.rank, t.id limit 1
    for update skip locked;
   if tid is null then return; end if;
