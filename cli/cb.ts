@@ -145,6 +145,11 @@ async function run(): Promise<unknown> {
     }
     case 'tell': {
       need(2, 'tell <session> "<message>"   e.g. cb tell W2@macbook "take #19 next"');
+      if (sessionProject) {
+        const [t] = await sql`select project from cb.sessions where actor = ${args[0]} order by last_seen desc limit 1`;
+        if (t?.project && t.project !== sessionProject)
+          throw new Error(`${args[0]} works in ${t.project}; this session works in ${sessionProject}. Sessions only talk inside their project.`);
+      }
       const id = await callFn('tell', { to_actor: args[0], message: args.slice(1).join(' '), actor });
       const [s] = await sql`select last_seen > now() - interval '90 seconds' as live from cb.sessions where actor = ${args[0]} order by last_seen desc limit 1`;
       return { out: `message #${id} to ${args[0]}${s?.live ? ' (relay live: delivered within seconds)' : ' (relay not live: it arrives when its relay starts, within 24h)'}`, json: id };
@@ -227,6 +232,10 @@ async function run(): Promise<unknown> {
     case 'next': {
       const project = args[0] ?? sessionProject;
       if (!project) throw new Error('no project: say which (cb next ihop) or bind this session once (cb iam <name> <project>)');
+      if (sessionProject) {
+        const [{ p }] = await sql`select cb.resolve(${project}) as p`;
+        if (p !== sessionProject) throw new Error(`this session works in ${sessionProject}; ${p}'s work is for ${p}'s sessions`);
+      }
       const rows: any = await callFn('task_claim', { project, actor });
       if (!rows.length) return { out: 'nothing to claim', json: null };
       const t = rows[0];

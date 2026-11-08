@@ -180,6 +180,30 @@ test('a session cannot change another project\'s tasks', async () => {
   assert.equal(run(['done', '2', 'fine']).status, 0);
 });
 
+test('a session stays in its project: no pulling or messaging across, filing a task is fine', async () => {
+  const sql = await db();
+  const env = { ...process.env, CB_DATABASE_URL: TEST_URL, CB_ACTOR: '', HERDR_PANE_ID: 'w3:pA', CB_MACHINE: 'pc' };
+  const run = (args: string[]) => spawnSync('node', ['cli/cb.ts', ...args], { encoding: 'utf8', env });
+  await sql`select cb.task_add(project => 'ihop', title => 'ihop work', status => 'next')`;
+  await sql`select cb.task_add(project => 'board', title => 'seed')`;
+  await sql`select cb.project_alias('tawuniya', 'ihop', '[]')`;
+  await sql`select cb.iam('mac', 'w1:p3', 'W2@macbook', 'ihop')`;
+  run(['iam', 'board-dev', 'board']);
+  for (const p of ['ihop', 'tawuniya']) {
+    const r = run(['next', p]);
+    assert.equal(r.status, 1, p);
+    assert.match(r.stderr, /this session works in board; ihop's work is for ihop's sessions/);
+  }
+  const t = run(['tell', 'W2@macbook', 'hi']);
+  assert.equal(t.status, 1);
+  assert.match(t.stderr, /W2@macbook works in ihop; this session works in board/);
+  assert.equal(run(['add', 'ihop', 'bug report for ihop']).status, 0);
+  const [{ n }] = await sql`select count(*)::int as n from cb.events where kind = 'message'`;
+  assert.equal(n, 0);
+  const [w] = await sql`select assignee from cb.tasks where id = 1`;
+  assert.equal(w.assignee, null);
+});
+
 test('sessions overview: who exists, what each is doing, live relay, questions', async () => {
   const sql = await db();
   await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
