@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleDot, HelpCircle, MessageSquareReply, PencilLine, Plus, Send, StickyNote, XCircle } from 'lucide-react'
+import { CheckCircle2, CircleDot, HelpCircle, MessageSquareReply, PencilLine, Plus, Send, StickyNote, XCircle, Megaphone } from 'lucide-react'
 import type { CbEvent, Status } from '@/lib/api'
 import { clock, day, STATUS } from '@/lib/format'
 import { go } from '@/lib/route'
@@ -7,7 +7,7 @@ import { ActorChip, ProjectDot, StatusDot, TaskId } from './Chips'
 
 const ICON: Record<CbEvent['kind'], typeof Plus> = {
   task_created: Plus, moved: CircleDot, updated: PencilLine, done: CheckCircle2, note: StickyNote,
-  asked: HelpCircle, answered: MessageSquareReply, delivered: Send, withdrawn: XCircle,
+  asked: HelpCircle, answered: MessageSquareReply, delivered: Send, withdrawn: XCircle, broadcast: Megaphone,
 }
 
 /** The DB's default move summary is "next → in_progress"; show it with the board's labels. */
@@ -18,7 +18,7 @@ function prettySummary(e: CbEvent) {
 }
 
 export function EventRow({ e, showProject, dense }: { e: CbEvent; showProject?: boolean; dense?: boolean }) {
-  const Icon = ICON[e.kind]
+  const Icon = ICON[e.kind] ?? StickyNote // a kind the UI doesn't know yet must not blank the page
   const to = e.data?.to as Status | undefined
   const links = (e.data?.links ?? {}) as Record<string, string>
   return (

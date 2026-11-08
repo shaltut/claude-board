@@ -114,3 +114,21 @@ test('cb tag adds and removes; brief --tag filters and shows tags', async () => 
   assert.match(b.out, /#1 P2 reader \{ocr\}/);
   assert.doesNotMatch(b.out, /other/);
 });
+
+test('cb sessions lists who is working on what; cb session shows one', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'SC64 run', status => 'in_progress', actor => 'W6@macbook')`;
+  await sql`select cb.task_add(project => 'ihop', title => 'stale port', status => 'in_progress', actor => 'worker-7@macbook')`;
+  await sql`update cb.events set at = now() - interval '2 hours' where actor = 'worker-7@macbook'`;
+  await sql`select cb.ask(project => 'ihop', body => 'fire?', actor => 'W6@macbook')`;
+  const r = cb(['sessions', 'ihop']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /W6@macbook .*no relay/);
+  assert.match(r.out, /#1 SC64 run/);
+  assert.match(r.out, /1 asking Ahmed/);
+  assert.match(r.out, /worker-7@macbook .*idle 2h/); // holds work but went quiet: the orchestrator should look
+  const d = cb(['session', 'W6@macbook']);
+  assert.equal(d.code, 0, d.err);
+  assert.match(d.out, /#1 \[in_progress\] P2 SC64 run/);
+  assert.match(d.out, /Q1 open: fire\?/);
+});

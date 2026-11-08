@@ -11,13 +11,13 @@ export interface Task {
 export interface QOption { label: string; description: string | null }
 export interface Question {
   id: number; project: string; task_id: number | null; asked_by: string; body: string; context: string | null
-  options: QOption[] | null; multi: boolean; blocking: boolean; status: 'open' | 'answered' | 'delivered' | 'withdrawn'
+  options: QOption[] | null; multi: boolean; blocking: boolean; status: 'open' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast'
   answer: string | null; answered_at: string | null; delivered_at: string | null; delivered_to: string | null
   reply_to: { machine?: string; pane?: string } | null; created_at: string
 }
 export interface CbEvent {
   id: number; at: string; actor: string; project: string | null; task_id: number | null; question_id: number | null
-  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn'
+  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast'
   summary: string; data: Record<string, any>
 }
 

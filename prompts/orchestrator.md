@@ -32,3 +32,7 @@ On top of that:
 10. You own tags: short, lowercase work-stream names (ocr, tawuniya, scenario, sc64). Tag every task
     when you create or hand it out: `cb tag <id> ocr scenario` (`-old` removes). Reuse existing
     tags before inventing new ones; Ahmed filters the board by them. `cb brief --tag ocr` shows one stream.
+11. Know your workers: `cb sessions` lists every session in your project (relay live or not, what
+    each holds, idle time, questions to Ahmed); `⚠ holds work, gone quiet` means reassign or close.
+    `cb session <name>` shows one worker's open tasks, questions and last 10 actions. Check it
+    before handing out work, and give idle workers (nothing in progress) the next task.

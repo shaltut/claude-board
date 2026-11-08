@@ -21,6 +21,8 @@ const HELP = `cb — Claude Board (http://localhost:4747)
   cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x]
   cb log <project> "what happened" [-t id]
   cb ask <project> "question" [-o "Label=why"]... [--multi] [-c "context"] [--blocking -t id]
+  cb sessions [project]                      every session: relay, what it holds, who went quiet (orchestrator)
+  cb session <name>                          one session: open tasks, questions, last 10 actions
   cb pending [project]                       answered questions to deliver (orchestrator)
   cb delivered <qid> [session]               mark an answer delivered (unblocks its task)
   cb withdraw <qid>
@@ -139,6 +141,31 @@ async function run(): Promise<unknown> {
       const now: any = await callFn('task_tag', { id: args[0], actor,
         add: tags.filter((x) => !x.startsWith('-')), remove: tags.filter((x) => x.startsWith('-')).map((x) => x.slice(1)) });
       return { out: `#${args[0].replace(/^#/, '')} tags: ${now.length ? now.join(', ') : '(none)'}`, json: now };
+    }
+    case 'sessions': {
+      const rows: any = await callFn('sessions_overview', { project: args[0] ?? sessionProject ?? null });
+      const idle = (r: any) => (r.last ? (Date.now() - +new Date(r.last.at)) / 60000 : Infinity);
+      const dur = (m: number) => (m === Infinity ? 'never' : m < 60 ? `${Math.round(m)}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`);
+      const open = rows.filter((r: any) => r.live || r.doing.length || r.queued || r.open_questions);
+      const out = open.map((r: any) => {
+        const head = `${r.actor} ${r.live ? 'relay live' : 'no relay'}${r.pane ? ` · ${r.pane}` : ''} · idle ${dur(idle(r))}` +
+          ` · ${r.queued} queued · ${r.done_24h} done 24h${r.open_questions ? ` · ${r.open_questions} asking Ahmed` : ''}` +
+          (!r.live && r.doing.length && idle(r) > 60 ? '  ⚠ holds work, gone quiet' : '');
+        return [head, ...(r.doing.length ? r.doing.map((t: any) => `  #${t.id} ${t.title} [${t.status}]`) : ['  (nothing in progress)'])].join('\n');
+      });
+      const quiet = rows.length - open.length;
+      return { out: (out.join('\n') || 'no sessions') + (quiet ? `\n(${quiet} quiet sessions hidden: no relay, nothing open)` : ''), json: rows };
+    }
+    case 'session': {
+      need(1, 'session <name>   e.g. cb session W6@macbook');
+      const who = args[0];
+      const tasks = await sql`select id, status, priority, title, project from cb.tasks where assignee = ${who} and status not in ('done','cancelled') order by status, priority, rank`;
+      const qs = await sql`select id, status, body from cb.questions where asked_by = ${who} and status in ('open','answered') order by id`;
+      const ev = await sql`select at, kind, task_id, summary from cb.events where actor = ${who} order by id desc limit 10`;
+      const out = [`${who}: ${tasks.length} open tasks`, ...tasks.map((t: any) => '  ' + line(t)),
+        qs.length ? 'QUESTIONS' : '', ...qs.map((q: any) => `  Q${q.id} ${q.status}: ${q.body}`),
+        'RECENT', ...ev.map((e: any) => `  ${new Date(e.at).toISOString().slice(5, 16).replace('T', ' ')} ${e.kind}${e.task_id ? ` #${e.task_id}` : ''}: ${String(e.summary).slice(0, 120)}`)];
+      return { out: out.filter(Boolean).join('\n'), json: { tasks, questions: qs, events: ev } };
     }
     case 'broadcast': {
       need(1, 'broadcast "<message>" [--project <p>]');
