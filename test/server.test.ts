@@ -62,3 +62,12 @@ test('set-returning rpc gives an array', async () => {
   assert.equal(body.result.length, 1);
   assert.equal(body.result[0].assignee, 'W1');
 });
+
+test('rpc labels array and rich options', async () => {
+  await db();
+  await rpc('task_add', { project: 'demo', title: 'T1', labels: ['x', 'y'] });
+  const t = await (await app.request('/api/tasks/1')).json();
+  assert.deepEqual(t.task.labels, ['x', 'y']);
+  const res = await rpc('ask', { project: 'demo', body: 'Q?', options: [{ label: 'A', description: 'why A' }], multi: true });
+  assert.equal(res.status, 200);
+});

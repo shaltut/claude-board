@@ -9,7 +9,7 @@ async function db() { const s = await freshDb(); clients.push(s); return s; }
 async function blockedTask(sql: any) {
   await sql`select cb.task_add(project => 'demo', title => 'T1', status => 'in_progress')`;
   const [{ q }] = await sql`
-    select cb.ask(project => 'demo', body => 'Rotate?', options => ${['now', 'friday']}::text[], blocking => true,
+    select cb.ask(project => 'demo', body => 'Rotate?', options => ${sql.json(['now', 'friday'])}, blocking => true,
                   task_id => '1', reply_to => ${sql.json({ machine: 'shaltoot', pane: 'p3' })}, actor => 'W1') as q`;
   return Number(q);
 }
@@ -80,4 +80,23 @@ test('last_seen default and set', async () => {
   await sql`select cb.seen('2026-01-01T00:00:00Z')`;
   const [{ at }] = await sql`select cb.last_seen() as at`;
   assert.equal(new Date(at).toISOString(), '2026-01-01T00:00:00.000Z');
+});
+
+test('ask options with descriptions', async () => {
+  const sql = await db();
+  const opts = [{ label: 'Rotate now (Recommended)', description: 'Before Friday cutover' }, 'Wait'];
+  const [{ q }] = await sql`select cb.ask(project => 'demo', body => 'Rotate?', options => ${sql.json(opts)}) as q`;
+  const [row] = await sql`select options, multi from cb.questions where id = ${q}`;
+  assert.deepEqual(row.options, [
+    { label: 'Rotate now (Recommended)', description: 'Before Friday cutover' },
+    { label: 'Wait', description: null },
+  ]);
+  assert.equal(row.multi, false);
+});
+
+test('multi flag stored', async () => {
+  const sql = await db();
+  const [{ q }] = await sql`select cb.ask(project => 'demo', body => 'Which?', options => ${sql.json(['a', 'b'])}, multi => true) as q`;
+  const [row] = await sql`select multi from cb.questions where id = ${q}`;
+  assert.equal(row.multi, true);
 });

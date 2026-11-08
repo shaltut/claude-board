@@ -12,11 +12,10 @@ export class RpcError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-/** Arrays become text[] (via jsonb), objects jsonb, everything else text that Postgres coerces. */
+/** Arrays and objects go as jsonb (every cb.* array/object param is jsonb); the rest as text Postgres coerces. */
 function param(i: number, v: unknown): { expr: string; value: unknown } {
   const n = `$${i}`;
   if (v === null || v === undefined) return { expr: n, value: null };
-  if (Array.isArray(v)) return { expr: `array(select jsonb_array_elements_text(${n}::jsonb))`, value: v };
   if (typeof v === 'object') return { expr: `${n}::jsonb`, value: v };
   return { expr: n, value: String(v) };
 }

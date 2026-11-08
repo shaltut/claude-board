@@ -62,6 +62,8 @@ create table if not exists cb.events (
   data        jsonb not null default '{}'
 );
 
+alter table cb.questions add column if not exists multi boolean not null default false;
+
 create table if not exists cb.settings (
   key   text primary key,
   value jsonb
@@ -229,7 +231,7 @@ create or replace trigger projects_notify after insert or update or delete on cb
   for each statement execute function cb.notify();
 
 create function cb.task_add(project text, title text, body text default '', status text default 'backlog',
-                            priority text default 'P2', labels text[] default '{}', links jsonb default '{}',
+                            priority text default 'P2', labels jsonb default '[]', links jsonb default '{}',
                             assignee text default null, actor text default null)
 returns bigint language plpgsql as $$
 #variable_conflict use_variable
@@ -238,7 +240,7 @@ begin
   if coalesce(trim(title), '') = '' then raise exception 'title is required'; end if;
   insert into cb.tasks (project, title, body, status, priority, labels, links, assignee, created_by)
   values (p, trim(title), coalesce(body, ''), cb.norm_status(status), cb.norm_priority(priority),
-          coalesce(labels, '{}'), coalesce(links, '{}'), assignee, a)
+          array(select jsonb_array_elements_text(coalesce(labels, '[]'))), coalesce(links, '{}'), assignee, a)
   returning cb.tasks.id into new_id;
   return new_id;
 end $$;
@@ -372,10 +374,12 @@ end $$;
 create or replace trigger questions_history after insert or update on cb.questions
   for each row execute function cb.questions_history();
 
--- Ask Ahmed. Blocking + task_id parks the task in Blocked until delivery.
-create function cb.ask(project text, body text, options text[] default null, blocking boolean default false,
+-- Ask Ahmed (the non-blocking replacement for AskUserQuestion).
+-- options: jsonb array of strings or {label, description}; stored as [{label, description}].
+-- Blocking + task_id parks the task in Blocked until delivery.
+create function cb.ask(project text, body text, options jsonb default null, blocking boolean default false,
                        task_id text default null, context text default null, reply_to jsonb default null,
-                       actor text default null)
+                       multi boolean default false, actor text default null)
 returns bigint language plpgsql as $$
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); p text := cb.ensure_project(project);
@@ -386,10 +390,17 @@ begin
   if tid is not null and not exists (select 1 from cb.tasks t where t.id = tid) then
     raise exception 'task #% not found', tid;
   end if;
-  insert into cb.questions (project, task_id, asked_by, body, context, options, blocking, reply_to)
+  if options is not null and jsonb_typeof(options) <> 'array' then
+    raise exception 'options must be a JSON array of strings or {label, description} objects';
+  end if;
+  insert into cb.questions (project, task_id, asked_by, body, context, options, blocking, reply_to, multi)
   values (p, tid, a, trim(body), context,
-          case when options is null or cardinality(options) = 0 then null else to_jsonb(options) end,
-          coalesce(blocking, false), reply_to)
+          (select jsonb_agg(case when jsonb_typeof(o) = 'string'
+                                 then jsonb_build_object('label', o #>> '{}', 'description', null)
+                                 else jsonb_build_object('label', o ->> 'label', 'description', o ->> 'description') end
+                            order by i)
+             from jsonb_array_elements(options) with ordinality as e(o, i)),
+          coalesce(blocking, false), reply_to, coalesce(multi, false))
   returning cb.questions.id into qid;
   if coalesce(blocking, false) and tid is not null then
     perform set_config('cb.note', 'blocked on Q' || qid, true);

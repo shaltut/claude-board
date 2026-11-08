@@ -336,3 +336,14 @@ test('setup twice keeps rows', async () => {
 - [ ] **Step 2:** Dry run: in a fresh terminal from `F:\Work`, follow `session.md` literally against seed data (add, next, ask, done) → all commands succeed and show on the board live.
 - [ ] **Step 3:** `pnpm test` all PASS; `pnpm build` passes.
 - [ ] **Step 4:** Commit `docs: prompts and readme`.
+
+---
+
+## Addendum (2026-11-08, Ahmed mid-build): replace AskUserQuestion
+
+Ahmed: the native AskUserQuestion tool blocks the orchestrator. The board must be its non-blocking equivalent.
+
+- **Task 4b — rich questions.** `cb.ask.options` becomes `jsonb`: array of strings or `{label, description}` objects, stored normalized as `[{label, description}]`. New column `questions.multi boolean default false` (+ `ask(multi => ...)`). `task_add.labels` also becomes `jsonb` so every array/object RPC arg is jsonb (one rule in `rpc.ts`). "(Recommended)" stays a label convention, as in AskUserQuestion. Tests: `ask options with descriptions`, `multi flag stored`, `rpc labels array`.
+- **CLI (Task 5):** `-o "Label=description"` repeatable (also accepts `-o "a,b"`), `--multi`.
+- **UI (Task 7):** option buttons show label + description; multi → checkboxes + Send; context rendered as markdown.
+- **Task 10 — deny hook:** `hooks/deny-ask.mjs`, a PreToolUse hook on `AskUserQuestion` in Ahmed's user settings, returns `permissionDecision: deny` with a reason telling Claude to use `cb ask` (with options + descriptions, `--blocking` only when truly stuck) and keep working. `CB_ALLOW_ASK=1` bypasses.
