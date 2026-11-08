@@ -133,3 +133,11 @@ test('bookkeeping columns are not edits', async () => {
   await sql`update cb.tasks set created_at = now() - interval '1 day', created_by = 'x' where id = 1`;
   assert.equal((await events(sql)).length, 1);
 });
+
+test('explicit updated_at is kept', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'T1')`;
+  await sql`update cb.tasks set created_at = '2026-01-01T12:00:00Z', updated_at = '2026-01-02T12:00:00Z' where id = 1`;
+  const [t] = await sql`select updated_at from cb.tasks where id = 1`;
+  assert.equal(new Date(t.updated_at).toISOString().slice(0, 10), '2026-01-02');
+});

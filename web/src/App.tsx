@@ -3,6 +3,8 @@ import { useLive } from '@/lib/live'
 import { go, useRoute, VIEWS } from '@/lib/route'
 import { TopBar } from '@/components/TopBar'
 import { CommandMenu } from '@/components/CommandMenu'
+import { NewTask } from '@/components/NewTask'
+import { TaskPanel } from '@/components/TaskPanel'
 import { Today } from '@/views/Today'
 import { Board } from '@/views/Board'
 import { Backlog } from '@/views/Backlog'
@@ -41,7 +43,8 @@ export default function App() {
         <View route={route} />
       </main>
       <CommandMenu open={menu} onOpenChange={setMenu} onNewTask={() => setNewTask(true)} />
-      {newTask && null /* NewTask dialog arrives with the board (Task 8) */}
+      <NewTask open={newTask} onOpenChange={setNewTask} project={route.project} />
+      <TaskPanel id={route.task} />
     </div>
   )
 }

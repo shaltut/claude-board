@@ -1,5 +1,122 @@
-import type { Route } from '@/lib/route'
+import { useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import {
+  DndContext, DragOverlay, KeyboardSensor, PointerSensor, closestCorners, useDroppable, useSensor, useSensors,
+  type DragEndEvent, type DragStartEvent,
+} from '@dnd-kit/core'
+import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import { ChevronDown } from 'lucide-react'
+import { toast } from 'sonner'
+import { rpc, useTasks, type Status, type Task } from '@/lib/api'
+import { STATUS } from '@/lib/format'
+import { rankAt } from '@/lib/rank'
+import { go, type Route } from '@/lib/route'
+import { cn } from '@/lib/utils'
+import { StatusDot } from '@/components/Chips'
+import { TaskCard } from '@/components/TaskCard'
+
+const COLUMNS: Status[] = ['next', 'in_progress', 'blocked', 'review', 'done']
+const HINT: Partial<Record<Status, string>> = { next: 'Sessions take from the top' }
+
+/** Shared drag-and-drop move: status change (if any) then the rank Ahmed chose. The DB result wins. */
+export async function moveTask(t: Task, to: Status, rank: number | null) {
+  if (t.status !== to) await rpc('task_move', { id: t.id, status: to })
+  if (rank != null) await rpc('task_update', { id: t.id, fields: { rank } })
+}
+
+function SortableCard({ t, showProject }: { t: Task; showProject: boolean }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: t.id, data: { status: t.status } })
+  return (
+    <TaskCard ref={setNodeRef} t={t} showProject={showProject} dragging={isDragging}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      {...attributes} {...listeners}
+      onClick={() => go({ task: t.id })}
+      onKeyDown={(e) => { if (e.key === 'Enter') go({ task: t.id }); listeners?.onKeyDown?.(e) }} />
+  )
+}
+
+function Column({ status, tasks, showProject }: { status: Status; tasks: Task[]; showProject: boolean }) {
+  const { setNodeRef, isOver } = useDroppable({ id: `col:${status}`, data: { status } })
+  const [collapsed, setCollapsed] = useState(false)
+  return (
+    <section aria-label={STATUS[status].label} className="flex min-w-64 flex-1 flex-col">
+      <header className="mb-2 flex items-center gap-2 px-1">
+        <StatusDot status={status} />
+        <h2 className="text-sm font-semibold">{STATUS[status].label}</h2>
+        <span className="text-sm text-muted-foreground tabular-nums">{tasks.length}</span>
+        {HINT[status] && <span className="text-xs text-muted-foreground">· {HINT[status]}</span>}
+        {status === 'done' && (
+          <button onClick={() => setCollapsed((c) => !c)} className="ml-auto text-muted-foreground hover:text-foreground"
+            aria-label={collapsed ? 'Show done' : 'Hide done'}>
+            <ChevronDown className={cn('size-4 transition-transform', collapsed && '-rotate-90')} />
+          </button>
+        )}
+      </header>
+      <div ref={setNodeRef}
+        className={cn('flex min-h-32 flex-1 flex-col gap-2 rounded-lg p-1.5 transition-colors', isOver ? 'bg-accent/60' : 'bg-muted/40')}>
+        {!collapsed && (
+          <SortableContext items={tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+            {tasks.map((t) => <SortableCard key={t.id} t={t} showProject={showProject} />)}
+          </SortableContext>
+        )}
+        {tasks.length === 0 && <p className="px-2 py-6 text-center text-xs text-muted-foreground">Drop a task here</p>}
+        {status === 'done' && !collapsed && tasks.length > 0 && <p className="px-2 text-center text-[11px] text-muted-foreground">Last 7 days</p>}
+      </div>
+    </section>
+  )
+}
 
 export function Board({ route }: { route: Route }) {
-  return <div className="p-6 text-muted-foreground">Board · {route.project ?? 'all'}</div>
+  const qc = useQueryClient()
+  const { data = [], isLoading } = useTasks(route.project)
+  const [optimistic, setOptimistic] = useState<{ id: number; status: Status; rank: number } | null>(null)
+  const [active, setActive] = useState<Task | null>(null)
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+
+  const columns = useMemo(() => {
+    const rows = data.map((t) => (optimistic && t.id === optimistic.id ? { ...t, status: optimistic.status, rank: optimistic.rank } : t))
+    const by = Object.fromEntries(COLUMNS.map((s) => [s, [] as Task[]])) as Record<Status, Task[]>
+    for (const t of rows) by[t.status]?.push(t)
+    for (const s of COLUMNS) by[s].sort((a, b) => (s === 'done' ? +new Date(b.done_at ?? 0) - +new Date(a.done_at ?? 0) : a.rank - b.rank || a.id - b.id))
+    return by
+  }, [data, optimistic])
+
+  const onStart = (e: DragStartEvent) => setActive(data.find((t) => t.id === e.active.id) ?? null)
+
+  async function onEnd(e: DragEndEvent) {
+    setActive(null)
+    const t = data.find((x) => x.id === e.active.id)
+    if (!t || !e.over) return
+    const to = (e.over.data.current?.status ?? t.status) as Status
+    const list = columns[to].filter((x) => x.id !== t.id)
+    const overIndex = list.findIndex((x) => x.id === e.over!.id)
+    const index = overIndex === -1 ? list.length : overIndex
+    if (to === t.status && columns[to].findIndex((x) => x.id === t.id) === index) return
+    const rank = to === 'done' ? null : rankAt(list, index)
+    setOptimistic({ id: t.id, status: to, rank: rank ?? t.rank })
+    try {
+      await moveTask(t, to, rank)
+      if (to !== t.status) toast(`#${t.id} moved to ${STATUS[to].label}`)
+    } catch (err: any) {
+      toast.error(`Could not move #${t.id}`, { description: err.message })
+    } finally {
+      await qc.invalidateQueries()
+      setOptimistic(null)
+    }
+  }
+
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading the board…</p>
+
+  return (
+    <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={onStart} onDragEnd={onEnd} onDragCancel={() => setActive(null)}>
+      <div className="flex gap-4 overflow-x-auto pb-4">
+        {COLUMNS.map((s) => <Column key={s} status={s} tasks={columns[s]} showProject={!route.project} />)}
+      </div>
+      <DragOverlay>{active && <TaskCard t={active} showProject={!route.project} overlay />}</DragOverlay>
+    </DndContext>
+  )
 }

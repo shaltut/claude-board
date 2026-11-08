@@ -10,6 +10,13 @@ const ICON: Record<CbEvent['kind'], typeof Plus> = {
   asked: HelpCircle, answered: MessageSquareReply, delivered: Send, withdrawn: XCircle,
 }
 
+/** The DB's default move summary is "next → in_progress"; show it with the board's labels. */
+function prettySummary(e: CbEvent) {
+  const m = e.summary.match(/^(\w+) → (\w+)$/)
+  const a = m && STATUS[m[1] as Status], b = m && STATUS[m[2] as Status]
+  return a && b ? `${a.label} → ${b.label}` : e.summary
+}
+
 export function EventRow({ e, showProject, dense }: { e: CbEvent; showProject?: boolean; dense?: boolean }) {
   const Icon = ICON[e.kind]
   const to = e.data?.to as Status | undefined
@@ -26,7 +33,7 @@ export function EventRow({ e, showProject, dense }: { e: CbEvent; showProject?: 
           {e.question_id && <span className="font-mono text-xs text-dawn">Q{e.question_id}</span>}
           {showProject && e.project && <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><ProjectDot slug={e.project} />{e.project}</span>}
         </div>
-        <p className="mt-0.5 text-pretty text-foreground/90">{e.summary}</p>
+        <p className="mt-0.5 text-pretty text-foreground/90">{prettySummary(e)}</p>
         {Object.keys(links).length > 0 && (
           <div className="mt-1 flex flex-wrap gap-1.5">
             {Object.entries(links).map(([k, v]) => (

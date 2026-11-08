@@ -168,7 +168,8 @@ begin
     new.done_at := case when new.status = 'done' then now() else null end;
     if new.status <> 'blocked' then new.blocked_on := null; end if;
   end if;
-  if tg_op = 'UPDATE' and (to_jsonb(new) - 'rank' - 'updated_at') is distinct from (to_jsonb(old) - 'rank' - 'updated_at') then
+  if tg_op = 'UPDATE' and new.updated_at is not distinct from old.updated_at
+     and (to_jsonb(new) - 'rank' - 'updated_at' - 'created_at') is distinct from (to_jsonb(old) - 'rank' - 'updated_at' - 'created_at') then
     new.updated_at := now();
   end if;
   return new;
