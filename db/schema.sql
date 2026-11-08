@@ -71,6 +71,16 @@ create table if not exists cb.events (
 
 alter table cb.questions add column if not exists multi boolean not null default false;
 
+-- Which actor a session (herdr pane on a machine) is: set by `cb iam`, used by the CLI and the relay.
+create table if not exists cb.sessions (
+  machine    text not null,
+  pane       text not null,
+  actor      text not null,
+  started_at timestamptz not null default now(),
+  last_seen  timestamptz not null default now(),
+  primary key (machine, pane)
+);
+
 create table if not exists cb.settings (
   key   text primary key,
   value jsonb
@@ -107,6 +117,8 @@ drop function if exists cb.task_done cascade;
 drop function if exists cb.log cascade;
 drop function if exists cb.task_claim cascade;
 drop function if exists cb.mine cascade;
+drop function if exists cb.iam cascade;
+drop function if exists cb.inbox cascade;
 
 -- Effective actor for this transaction; triggers read it back from cb.actor.
 create function cb.set_actor(actor text) returns text language plpgsql as $$
@@ -579,4 +591,36 @@ create function cb.last_seen() returns timestamptz language plpgsql stable as $$
 begin
   return coalesce((select (s.value #>> '{}')::timestamptz from cb.settings s where s.key = 'owner_last_seen_at'),
                   now() - interval '24 hours');
+end $$;
+
+-- Bind a session (machine + herdr pane) to an actor. Machine names compare case-insensitively.
+create function cb.iam(machine text, pane text, actor text) returns text language plpgsql as $$
+#variable_conflict use_variable
+begin
+  if coalesce(trim(actor), '') = '' or coalesce(trim(pane), '') = '' then raise exception 'pane and actor are required'; end if;
+  insert into cb.sessions (machine, pane, actor) values (lower(trim(machine)), trim(pane), trim(actor))
+  on conflict on constraint sessions_pkey do update set actor = excluded.actor, started_at = now(), last_seen = now();
+  return trim(actor);
+end $$;
+
+-- What the relay pushes into a session: answers addressed to its pane, and changes other people
+-- made to its actor's tasks (moves, edits, done, notes) after event `after_event`.
+create function cb.inbox(machine text, pane text, after_event bigint default 0) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare m text := lower(trim(machine)); me text;
+begin
+  update cb.sessions s set last_seen = now() where s.machine = m and s.pane = pane returning s.actor into me;
+  return jsonb_build_object(
+    'actor', me,
+    'answers', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'task_id', q.task_id, 'project', q.project,
+                                                             'body', q.body, 'answer', q.answer) order by q.id)
+                           from cb.questions q
+                          where q.status = 'answered' and lower(q.reply_to ->> 'machine') = m and q.reply_to ->> 'pane' = pane), '[]'),
+    'events', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'task_id', e.task_id, 'kind', e.kind, 'summary', e.summary,
+                                                            'actor', e.actor, 'title', t.title, 'status', t.status) order by e.id)
+                          from cb.events e join cb.tasks t on t.id = e.task_id
+                         where me is not null and e.id > after_event and e.actor <> me
+                           and e.kind in ('moved', 'updated', 'done', 'note')
+                           and (t.assignee = me or e.data -> 'assignee' ->> 'from' = me)), '[]'),
+    'last_event', (select coalesce(max(e.id), 0) from cb.events e));
 end $$;

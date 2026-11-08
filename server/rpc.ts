@@ -3,7 +3,7 @@ import { sql } from './db.ts';
 
 export const RPC_FUNCTIONS = [
   'task_add', 'task_move', 'task_update', 'task_done', 'log', 'task_claim', 'mine',
-  'ask', 'answer', 'withdraw', 'answers_pending', 'answer_delivered', 'brief', 'seen',
+  'ask', 'answer', 'withdraw', 'answers_pending', 'answer_delivered', 'brief', 'seen', 'iam', 'inbox',
 ];
 const SETOF = new Set(['task_claim', 'mine', 'answers_pending']);
 

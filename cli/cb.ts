@@ -1,11 +1,15 @@
 // cb — Claude Board CLI. Talks to Postgres directly (works without the web server).
 import { parseArgs } from 'node:util';
 import { hostname } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
 import { callFn } from '../server/rpc.ts';
-import { sql, databaseUrl } from '../server/db.ts';
+import { sql, databaseUrl, machine } from '../server/db.ts';
 
 const HELP = `cb — Claude Board (http://localhost:4747)
 
+  cb relay                                   push answers and task changes into this session (once per session)
+  cb iam <name>                              name this session once (e.g. W1@macbook); later commands act as it
   cb brief [project]                         what's in progress / next / blocked / waiting
   cb next [project]                          claim the top task in Next (sets in_progress + you)
   cb mine                                    your tasks (re-check between steps; obey moves/cancels)
@@ -50,15 +54,24 @@ try {
 const o: any = Object.fromEntries(Object.entries(parsed.values).map(([k, v]) => [k, unmark(v)]));
 const pos: string[] = parsed.positionals.map(unmark);
 
-const actor = o.as || process.env.CB_ACTOR || `${process.env.HERDR_PANE_ID || 'session'}@${hostname()}`;
+const pane = process.env.HERDR_PANE_ID || '';
+// --as, then $CB_ACTOR, then the name this pane gave itself with `cb iam`, then <pane>@<host>.
+let actor = o.as || process.env.CB_ACTOR || `${pane || 'session'}@${hostname()}`;
+const explicitActor = !!(o.as || process.env.CB_ACTOR);
 const [cmd, ...args] = pos;
+
+async function resolveActor() {
+  if (explicitActor || !pane) return;
+  const [s] = await sql`select actor from cb.sessions where machine = ${machine()} and pane = ${pane}`;
+  if (s) actor = s.actor;
+}
 
 /** Where the orchestrator delivers the answer: --reply-to machine:pane, else my own pane (not when acting --as someone else). */
 function replyTo() {
   const r = o['reply-to'];
   if (r) { const i = r.indexOf(':'); return i > 0 ? { machine: r.slice(0, i), pane: r.slice(i + 1) } : { machine: null, pane: r }; }
-  if (o.as || !process.env.HERDR_PANE_ID) return null;
-  return { machine: hostname(), pane: process.env.HERDR_PANE_ID };
+  if (o.as || !pane) return null;
+  return { machine: machine(), pane };
 }
 
 function need(n: number, usage: string) {
@@ -101,7 +114,20 @@ function printBrief(b: any) {
 }
 
 async function run(): Promise<unknown> {
+  await resolveActor();
   switch (cmd) {
+    case 'relay': {
+      if (!process.env.CLAUDE_CODE_MESSAGING_SOCKET) throw new Error('no session inbox here: run cb relay from a Claude Code session (2.1.234+)');
+      if (!pane) throw new Error('cb relay needs a herdr pane ($HERDR_PANE_ID)');
+      spawnSync(process.execPath, [join(import.meta.dirname, 'relay.ts')], { stdio: 'ignore' });
+      return { out: `relay on for ${pane}@${machine()}: answers and changes to your tasks now arrive in this session` };
+    }
+    case 'iam': {
+      need(1, 'iam <name>   e.g. cb iam W1@macbook');
+      if (!pane) throw new Error('cb iam needs a herdr pane ($HERDR_PANE_ID); use --as <name> on each command instead');
+      await callFn('iam', { machine: machine(), pane, actor: args[0] });
+      return { out: `this pane (${pane}@${machine()}) is ${args[0]}` };
+    }
     case 'add': {
       need(2, 'add <project> "<title>"');
       const id = await callFn('task_add', { project: args[0], title: args.slice(1).join(' '), body: o.body ?? '',
@@ -145,7 +171,7 @@ async function run(): Promise<unknown> {
       const reply_to = replyTo();
       const id = await callFn('ask', { project: args[0], body: args.slice(1).join(' '), options: o.option ? options() : null,
         multi: !!o.multi, blocking: !!o.blocking, task_id: o.task ?? null, context: o.context ?? null, reply_to, actor });
-      return { out: `Q${id} posted — keep working; the answer arrives via the orchestrator (or \`cb pending\`)`, json: id };
+      return { out: `Q${id} posted — keep working; the answer arrives in this session by itself once \`cb relay\` is on, else via \`cb pending\``, json: id };
     }
     case 'pending': {
       const rows: any = await callFn('answers_pending', { project: args[0] ?? null });
