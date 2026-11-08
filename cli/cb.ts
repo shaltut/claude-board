@@ -21,6 +21,7 @@ const HELP = `cb — Claude Board (http://localhost:4747)
   cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x]
   cb log <project> "what happened" [-t id]
   cb ask <project> "question" [-o "Label=why"]... [--multi] [-c "context"] [--blocking -t id]
+  cb tell <session> "<msg>"                  message one session; it arrives in that session by itself
   cb sessions [project]                      every session: relay, what it holds, who went quiet (orchestrator)
   cb session <name>                          one session: open tasks, questions, last 10 actions
   cb pending [project]                       answered questions to deliver (orchestrator)
@@ -141,6 +142,12 @@ async function run(): Promise<unknown> {
       const now: any = await callFn('task_tag', { id: args[0], actor,
         add: tags.filter((x) => !x.startsWith('-')), remove: tags.filter((x) => x.startsWith('-')).map((x) => x.slice(1)) });
       return { out: `#${args[0].replace(/^#/, '')} tags: ${now.length ? now.join(', ') : '(none)'}`, json: now };
+    }
+    case 'tell': {
+      need(2, 'tell <session> "<message>"   e.g. cb tell W2@macbook "take #19 next"');
+      const id = await callFn('tell', { to_actor: args[0], message: args.slice(1).join(' '), actor });
+      const [s] = await sql`select last_seen > now() - interval '90 seconds' as live from cb.sessions where actor = ${args[0]} order by last_seen desc limit 1`;
+      return { out: `message #${id} to ${args[0]}${s?.live ? ' (relay live: delivered within seconds)' : ' (relay not live: it arrives when its relay starts, within 24h)'}`, json: id };
     }
     case 'sessions': {
       const rows: any = await callFn('sessions_overview', { project: args[0] ?? sessionProject ?? null });

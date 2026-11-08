@@ -85,6 +85,15 @@ test('relay pushes an answer into its session and marks it delivered', { timeout
       await new Promise((r) => setTimeout(r, 100));
     }
     assert.equal(q.status, 'delivered');
+    // a direct message to this session is pushed too, once
+    const [{ me }] = await sql`select actor as me from cb.sessions where machine = 'testbox' and pane = 'p9'`;
+    await sql`select cb.tell(${me}, 'take #19 next', 'orch')`;
+    for (let i = 0; i < 50 && inbox.got.length < 2; i++) await new Promise((r) => setTimeout(r, 100));
+    assert.equal(inbox.got.length, 2);
+    assert.match(inbox.got[1].message.content, /Message from orch: take #19 next[\s\S]*cb tell orch/);
+    await sql`select cb.task_add(project => 'demo', title => 'nudge', actor => 'orch')`; // any change wakes the relay
+    await new Promise((r) => setTimeout(r, 1200));
+    assert.equal(inbox.got.length, 2, 'message must not be pushed twice');
   } finally {
     await inbox.close(); // session gone → relay exits on its own
     await Promise.race([exited, new Promise((r) => setTimeout(r, 8000))]);
@@ -194,4 +203,25 @@ test('sessions overview: who exists, what each is doing, live relay, questions',
   assert.equal(by['W6@macbook'].last.summary, 'fire?');
   const [{ all }] = await sql`select cb.sessions_overview() as all`;
   assert.equal(all.find((s: any) => s.actor === 'dev').live, false);
+});
+
+test('tell: a direct message reaches only its recipient, once; unknown names are refused', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
+  await sql`select cb.iam('pc', 'w2:p2', 'orch', 'ihop')`;
+  await sql`select cb.iam('mac', 'w1:p3', 'W2@macbook', 'ihop')`;
+  await sql`select cb.iam('mac', 'w1:p4', 'W3@macbook', 'ihop')`;
+  for (const [m, p] of [['mac', 'w1:p3'], ['mac', 'w1:p4']]) await sql`select cb.inbox(${m}, ${p}, 0)`;
+  const [{ id }] = await sql`select cb.tell('W2@macbook', 'take #19 next', 'orch') as id`;
+  const [{ i }] = await sql`select cb.inbox('mac', 'w1:p3', 0) as i`;
+  assert.deepEqual(i.messages.map((x: any) => [x.actor, x.summary]), [['orch', 'take #19 next']]);
+  const [{ other }] = await sql`select cb.inbox('mac', 'w1:p4', 0) as other`;
+  assert.equal(other.messages.length, 0);
+  await sql`select cb.broadcast_seen('mac', 'w1:p3', ${id})`;
+  const [{ again }] = await sql`select cb.inbox('mac', 'w1:p3', 0) as again`;
+  assert.equal(again.messages.length, 0);
+  const [e] = await sql`select project, data from cb.events where id = ${id}`;
+  assert.equal(e.project, 'ihop');
+  assert.equal(e.data.to, 'W2@macbook');
+  await assert.rejects(sql`select cb.tell('nobody@x', 'hi', 'orch')`, /unknown session nobody@x/);
 });

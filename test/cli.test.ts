@@ -132,3 +132,15 @@ test('cb sessions lists who is working on what; cb session shows one', async () 
   assert.match(d.out, /#1 \[in_progress\] P2 SC64 run/);
   assert.match(d.out, /Q1 open: fire\?/);
 });
+
+test('cb tell sends to one session and says whether it is live', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'seed')`;
+  await sql`select cb.iam('mac', 'w1:p3', 'W2@macbook', 'demo')`;
+  await sql`update cb.sessions set last_seen = now() - interval '5 minutes'`;
+  const r = cb(['tell', 'W2@macbook', 'take', '#19', 'next']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /message #\d+ to W2@macbook \(relay not live: it arrives when its relay starts, within 24h\)/);
+  const [e] = await sql`select actor, summary from cb.events where kind = 'message'`;
+  assert.deepEqual([e.actor, e.summary], ['W1@test', 'take #19 next']);
+});

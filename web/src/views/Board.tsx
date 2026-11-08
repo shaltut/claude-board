@@ -16,8 +16,8 @@ import { cn } from '@/lib/utils'
 import { StatusDot } from '@/components/Chips'
 import { TaskCard } from '@/components/TaskCard'
 
-const COLUMNS: Status[] = ['next', 'in_progress', 'blocked', 'review', 'done']
-const HINT: Partial<Record<Status, string>> = { next: 'Sessions take from the top' }
+const COLUMNS: Status[] = ['backlog', 'next', 'in_progress', 'blocked', 'review', 'done']
+const HINT: Partial<Record<Status, string>> = { backlog: 'Not ready yet', next: 'Sessions take from the top' }
 
 /** Shared drag-and-drop move: status change (if any) then the rank Ahmed chose. The DB result wins. */
 export async function moveTask(t: Task, to: Status, rank: number | null) {

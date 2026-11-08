@@ -62,6 +62,7 @@ const cut = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' 
 function format(i: any): string {
   const lines = ['[Claude Board]'];
   for (const b of i.broadcasts) lines.push(`Broadcast from ${b.actor}${b.project ? ` to ${b.project}` : ' to everyone'}: ${b.summary}`);
+  for (const m of i.messages) lines.push(`Message from ${m.actor}: ${m.summary}`, `  (reply: cb tell ${m.actor} "...")`);
   for (const a of i.answers)
     lines.push(`Ahmed answered Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: ${a.answer}`, `  You asked: ${cut(a.body, 200)}`);
   for (const e of i.events) {
@@ -73,6 +74,7 @@ function format(i: any): string {
     lines.push(`New work in your project's Next: ${list}. You have nothing in progress: take it with \`cb next\`.`);
   }
   if (i.answers.length) lines.push('Act on these now. The answers are marked delivered.');
+  else if (i.messages.length) lines.push('Act on this now.');
   else if (i.events.length) lines.push('Act on this now (check `cb mine`).');
   else if (!i.next_work.length) lines.push('Follow it now if it applies to you.');
   return lines.join('\n');
@@ -85,11 +87,12 @@ async function check() {
     do {
       again = false;
       const [{ i }] = await sql`select cb.inbox(${M}, ${PANE}, ${after}) as i`;
-      if (i.answers.length || i.events.length || i.broadcasts.length || i.next_work.length) {
+      const read = [...i.broadcasts, ...i.messages].map((x: any) => x.id);
+      if (i.answers.length || i.events.length || read.length || i.next_work.length) {
         await post(format(i));
-        if (i.broadcasts.length) await sql`select cb.broadcast_seen(${M}, ${PANE}, ${i.broadcasts.at(-1).id})`;
+        if (read.length) await sql`select cb.broadcast_seen(${M}, ${PANE}, ${Math.max(...read)})`;
         for (const a of i.answers) await sql`select cb.answer_delivered(${String(a.id)}, ${i.actor ?? `${PANE}@${M}`}, ${'relay'})`;
-        log(`pushed ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next`);
+        log(`pushed ${i.messages.length} messages, ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next`);
       }
       after = Number(i.last_event);
     } while (again);

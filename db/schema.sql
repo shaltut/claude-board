@@ -14,7 +14,7 @@ create table if not exists cb.projects (
 );
 
 alter table cb.events drop constraint if exists events_kind_check;
-alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast'));
+alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message'));
 
 -- Old or alternative names for a project: "tawuniya" → ihop. New work through an alias gets its tags.
 create table if not exists cb.project_aliases (
@@ -130,6 +130,7 @@ drop function if exists cb.iam cascade;
 drop function if exists cb.inbox cascade;
 drop function if exists cb.broadcast cascade;
 drop function if exists cb.sessions_overview cascade;
+drop function if exists cb.tell cascade;
 drop function if exists cb.broadcast_seen cascade;
 drop function if exists cb._broadcasts cascade;
 
@@ -644,6 +645,10 @@ begin
                               from cb.events e
                              where e.kind = 'broadcast' and e.id > seen and (e.project is null or e.project = proj)
                                and e.actor is distinct from me), '[]'),
+    'messages', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'actor', e.actor, 'summary', e.summary) order by e.id)
+                            from cb.events e
+                           where e.kind = 'message' and e.data ->> 'to' = me and e.id > seen
+                             and e.at > now() - interval '24 hours'), '[]'),
     'answers', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'task_id', q.task_id, 'project', q.project,
                                                              'body', q.body, 'answer', q.answer) order by q.id)
                            from cb.questions q
@@ -726,4 +731,21 @@ begin
     left join lateral (select * from cb.sessions s3 where s3.actor = a.actor order by s3.last_seen desc limit 1) s on true
     where a.actor is not null and a.actor not in ('ahmed', 'relay', 'unknown')
   ) x), '[]');
+end $$;
+
+-- A direct message to one session (orchestrator → worker, or back). The relay pushes it like a
+-- broadcast and broadcast_seen marks both read; held 24h for a session whose relay is down.
+create function cb.tell(to_actor text, message text, actor text default null) returns bigint language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); p text; new_id bigint;
+begin
+  if coalesce(trim(message), '') = '' then raise exception 'message is required'; end if;
+  select s.project into p from cb.sessions s where s.actor = to_actor order by s.last_seen desc limit 1;
+  if not found and not exists (select 1 from cb.events e where e.actor = to_actor)
+                and not exists (select 1 from cb.tasks t where t.assignee = to_actor) then
+    raise exception 'unknown session %: see cb sessions for names', to_actor;
+  end if;
+  insert into cb.events (actor, project, kind, summary, data) values (a, p, 'message', trim(message), jsonb_build_object('to', to_actor))
+  returning cb.events.id into new_id;
+  return new_id;
 end $$;
