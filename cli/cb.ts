@@ -8,6 +8,7 @@ import { sql, databaseUrl, machine } from '../server/db.ts';
 
 const HELP = `cb — Claude Board (http://localhost:4747)
 
+  cb broadcast "<message>" [--project p]     a message to every session (or one project's), pushed by relays
   cb relay                                   push answers and task changes into this session (once per session)
   cb iam <name> [project]                    name this session once (e.g. W1@macbook ihop); later commands act as it, in that project
   cb brief [project]                         what's in progress / next / blocked / waiting
@@ -113,6 +114,7 @@ function printBrief(b: any) {
   sec('BLOCKED', b.blocked, (t) => `${line(t)}${t.blocked_on ? ` — on Q${t.blocked_on}` : ''}`);
   sec('REVIEW', b.review, line);
   sec('WAITING ON AHMED', b.open_questions, (q) => `Q${q.id}${q.blocking ? ' [blocking]' : ''} ${q.body} · ${q.project}`);
+  sec('BROADCASTS (24h)', b.broadcasts ?? [], (x) => `${x.actor}${x.project ? ` to ${x.project}` : ' to everyone'}: ${x.summary}`);
   sec('ANSWERED — DELIVER THESE', b.answered_pending, (q) =>
     `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}: ${q.answer}`);
 }
@@ -120,6 +122,11 @@ function printBrief(b: any) {
 async function run(): Promise<unknown> {
   await resolveActor();
   switch (cmd) {
+    case 'broadcast': {
+      need(1, 'broadcast "<message>" [--project <p>]');
+      const id = await callFn('broadcast', { message: args.join(' '), project: o.project ?? null, actor });
+      return { out: `broadcast #${id} sent to ${o.project ? `every ${o.project} session` : 'every session'}`, json: id };
+    }
     case 'relay': {
       if (!process.env.CLAUDE_CODE_MESSAGING_SOCKET) throw new Error('no session inbox here: run cb relay from a Claude Code session (2.1.234+)');
       if (!pane) throw new Error('cb relay needs a herdr pane ($HERDR_PANE_ID)');

@@ -53,13 +53,15 @@ const cut = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' 
 
 function format(i: any): string {
   const lines = ['[Claude Board]'];
+  for (const b of i.broadcasts) lines.push(`Broadcast from ${b.actor}${b.project ? ` to ${b.project}` : ' to everyone'}: ${b.summary}`);
   for (const a of i.answers)
     lines.push(`Ahmed answered Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: ${a.answer}`, `  You asked: ${cut(a.body, 200)}`);
   for (const e of i.events) {
     const what = e.kind === 'note' ? 'noted on' : e.kind === 'done' ? 'closed' : e.kind === 'moved' ? 'moved' : 'edited';
     lines.push(`${e.actor} ${what} #${e.task_id} "${cut(e.title, 80)}" (now ${e.status}): ${cut(e.summary, 200)}`);
   }
-  lines.push(i.answers.length ? 'Act on these now. The answers are marked delivered.' : 'Act on this now (check `cb mine`).');
+  lines.push(i.answers.length ? 'Act on these now. The answers are marked delivered.'
+           : i.events.length ? 'Act on this now (check `cb mine`).' : 'Follow it now if it applies to you.');
   return lines.join('\n');
 }
 
@@ -70,10 +72,11 @@ async function check() {
     do {
       again = false;
       const [{ i }] = await sql`select cb.inbox(${M}, ${PANE}, ${after}) as i`;
-      if (i.answers.length || i.events.length) {
+      if (i.answers.length || i.events.length || i.broadcasts.length) {
         await post(format(i));
+        if (i.broadcasts.length) await sql`select cb.broadcast_seen(${M}, ${PANE}, ${i.broadcasts.at(-1).id})`;
         for (const a of i.answers) await sql`select cb.answer_delivered(${String(a.id)}, ${i.actor ?? `${PANE}@${M}`}, ${'relay'})`;
-        log(`pushed ${i.answers.length} answers, ${i.events.length} events`);
+        log(`pushed ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts`);
       }
       after = Number(i.last_event);
     } while (again);

@@ -106,3 +106,24 @@ test('a session belongs to one project: cb next/brief default to it, never pull 
   assert.match(loose.stderr, /no project/);
   assert.equal(run(['iam', 'W1', 'nope']).status, 1); // unknown project
 });
+
+test('broadcasts reach every session once, filtered by project', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'x')`;
+  await sql`select cb.task_add(project => 'board', title => 'y')`;
+  await sql`select cb.iam('pc', 'p1', 'W1', 'ihop')`;
+  await sql`select cb.iam('pc', 'p2', 'B1', 'board')`;
+  await sql`select cb.broadcast('relay is live, run cb relay', null, 'ahmed')`;
+  await sql`select cb.broadcast('ihop only', 'ihop', 'orch')`;
+  const box = async (pane: string) => (await sql`select cb.inbox('pc', ${pane}, 0) as i`)[0].i;
+  assert.deepEqual((await box('p1')).broadcasts.map((b: any) => b.summary), ['relay is live, run cb relay', 'ihop only']);
+  assert.deepEqual((await box('p2')).broadcasts.map((b: any) => b.summary), ['relay is live, run cb relay']);
+  // an unknown pane (relay before cb iam) gets a session row and recent broadcasts
+  assert.deepEqual((await box('p9')).broadcasts.map((b: any) => b.summary), ['relay is live, run cb relay']);
+  const last = (await box('p1')).broadcasts.at(-1).id;
+  await sql`select cb.broadcast_seen('pc', 'p1', ${last})`;
+  assert.equal((await box('p1')).broadcasts.length, 0);
+  assert.equal((await box('p2')).broadcasts.length, 1); // only p1 acknowledged
+  const [{ b }] = await sql`select cb.brief('ihop') as b`;
+  assert.deepEqual(b.broadcasts.map((x: any) => x.summary), ['ihop only', 'relay is live, run cb relay']);
+});

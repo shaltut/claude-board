@@ -13,6 +13,9 @@ create table if not exists cb.projects (
   created_at timestamptz not null default now()
 );
 
+alter table cb.events drop constraint if exists events_kind_check;
+alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast'));
+
 -- Old or alternative names for a project: "tawuniya" → ihop. New work through an alias gets its tags.
 create table if not exists cb.project_aliases (
   alias text primary key,
@@ -64,7 +67,7 @@ create table if not exists cb.events (
   project     text,
   task_id     bigint,
   question_id bigint,
-  kind        text not null check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn')),
+  kind        text not null check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast')),
   summary     text not null default '',
   data        jsonb not null default '{}'
 );
@@ -82,6 +85,8 @@ create table if not exists cb.sessions (
 );
 -- Projects are namespaces: a session works in one project; cb defaults to it.
 alter table cb.sessions add column if not exists project text references cb.projects(slug) on update cascade on delete set null;
+-- last broadcast event this session was given
+alter table cb.sessions add column if not exists broadcast_seen bigint not null default 0;
 
 create table if not exists cb.settings (
   key   text primary key,
@@ -121,6 +126,9 @@ drop function if exists cb.task_claim cascade;
 drop function if exists cb.mine cascade;
 drop function if exists cb.iam cascade;
 drop function if exists cb.inbox cascade;
+drop function if exists cb.broadcast cascade;
+drop function if exists cb.broadcast_seen cascade;
+drop function if exists cb._broadcasts cascade;
 
 -- Effective actor for this transaction; triggers read it back from cb.actor.
 create function cb.set_actor(actor text) returns text language plpgsql as $$
@@ -571,7 +579,11 @@ begin
       from cb.questions q where q.status = 'open' and (p is null or q.project = p)), '[]'),
     'answered_pending', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body,
         'answer', q.answer, 'asked_by', q.asked_by, 'reply_to', q.reply_to, 'task_id', q.task_id) order by q.id)
-      from cb.questions q where q.status = 'answered' and (p is null or q.project = p)), '[]'));
+      from cb.questions q where q.status = 'answered' and (p is null or q.project = p)), '[]'),
+    'broadcasts', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'actor', e.actor, 'project', e.project, 'summary', e.summary, 'at', e.at)
+                                               order by e.id desc)
+      from cb.events e where e.kind = 'broadcast' and e.at > now() - interval '24 hours'
+                         and (p is null or e.project is null or e.project = p)), '[]'));
 end $$;
 
 drop function if exists cb._brief_tasks cascade;
@@ -611,11 +623,19 @@ end $$;
 -- made to its actor's tasks (moves, edits, done, notes) after event `after_event`.
 create function cb.inbox(machine text, pane text, after_event bigint default 0) returns jsonb language plpgsql as $$
 #variable_conflict use_variable
-declare m text := lower(trim(machine)); me text;
+declare m text := lower(trim(machine)); me text; proj text; seen bigint;
 begin
-  update cb.sessions s set last_seen = now() where s.machine = m and s.pane = pane returning s.actor into me;
+  -- a new session (relay before cb iam) starts with the last 24h of broadcasts
+  insert into cb.sessions (machine, pane, actor, broadcast_seen)
+  values (m, pane, pane || '@' || m, coalesce((select max(e.id) from cb.events e where e.kind = 'broadcast' and e.at < now() - interval '24 hours'), 0))
+  on conflict on constraint sessions_pkey do update set last_seen = now()
+  returning cb.sessions.actor, cb.sessions.project, cb.sessions.broadcast_seen into me, proj, seen;
   return jsonb_build_object(
     'actor', me,
+    'broadcasts', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'actor', e.actor, 'project', e.project, 'summary', e.summary) order by e.id)
+                              from cb.events e
+                             where e.kind = 'broadcast' and e.id > seen and (e.project is null or e.project = proj)
+                               and e.actor is distinct from me), '[]'),
     'answers', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'task_id', q.task_id, 'project', q.project,
                                                              'body', q.body, 'answer', q.answer) order by q.id)
                            from cb.questions q
@@ -628,3 +648,20 @@ begin
                            and (t.assignee = me or e.data -> 'assignee' ->> 'from' = me)), '[]'),
     'last_event', (select coalesce(max(e.id), 0) from cb.events e));
 end $$;
+
+-- A message to every session (project null) or to one project's sessions. Relays push it; cb brief lists 24h.
+create function cb.broadcast(message text, project text default null, actor text default null) returns bigint language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); p text := cb.read_project(project); new_id bigint;
+begin
+  if coalesce(trim(message), '') = '' then raise exception 'message is required'; end if;
+  insert into cb.events (actor, project, kind, summary) values (a, p, 'broadcast', trim(message))
+  returning cb.events.id into new_id;
+  return new_id;
+end $$;
+
+create function cb.broadcast_seen(machine text, pane text, upto bigint) returns void language sql as $$
+  -- positional: in a SQL function a bare "pane" would mean the column
+  update cb.sessions s set broadcast_seen = greatest(s.broadcast_seen, $3)
+   where s.machine = lower(trim($1)) and s.pane = $2
+$$;
