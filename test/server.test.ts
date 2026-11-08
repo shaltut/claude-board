@@ -71,3 +71,13 @@ test('rpc labels array and rich options', async () => {
   const res = await rpc('ask', { project: 'demo', body: 'Q?', options: [{ label: 'A', description: 'why A' }], multi: true });
   assert.equal(res.status, 200);
 });
+
+test('rpc booleans survive (blocking ask blocks task)', async () => {
+  const sql = await db();
+  await rpc('task_add', { project: 'demo', title: 'T1', status: 'in_progress' });
+  await rpc('ask', { project: 'demo', body: 'Q?', blocking: true, task_id: 1, multi: true });
+  const [t] = await sql`select status from cb.tasks where id = 1`;
+  const [q] = await sql`select multi from cb.questions where id = 1`;
+  assert.equal(t.status, 'blocked');
+  assert.equal(q.multi, true);
+});

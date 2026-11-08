@@ -1,0 +1,172 @@
+// cb — Claude Board CLI. Talks to Postgres directly (works without the web server).
+import { parseArgs } from 'node:util';
+import { hostname } from 'node:os';
+import { callFn } from '../server/rpc.ts';
+import { sql } from '../server/db.ts';
+
+const HELP = `cb — Claude Board (http://localhost:4747)
+
+  cb brief [project]                         what's in progress / next / blocked / waiting
+  cb next [project]                          claim the top task in Next (sets in_progress + you)
+  cb mine                                    your tasks (re-check between steps; obey moves/cancels)
+  cb add <project> "<title>" [-s next] [-p P1] [-b body] [-l a,b] [--link k=v]
+  cb move <id> <status> ["note"]             status: backlog next in_progress blocked review done cancelled
+  cb done <id> "summary" [--pr x] [--commit x] [--branch x] [--link k=v]
+  cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x]
+  cb log <project> "what happened" [-t id]
+  cb ask <project> "question" [-o "Label=why"]... [--multi] [-c "context"] [--blocking -t id]
+  cb pending [project]                       answered questions to deliver (orchestrator)
+  cb delivered <qid> [session]               mark an answer delivered (unblocks its task)
+  cb withdraw <qid>
+
+  --as <name>   actor (default: $CB_ACTOR, else <pane>@<host>)     --json   raw JSON output`;
+
+const { values: o, positionals: pos } = parseArgs({
+  allowPositionals: true,
+  options: {
+    as: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+    status: { type: 'string', short: 's' }, priority: { type: 'string', short: 'p' },
+    body: { type: 'string', short: 'b' }, labels: { type: 'string', short: 'l' },
+    link: { type: 'string', multiple: true }, pr: { type: 'string' }, commit: { type: 'string' }, branch: { type: 'string' },
+    title: { type: 'string' }, assignee: { type: 'string' }, project: { type: 'string' },
+    task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
+    multi: { type: 'boolean' }, blocking: { type: 'boolean' }, context: { type: 'string', short: 'c' },
+  },
+});
+
+const actor = o.as || process.env.CB_ACTOR || `${process.env.HERDR_PANE_ID || 'session'}@${hostname()}`;
+const [cmd, ...args] = pos;
+
+function need(n: number, usage: string) {
+  if (args.length < n) throw new Error(`usage: cb ${usage}`);
+}
+
+function links(): Record<string, string> {
+  const l: Record<string, string> = {};
+  for (const kv of o.link ?? []) { const i = kv.indexOf('='); if (i > 0) l[kv.slice(0, i)] = kv.slice(i + 1); }
+  if (o.pr) l.pr = o.pr;
+  if (o.commit) l.commit = o.commit;
+  if (o.branch) l.branch = o.branch;
+  return l;
+}
+
+function options() {
+  const raw = o.option ?? [];
+  const list = raw.length === 1 && !raw[0].includes('=') ? raw[0].split(',') : raw;
+  return list.map((s) => s.trim()).filter(Boolean).map((s) => {
+    const i = s.indexOf('=');
+    return i > 0 ? { label: s.slice(0, i).trim(), description: s.slice(i + 1).trim() } : { label: s, description: null };
+  });
+}
+
+const line = (t: any) =>
+  `#${t.id} [${t.status ?? ''}] ${t.priority} ${t.title}${t.assignee ? ` (${t.assignee})` : ''} · ${t.project}`.replace(' [] ', ' ');
+
+function printBrief(b: any) {
+  const sec = (name: string, rows: any[], fmt: (r: any) => string) => {
+    console.log(`${name} (${rows.length})`);
+    for (const r of rows) console.log('  ' + fmt(r));
+  };
+  sec('IN PROGRESS', b.in_progress, line);
+  sec('NEXT (take with `cb next`)', b.next, line);
+  sec('BLOCKED', b.blocked, (t) => `${line(t)}${t.blocked_on ? ` — on Q${t.blocked_on}` : ''}`);
+  sec('REVIEW', b.review, line);
+  sec('WAITING ON AHMED', b.open_questions, (q) => `Q${q.id}${q.blocking ? ' [blocking]' : ''} ${q.body} · ${q.project}`);
+  sec('ANSWERED — DELIVER THESE', b.answered_pending, (q) =>
+    `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}: ${q.answer}`);
+}
+
+async function run(): Promise<unknown> {
+  switch (cmd) {
+    case 'add': {
+      need(2, 'add <project> "<title>"');
+      const id = await callFn('task_add', { project: args[0], title: args.slice(1).join(' '), body: o.body ?? '',
+        status: o.status ?? 'backlog', priority: o.priority ?? 'P2', labels: o.labels ? o.labels.split(',') : [],
+        links: links(), assignee: o.assignee ?? null, actor });
+      return { out: `#${id}`, json: id };
+    }
+    case 'move':
+      need(2, 'move <id> <status> ["note"]');
+      await callFn('task_move', { id: args[0], status: args[1], note: args.slice(2).join(' ') || null, actor });
+      return { out: `#${args[0].replace('#', '')} → ${args[1]}` };
+    case 'done':
+      need(2, 'done <id> "summary"');
+      await callFn('task_done', { id: args[0], summary: args.slice(1).join(' '), links: links(), actor });
+      return { out: `#${args[0].replace('#', '')} done` };
+    case 'edit': {
+      need(1, 'edit <id> --title/--body/--priority/--assignee/--project');
+      const fields: Record<string, unknown> = {};
+      for (const k of ['title', 'body', 'priority', 'assignee', 'project'] as const) if (o[k] !== undefined) fields[k] = o[k];
+      if (o.labels) fields.labels = o.labels.split(',');
+      const l = links(); if (Object.keys(l).length) fields.links = l;
+      await callFn('task_update', { id: args[0], fields, actor });
+      return { out: `#${args[0].replace('#', '')} updated` };
+    }
+    case 'log':
+      need(2, 'log <project> "summary"');
+      await callFn('log', { project: args[0], summary: args.slice(1).join(' '), task_id: o.task ?? null, actor });
+      return { out: 'logged' };
+    case 'next': {
+      const rows: any = await callFn('task_claim', { project: args[0] ?? null, actor });
+      if (!rows.length) return { out: 'nothing to claim', json: null };
+      const t = rows[0];
+      return { out: `${line(t)}${t.body ? '\n\n' + t.body : ''}`, json: t };
+    }
+    case 'mine': {
+      const rows: any = await callFn('mine', { actor });
+      return { out: rows.length ? rows.map(line).join('\n') : 'no tasks assigned to ' + actor, json: rows };
+    }
+    case 'ask': {
+      need(2, 'ask <project> "question"');
+      const reply_to = process.env.HERDR_PANE_ID ? { machine: hostname(), pane: process.env.HERDR_PANE_ID } : null;
+      const id = await callFn('ask', { project: args[0], body: args.slice(1).join(' '), options: o.option ? options() : null,
+        multi: !!o.multi, blocking: !!o.blocking, task_id: o.task ?? null, context: o.context ?? null, reply_to, actor });
+      return { out: `Q${id} posted — keep working; the answer arrives via the orchestrator (or \`cb pending\`)`, json: id };
+    }
+    case 'pending': {
+      const rows: any = await callFn('answers_pending', { project: args[0] ?? null });
+      return { out: rows.length ? rows.map((q: any) =>
+        `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}\n  asked: ${q.body}\n  answer: ${q.answer}`).join('\n')
+        : 'no answers waiting', json: rows };
+    }
+    case 'delivered':
+      need(1, 'delivered <qid> [session]');
+      await callFn('answer_delivered', { id: args[0].replace(/^q/i, ''), delivered_to: args[1] ?? null, actor });
+      return { out: `Q${args[0].replace(/^q/i, '')} delivered` };
+    case 'withdraw':
+      need(1, 'withdraw <qid>');
+      await callFn('withdraw', { id: args[0].replace(/^q/i, ''), actor });
+      return { out: `Q${args[0].replace(/^q/i, '')} withdrawn` };
+    case 'brief': {
+      const b = await callFn('brief', { project: args[0] ?? null });
+      if (o.json) return { json: b };
+      printBrief(b);
+      return {};
+    }
+    default:
+      return { out: HELP };
+  }
+}
+
+async function main() {
+  if (o.help) { console.log(HELP); return; }
+  let r: any;
+  try {
+    r = await run();
+  } catch (e: any) {
+    if (e?.code !== 'ECONNREFUSED') throw e;
+    (await import('../db/pg.ts')).ensurePg();
+    r = await run();
+  }
+  if (o.json && 'json' in r) console.log(JSON.stringify(r.json, null, 2));
+  else if (r.out) console.log(r.out);
+}
+
+try {
+  await main();
+} catch (e: any) {
+  console.error(`cb: ${e?.message ?? e}`);
+  process.exitCode = 1;
+} finally {
+  await sql.end({ timeout: 1 });
+}

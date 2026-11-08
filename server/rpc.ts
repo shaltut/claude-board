@@ -17,7 +17,7 @@ function param(i: number, v: unknown): { expr: string; value: unknown } {
   const n = `$${i}`;
   if (v === null || v === undefined) return { expr: n, value: null };
   if (typeof v === 'object') return { expr: `${n}::jsonb`, value: v };
-  return { expr: n, value: String(v) };
+  return { expr: n, value: typeof v === "boolean" ? v : String(v) }; // postgres.js serializes booleans by identity
 }
 
 export async function callFn(fn: string, args: Record<string, unknown> = {}) {
