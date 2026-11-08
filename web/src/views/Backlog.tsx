@@ -9,7 +9,7 @@ import { GripVertical, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { rpc, useProjects, useTasks, type Status, type Task } from '@/lib/api'
 import { ago } from '@/lib/format'
-import { dropIndex, rankAt } from '@/lib/rank'
+import { bandRank, dropIndex } from '@/lib/rank'
 import { go, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -72,7 +72,7 @@ export function Backlog({ route }: { route: Route }) {
     const list = lists[to].filter((x) => x.id !== t.id)
     const index = dropIndex(lists[to], t.id, e.over.id, to === t.status)
     if (index === null) return
-    try { await moveTask(t, to, rankAt(list, index)) } catch (err: any) { toast.error(err.message) }
+    try { await moveTask(t, to, bandRank(list, index, t.priority)) } catch (err: any) { toast.error(err.message) }
     await qc.invalidateQueries()
   }
 

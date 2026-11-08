@@ -22,3 +22,6 @@ On top of that:
    Then go back to managing the other sessions.
 7. When a worker finishes, check its `cb done` has a summary and links. If not, add them.
 8. Keep running. Waiting on Ahmed is never a reason to stop: check `cb pending` again later.
+9. You own priorities. Queues run by priority, then Ahmed's drag order inside a priority.
+   P0 = drop everything (production down, client blocked) · P1 = today · P2 = this week (default) ·
+   P3 = someday. Re-rate with `cb edit <id> --priority P1` when things change; keep P0 rare.

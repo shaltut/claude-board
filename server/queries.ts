@@ -13,7 +13,7 @@ export function tasks(project?: string, status?: string) {
   const filter = status
     ? sql`status = ${status}`
     : sql`status <> 'cancelled' and (status <> 'done' or done_at > now() - interval '7 days')`;
-  return sql`select * from cb.tasks where ${filter} ${proj(project)} order by status, rank, id`;
+  return sql`select * from cb.tasks where ${filter} ${proj(project)} order by status, priority, rank, id`;
 }
 
 export async function task(id: number) {

@@ -10,7 +10,7 @@ import { ChevronDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { rpc, useTasks, type Status, type Task } from '@/lib/api'
 import { STATUS } from '@/lib/format'
-import { dropIndex, rankAt } from '@/lib/rank'
+import { bandRank, byQueue, dropIndex } from '@/lib/rank'
 import { go, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { StatusDot } from '@/components/Chips'
@@ -81,7 +81,7 @@ export function Board({ route }: { route: Route }) {
     const rows = data.map((t) => (optimistic && t.id === optimistic.id ? { ...t, status: optimistic.status, rank: optimistic.rank } : t))
     const by = Object.fromEntries(COLUMNS.map((s) => [s, [] as Task[]])) as Record<Status, Task[]>
     for (const t of rows) by[t.status]?.push(t)
-    for (const s of COLUMNS) by[s].sort((a, b) => (s === 'done' ? +new Date(b.done_at ?? 0) - +new Date(a.done_at ?? 0) : a.rank - b.rank || a.id - b.id))
+    for (const s of COLUMNS) by[s].sort((a, b) => (s === 'done' ? +new Date(b.done_at ?? 0) - +new Date(a.done_at ?? 0) : byQueue(a, b)))
     return by
   }, [data, optimistic])
 
@@ -95,7 +95,7 @@ export function Board({ route }: { route: Route }) {
     const list = columns[to].filter((x) => x.id !== t.id)
     const index = dropIndex(columns[to], t.id, e.over.id, to === t.status)
     if (index === null) return
-    const rank = to === 'done' ? null : rankAt(list, index)
+    const rank = to === 'done' ? null : bandRank(list, index, t.priority)
     setOptimistic({ id: t.id, status: to, rank: rank ?? t.rank })
     try {
       await moveTask(t, to, rank)

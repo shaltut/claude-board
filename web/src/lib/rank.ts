@@ -23,3 +23,19 @@ export function dropIndex(column: { id: number }[], activeId: number, overId: nu
   }
   return over === -1 ? column.length : over
 }
+
+type Queued = { id: number; priority: string; rank: number }
+
+/** Queue order everywhere: priority first (P0 on top), then Ahmed's drag order. */
+export function byQueue(a: Queued, b: Queued): number {
+  return a.priority.localeCompare(b.priority) || a.rank - b.rank || a.id - b.id
+}
+
+/**
+ * Rank for a card of `priority` dropped at `index` of `list` (queue-ordered, dragged card excluded).
+ * Only same-priority cards count: dropping above the band lands at its top, below it at its bottom.
+ */
+export function bandRank(list: Queued[], index: number, priority: string): number {
+  const band = list.filter((x) => x.priority === priority)
+  return rankAt(band, list.slice(0, index).filter((x) => x.priority === priority).length)
+}

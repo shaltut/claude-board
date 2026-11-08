@@ -25,3 +25,7 @@ and Ahmed's view of what you do. Keep it true at all times. Use the `cb` command
 8. If nothing at all can continue, say so in one line and end your turn. Don't idle.
 9. On the MacBook `cb` reaches the board on shaltoot over Tailscale. If it says "board unreachable",
    keep working and register what you did once it is back. Never stop because the board is down.
+10. Priority sets the order of every queue (then Ahmed's drag order inside a priority):
+    P0 = drop everything (production down, client blocked) · P1 = today · P2 = this week (default) ·
+    P3 = someday. Set it when you add work (`-p P1`); change it with `cb edit <id> --priority P1`.
+    Don't inflate: if everything is P0, nothing is.

@@ -392,7 +392,7 @@ begin
   select t.id into tid from cb.tasks t
    where t.status = 'next' and (p is null or t.project = p)
      and (t.assignee is null or t.assignee = a)  -- never take a task queued for someone else
-   order by t.rank, t.id limit 1
+   order by t.priority, t.rank, t.id limit 1
    for update skip locked;
   if tid is null then return; end if;
   perform set_config('cb.note', 'claimed by ' || a, true);
@@ -413,7 +413,7 @@ begin
       or (t.assignee is distinct from a and exists (
             select 1 from cb.events e where e.task_id = t.id and e.data -> 'assignee' ->> 'from' = a
                and e.at > now() - interval '24 hours'))
-   order by t.status, t.rank;
+   order by t.status, t.priority, t.rank;
 end $$;
 
 -- ---------------------------------------------------------------- questions
@@ -562,10 +562,10 @@ end $$;
 
 drop function if exists cb._brief_tasks cascade;
 create function cb._brief_tasks(p text, s text, lim int) returns jsonb language sql stable as $$
-  select coalesce(jsonb_agg(x order by x.rank), '[]') from (
+  select coalesce(jsonb_agg(x order by x.priority, x.rank), '[]') from (
     select t.id, t.project, t.title, t.priority, t.assignee, t.updated_at, t.blocked_on, t.rank
       from cb.tasks t where t.status = s and (p is null or t.project = p)
-     order by t.rank limit lim) x
+     order by t.priority, t.rank limit lim) x
 $$;
 
 create function cb.seen(at timestamptz default now()) returns void language plpgsql as $$

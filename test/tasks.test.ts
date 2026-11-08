@@ -197,3 +197,15 @@ test('project aliases resolve to the product and tag new work', async () => {
   assert.equal((await sql`select * from cb.task_claim('OCR Arena', 'W1')`)[0].title, 'via alias');
   assert.deepEqual((await sql`select slug from cb.projects`).map((r: any) => r.slug), ['ihop']);
 });
+
+test('queues run by priority, then drag order', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'P2 first in', status => 'next', priority => 'P2')`;
+  await sql`select cb.task_add(project => 'demo', title => 'P1 later', status => 'next', priority => 'P1')`;
+  await sql`select cb.task_add(project => 'demo', title => 'P3', status => 'next', priority => 'P3')`;
+  const [{ b }] = await sql`select cb.brief('demo') as b`;
+  assert.deepEqual(b.next.map((t: any) => t.title), ['P1 later', 'P2 first in', 'P3']);
+  await sql`select cb.task_update('3', ${sql.json({ priority: 'P0' })})`;
+  assert.equal((await sql`select * from cb.task_claim('demo', 'W1')`)[0].title, 'P3');
+  assert.equal((await sql`select * from cb.task_claim('demo', 'W1')`)[0].title, 'P1 later');
+});
