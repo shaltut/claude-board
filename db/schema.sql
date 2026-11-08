@@ -13,8 +13,6 @@ create table if not exists cb.projects (
   created_at timestamptz not null default now()
 );
 
-alter table cb.events drop constraint if exists events_kind_check;
-alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle'));
 
 -- Old or alternative names for a project: "tawuniya" → ihop. New work through an alias gets its tags.
 create table if not exists cb.project_aliases (
@@ -78,6 +76,8 @@ create table if not exists cb.events (
   summary     text not null default '',
   data        jsonb not null default '{}'
 );
+alter table cb.events drop constraint if exists events_kind_check;
+alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle'));
 
 alter table cb.questions add column if not exists multi boolean not null default false;
 
