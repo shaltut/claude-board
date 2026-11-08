@@ -81,3 +81,12 @@ test('rpc booleans survive (blocking ask blocks task)', async () => {
   assert.equal(t.status, 'blocked');
   assert.equal(q.multi, true);
 });
+
+test('GET /api/sessions lists sessions for a project', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'run', status => 'in_progress', actor => 'W6@macbook')`;
+  const res = await app.request('/api/sessions?project=ihop');
+  assert.equal(res.status, 200);
+  const rows = await res.json();
+  assert.deepEqual(rows.map((r: any) => [r.actor, r.doing.length]), [['W6@macbook', 1]]);
+});

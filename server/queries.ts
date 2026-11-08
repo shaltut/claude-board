@@ -57,3 +57,8 @@ export async function lastSeen() {
   const [r] = await sql`select cb.last_seen() as at`;
   return { at: r.at };
 }
+
+export async function sessions(project?: string) {
+  const [{ o }] = await sql`select cb.sessions_overview(${project ?? null}) as o`;
+  return o;
+}

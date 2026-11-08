@@ -129,6 +129,7 @@ drop function if exists cb.mine cascade;
 drop function if exists cb.iam cascade;
 drop function if exists cb.inbox cascade;
 drop function if exists cb.broadcast cascade;
+drop function if exists cb.sessions_overview cascade;
 drop function if exists cb.broadcast_seen cascade;
 drop function if exists cb._broadcasts cascade;
 
@@ -698,4 +699,31 @@ begin
   cur := cur || array(select x from unnest(ad) with ordinality u(x, o) where x <> all(cur) order by o);
   update cb.tasks t set labels = cur where t.id = tid;
   return cur;
+end $$;
+
+-- One row per session/worker: bound sessions (cb iam), plus anyone who acted or holds open work in
+-- the last week. live = its relay checked in within 90s (relays poll every 30s).
+create function cb.sessions_overview(project text default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb.read_project(project);
+begin
+  return coalesce((select jsonb_agg(x.r order by (x.r ->> 'live') desc, x.r ->> 'actor') from (
+    select jsonb_build_object(
+      'actor', a.actor, 'project', s.project, 'machine', s.machine, 'pane', s.pane, 'last_seen', s.last_seen,
+      'live', coalesce(s.last_seen > now() - interval '90 seconds', false),
+      'doing', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'priority', t.priority, 'status', t.status) order by t.updated_at desc)
+                           from cb.tasks t where t.assignee = a.actor and t.status in ('in_progress', 'blocked', 'review') and (p is null or t.project = p)), '[]'),
+      'queued', (select count(*) from cb.tasks t where t.assignee = a.actor and t.status = 'next' and (p is null or t.project = p)),
+      'done_24h', (select count(*) from cb.tasks t where t.assignee = a.actor and t.status = 'done' and t.done_at > now() - interval '24 hours' and (p is null or t.project = p)),
+      'open_questions', (select count(*) from cb.questions q where q.asked_by = a.actor and q.status = 'open' and (p is null or q.project = p)),
+      'last', (select jsonb_build_object('at', e.at, 'kind', e.kind, 'summary', e.summary, 'task_id', e.task_id)
+                 from cb.events e where e.actor = a.actor and (p is null or e.project = p) order by e.id desc limit 1)) as r
+    from (
+      select s2.actor from cb.sessions s2 where p is null or s2.project = p
+      union select e.actor from cb.events e where e.at > now() - interval '7 days' and (p is null or e.project = p)
+      union select t.assignee from cb.tasks t where t.assignee is not null and t.status not in ('done', 'cancelled') and (p is null or t.project = p)
+    ) a
+    left join lateral (select * from cb.sessions s3 where s3.actor = a.actor order by s3.last_seen desc limit 1) s on true
+    where a.actor is not null and a.actor not in ('ahmed', 'relay', 'unknown')
+  ) x), '[]');
 end $$;

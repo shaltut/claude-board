@@ -10,7 +10,8 @@ const TABS: { view: View; label: string; key: string }[] = [
   { view: 'today', label: 'Today', key: '1' },
   { view: 'board', label: 'Board', key: '2' },
   { view: 'backlog', label: 'Backlog', key: '3' },
-  { view: 'history', label: 'History', key: '4' },
+  { view: 'sessions', label: 'Sessions', key: '4' },
+  { view: 'history', label: 'History', key: '5' },
 ]
 
 export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' | 'reconnecting'; onSearch: () => void }) {
@@ -28,7 +29,7 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
           {TABS.map((t) => {
             const active = route.view === t.view || (t.view === 'today' && route.view === 'questions')
             return (
-              <button key={t.view} onClick={() => go({ view: t.view, task: undefined })} title={`${t.label} (${t.key})`}
+              <button key={t.view} onClick={() => go({ view: t.view, task: undefined, actor: undefined })} title={`${t.label} (${t.key})`}
                 className={cn('relative flex h-14 items-center gap-1.5 px-2.5 text-sm transition-colors',
                   active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground')}>
                 {t.label}

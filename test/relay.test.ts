@@ -170,3 +170,28 @@ test('a session cannot change another project\'s tasks', async () => {
   assert.deepEqual({ ...t }, { status: 'in_progress', priority: 'P2' });
   assert.equal(run(['done', '2', 'fine']).status, 0);
 });
+
+test('sessions overview: who exists, what each is doing, live relay, questions', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
+  await sql`select cb.task_add(project => 'board', title => 'seed2')`;
+  await sql`select cb.iam('pc', 'w2:p2', 'orch', 'ihop')`;
+  await sql`select cb.iam('pc', 'w3:pA', 'dev', 'board')`;
+  await sql`select cb.inbox('pc', 'w2:p2', 0)`; // its relay just checked in
+  await sql`update cb.sessions set last_seen = now() - interval '10 minutes' where pane = 'w3:pA'`;
+  await sql`select cb.task_add(project => 'ihop', title => 'SC64 run', status => 'in_progress', actor => 'W6@macbook')`; // no cb iam yet
+  await sql`select cb.task_add(project => 'ihop', title => 'queued for W6', status => 'next', assignee => 'W6@macbook')`;
+  await sql`select cb.ask(project => 'ihop', body => 'fire?', actor => 'W6@macbook')`;
+  const [{ o }] = await sql`select cb.sessions_overview('ihop') as o`;
+  const by = Object.fromEntries(o.map((s: any) => [s.actor, s]));
+  assert.deepEqual(Object.keys(by).sort(), ['W6@macbook', 'orch']);
+  assert.equal(by.orch.live, true);
+  assert.equal(by.orch.pane, 'w2:p2');
+  assert.deepEqual(by['W6@macbook'].doing.map((t: any) => t.title), ['SC64 run']);
+  assert.equal(by['W6@macbook'].queued, 1);
+  assert.equal(by['W6@macbook'].open_questions, 1);
+  assert.equal(by['W6@macbook'].live, false);
+  assert.equal(by['W6@macbook'].last.summary, 'fire?');
+  const [{ all }] = await sql`select cb.sessions_overview() as all`;
+  assert.equal(all.find((s: any) => s.actor === 'dev').live, false);
+});

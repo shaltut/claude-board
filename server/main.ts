@@ -41,6 +41,7 @@ app.get('/api/today', async (c) => {
   return c.json(await q.today(opt(c.req.query('project')), since));
 });
 app.get('/api/last-seen', async (c) => c.json(await q.lastSeen()));
+app.get('/api/sessions', async (c) => c.json(await q.sessions(opt(c.req.query('project')))));
 
 // Live updates: one LISTEN connection fanned out to every open page.
 type Client = (table: string) => void;
