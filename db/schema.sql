@@ -241,7 +241,8 @@ begin
   if coalesce(trim(title), '') = '' then raise exception 'title is required'; end if;
   insert into cb.tasks (project, title, body, status, priority, labels, links, assignee, created_by)
   values (p, trim(title), coalesce(body, ''), cb.norm_status(status), cb.norm_priority(priority),
-          array(select jsonb_array_elements_text(coalesce(labels, '[]'))), coalesce(links, '{}'), assignee, a)
+          array(select jsonb_array_elements_text(coalesce(labels, '[]'))), coalesce(links, '{}'),
+          coalesce(assignee, case when cb.norm_status(status) = 'in_progress' then a end), a)
   returning cb.tasks.id into new_id;
   return new_id;
 end $$;

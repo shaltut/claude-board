@@ -141,3 +141,13 @@ test('explicit updated_at is kept', async () => {
   const [t] = await sql`select updated_at from cb.tasks where id = 1`;
   assert.equal(new Date(t.updated_at).toISOString().slice(0, 10), '2026-01-02');
 });
+
+test('adding in_progress work assigns it to the actor', async () => {
+  const sql = await db();
+  const [{ id }] = await sql`select cb.task_add(project => 'demo', title => 'in hand', status => 'in_progress', actor => 'W1@mac') as id`;
+  const [{ id: other }] = await sql`select cb.task_add(project => 'demo', title => 'queued', status => 'next', actor => 'W1@mac') as id`;
+  const mine = await sql`select id from cb.mine('W1@mac')`;
+  assert.deepEqual(mine.map((r: any) => Number(r.id)), [Number(id)]);
+  const [t] = await sql`select assignee from cb.tasks where id = ${other}`;
+  assert.equal(t.assignee, null);
+});
