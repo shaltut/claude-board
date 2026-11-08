@@ -9,6 +9,8 @@ const BIN = process.env.CB_PG_BIN ?? 'C:/Program Files/PostgreSQL/16/bin';
 const pgCtl = join(BIN, 'pg_ctl.exe');
 
 export function ensurePg(dir = PGDATA, port = 5434): void {
+  // Already serving on the port (the main checkout's cluster, seen from a worktree): use it.
+  if (spawnSync(join(BIN, 'pg_isready.exe'), ['-h', '127.0.0.1', '-p', String(port)], { stdio: 'ignore' }).status === 0) return;
   if (!existsSync(join(dir, 'PG_VERSION'))) {
     const i = spawnSync(join(BIN, 'initdb.exe'), ['-D', dir, '-U', 'cb', '--auth=trust', '-E', 'UTF8'], { stdio: 'pipe', encoding: 'utf8' });
     if (i.status !== 0) throw new Error(`could not create Postgres cluster in ${dir}: ${i.stderr || i.stdout}`);
