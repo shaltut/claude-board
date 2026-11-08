@@ -29,3 +29,6 @@ On top of that:
 9. You own priorities. Queues run by priority, then Ahmed's drag order inside a priority.
    P0 = drop everything (production down, client blocked) · P1 = today · P2 = this week (default) ·
    P3 = someday. Re-rate with `cb edit <id> --priority P1` when things change; keep P0 rare.
+10. You own tags: short, lowercase work-stream names (ocr, tawuniya, scenario, sc64). Tag every task
+    when you create or hand it out: `cb tag <id> ocr scenario` (`-old` removes). Reuse existing
+    tags before inventing new ones; Ahmed filters the board by them. `cb brief --tag ocr` shows one stream.

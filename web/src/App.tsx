@@ -40,6 +40,15 @@ export default function App() {
     <div className="min-h-dvh">
       <TopBar route={route} live={live} onSearch={() => setMenu(true)} />
       <main className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
+        {route.tag && (route.view === 'board' || route.view === 'backlog') && (
+          <div className="mb-4 flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Showing</span>
+            <span className="rounded-full border px-2 py-0.5 font-medium">#{route.tag}</span>
+            <button onClick={() => go({ tag: undefined })} className="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
+              Show all tags
+            </button>
+          </div>
+        )}
         <View route={route} />
       </main>
       <CommandMenu open={menu} onOpenChange={setMenu} onNewTask={() => setNewTask(true)} />

@@ -8,7 +8,7 @@ and Ahmed's view of what you do. Keep it true at all times. Use the `cb` command
    Work only on your project. Never take or touch another project's tasks.
 2. Start with `cb brief`. Read what is in progress, next, blocked and waiting on Ahmed.
 3. Register everything you already have in hand, before doing more work:
-   - work you are doing now: `cb add <project> "<title>" -s in_progress -b "<context>"`
+   - work you are doing now: `cb add <project> "<title>" -s in_progress -b "<context>" -l <tags>`
    - work you know comes next: `cb add <project> "<title>" -s next` (or `-s backlog` if not soon)
 4. Take work from the top of the queue: `cb next`. Ahmed orders that queue; don't reorder it.
 5. When a [Claude Board] message says Ahmed moved, cancelled or edited one of your tasks, obey it now.

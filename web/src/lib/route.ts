@@ -3,21 +3,22 @@ import { useEffect, useState } from 'react'
 export type View = 'today' | 'board' | 'backlog' | 'history' | 'questions'
 export const VIEWS: View[] = ['today', 'board', 'backlog', 'history']
 
-export interface Route { view: View; project?: string; task?: number }
+export interface Route { view: View; project?: string; task?: number; tag?: string }
 
-/** Hash routes: #/board?p=<project>&t=<task id>. The task panel opens over whatever view is showing. */
+/** Hash routes: #/board?p=<project>&t=<task id>&g=<tag>. The task panel opens over whatever view is showing. */
 export function parse(hash = location.hash): Route {
   const [path, query = ''] = hash.replace(/^#\/?/, '').split('?')
   const p = new URLSearchParams(query)
   const view = (['today', 'board', 'backlog', 'history', 'questions'].includes(path) ? path : 'today') as View
   const t = Number(p.get('t'))
-  return { view, project: p.get('p') || undefined, task: t > 0 ? t : undefined }
+  return { view, project: p.get('p') || undefined, task: t > 0 ? t : undefined, tag: p.get('g') || undefined }
 }
 
 export function href(r: Route) {
   const p = new URLSearchParams()
   if (r.project) p.set('p', r.project)
   if (r.task) p.set('t', String(r.task))
+  if (r.tag) p.set('g', r.tag)
   const s = p.toString()
   return `#/${r.view}${s ? `?${s}` : ''}`
 }

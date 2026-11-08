@@ -11,7 +11,8 @@ const HELP = `cb — Claude Board (http://localhost:4747)
   cb broadcast "<message>" [--project p]     a message to every session (or one project's), pushed by relays
   cb relay [--restart]                       push answers, task changes, broadcasts and new work into this session
   cb iam <name> [project]                    name this session once (e.g. W1@macbook ihop); later commands act as it, in that project
-  cb brief [project]                         what's in progress / next / blocked / waiting
+  cb tag <id> <tag>... [-<tag>]...           tag work streams (ocr, tawuniya); -tag removes
+  cb brief [project] [--tag t]               what's in progress / next / blocked / waiting
   cb next [project]                          claim the top task in Next (sets in_progress + you)
   cb mine                                    your tasks (re-check between steps; obey moves/cancels)
   cb add <project> "<title>" [-s next] [-p P1] [-b body] [-l a,b] [--link k=v]
@@ -35,7 +36,7 @@ const OPTIONS = {
   title: { type: 'string' }, assignee: { type: 'string' }, project: { type: 'string' },
   task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
   multi: { type: 'boolean' }, blocking: { type: 'boolean' }, context: { type: 'string', short: 'c' },
-  'reply-to': { type: 'string' }, restart: { type: 'boolean' },
+  'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' },
 } as const;
 
 // Text like "-5% latency" is text, not a flag: only --name, --name=x and -x look like options.
@@ -102,7 +103,7 @@ function options() {
 }
 
 const line = (t: any) =>
-  `#${t.id} [${t.status ?? ''}] ${t.priority} ${t.title}${t.assignee ? ` (${t.assignee})` : ''} · ${t.project}`.replace(' [] ', ' ');
+  `#${t.id} [${t.status ?? ''}] ${t.priority} ${t.title}${t.labels?.length ? ` {${t.labels.join(', ')}}` : ''}${t.assignee ? ` (${t.assignee})` : ''} · ${t.project}`.replace(' [] ', ' ');
 
 function printBrief(b: any) {
   const sec = (name: string, rows: any[], fmt: (r: any) => string) => {
@@ -131,6 +132,14 @@ async function guard(id: string | undefined) {
 async function run(): Promise<unknown> {
   await resolveActor();
   switch (cmd) {
+    case 'tag': {
+      need(2, 'tag <id> <tag>... [-<tag>]...   e.g. cb tag 42 ocr tawuniya -old');
+      await guard(args[0]);
+      const tags = args.slice(1);
+      const now: any = await callFn('task_tag', { id: args[0], actor,
+        add: tags.filter((x) => !x.startsWith('-')), remove: tags.filter((x) => x.startsWith('-')).map((x) => x.slice(1)) });
+      return { out: `#${args[0].replace(/^#/, '')} tags: ${now.length ? now.join(', ') : '(none)'}`, json: now };
+    }
     case 'broadcast': {
       need(1, 'broadcast "<message>" [--project <p>]');
       const id = await callFn('broadcast', { message: args.join(' '), project: o.project ?? null, actor });
@@ -215,7 +224,7 @@ async function run(): Promise<unknown> {
       await callFn('withdraw', { id: args[0].replace(/^q/i, ''), actor });
       return { out: `Q${args[0].replace(/^q/i, '')} withdrawn` };
     case 'brief': {
-      const b = await callFn('brief', { project: args[0] ?? sessionProject });
+      const b = await callFn('brief', { project: args[0] ?? sessionProject, tag: o.tag ?? null });
       if (o.json) return { json: b };
       printBrief(b);
       return {};

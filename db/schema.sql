@@ -118,6 +118,8 @@ drop function if exists cb.tasks_before cascade;
 drop function if exists cb.tasks_history cascade;
 drop function if exists cb.notify cascade;
 drop function if exists cb.task_add cascade;
+drop function if exists cb.norm_tag cascade;
+drop function if exists cb.task_tag cascade;
 drop function if exists cb.task_move cascade;
 drop function if exists cb.task_update cascade;
 drop function if exists cb.task_done cascade;
@@ -181,6 +183,11 @@ end $$;
 -- One normalization for every path: "Demo API" → demo-api.
 create function cb.slug(project text) returns text language sql immutable as $$
   select regexp_replace(lower(trim(coalesce(project, ''))), '[^a-z0-9_.-]+', '-', 'g')
+$$;
+
+-- Tags (stored in tasks.labels): "Arabic RTL " → arabic-rtl.
+create function cb.norm_tag(tag text) returns text language sql immutable as $$
+  select regexp_replace(lower(trim(coalesce($1, ''))), '[[:space:]]+', '-', 'g')
 $$;
 
 -- slug, then follow an alias: "OCR Arena" → ocr-arena → ihop.
@@ -327,7 +334,7 @@ create function cb.task_add(project text, title text, body text default '', stat
 returns bigint language plpgsql as $$
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); p text := cb.ensure_project(project); new_id bigint;
-  l text[] := array(select jsonb_array_elements_text(coalesce(labels, '[]')));
+  l text[] := array(select distinct cb.norm_tag(x) from jsonb_array_elements_text(coalesce(labels, '[]')) x where cb.norm_tag(x) <> '');
 begin
   if coalesce(trim(title), '') = '' then raise exception 'title is required'; end if;
   -- work added through an alias ("tawuniya") keeps that stream's tags
@@ -564,16 +571,16 @@ begin
 end $$;
 
 -- Snapshot a session reads at start.
-create function cb.brief(project text default null)
+create function cb.brief(project text default null, tag text default null)
 returns jsonb language plpgsql stable as $$
 #variable_conflict use_variable
-declare p text := cb.read_project(project);
+declare p text := cb.read_project(project); tg text := nullif(cb.norm_tag(tag), '');
 begin
   return jsonb_build_object(
-    'in_progress', cb._brief_tasks(p, 'in_progress', 50),
-    'next', cb._brief_tasks(p, 'next', 10),
-    'blocked', cb._brief_tasks(p, 'blocked', 50),
-    'review', cb._brief_tasks(p, 'review', 50),
+    'in_progress', cb._brief_tasks(p, tg, 'in_progress', 50),
+    'next', cb._brief_tasks(p, tg, 'next', 10),
+    'blocked', cb._brief_tasks(p, tg, 'blocked', 50),
+    'review', cb._brief_tasks(p, tg, 'review', 50),
     'open_questions', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body,
         'blocking', q.blocking, 'asked_by', q.asked_by, 'task_id', q.task_id, 'options', q.options) order by q.blocking desc, q.id)
       from cb.questions q where q.status = 'open' and (p is null or q.project = p)), '[]'),
@@ -587,10 +594,10 @@ begin
 end $$;
 
 drop function if exists cb._brief_tasks cascade;
-create function cb._brief_tasks(p text, s text, lim int) returns jsonb language sql stable as $$
+create function cb._brief_tasks(p text, tg text, s text, lim int) returns jsonb language sql stable as $$
   select coalesce(jsonb_agg(x order by x.priority, x.rank), '[]') from (
-    select t.id, t.project, t.title, t.priority, t.assignee, t.updated_at, t.blocked_on, t.rank
-      from cb.tasks t where t.status = s and (p is null or t.project = p)
+    select t.id, t.project, t.title, t.priority, t.assignee, t.updated_at, t.blocked_on, t.rank, t.labels
+      from cb.tasks t where t.status = s and (p is null or t.project = p) and (tg is null or tg = any(t.labels))
      order by t.priority, t.rank limit lim) x
 $$;
 
@@ -674,3 +681,21 @@ create function cb.broadcast_seen(machine text, pane text, upto bigint) returns 
   update cb.sessions s set broadcast_seen = greatest(s.broadcast_seen, $3)
    where s.machine = lower(trim($1)) and s.pane = $2
 $$;
+
+-- Add and remove tags in one call (the orchestrator tags work streams: ocr, tawuniya, ...). Returns the new tags.
+create function cb.task_tag(id text, add jsonb default '[]', remove jsonb default '[]', actor text default null)
+returns text[] language plpgsql as $$
+#variable_conflict use_variable
+declare
+  a text := cb.set_actor(actor); tid bigint := cb.norm_id(id); cur text[];
+  ad text[] := array(select n from (select cb.norm_tag(x) n, min(o) o from jsonb_array_elements_text(coalesce(add, '[]')) with ordinality j(x, o) group by 1) z
+                     where n <> '' order by o);
+  rm text[] := array(select cb.norm_tag(x) from jsonb_array_elements_text(coalesce(remove, '[]')) x);
+begin
+  select t.labels into cur from cb.tasks t where t.id = tid;
+  if not found then raise exception 'no task #%', tid; end if;
+  cur := array(select x from unnest(cur) with ordinality u(x, o) where x <> all(rm) order by o);
+  cur := cur || array(select x from unnest(ad) with ordinality u(x, o) where x <> all(cur) order by o);
+  update cb.tasks t set labels = cur where t.id = tid;
+  return cur;
+end $$;

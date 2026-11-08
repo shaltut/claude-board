@@ -102,3 +102,15 @@ test('--reply-to sets where the answer goes; --as alone does not use my pane', a
   assert.deepEqual(rows[0].reply_to, { machine: 'macbook', pane: 'w1:p3' });
   assert.equal(rows[1].reply_to, null);
 });
+
+test('cb tag adds and removes; brief --tag filters and shows tags', async () => {
+  await db();
+  cb(['add', 'demo', 'reader', '-s', 'next', '-l', 'tawuniya']);
+  cb(['add', 'demo', 'other', '-s', 'next']);
+  const r = cb(['tag', '1', 'OCR', '-tawuniya']);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, '#1 tags: ocr');
+  const b = cb(['brief', 'demo', '--tag', 'ocr']);
+  assert.match(b.out, /#1 P2 reader \{ocr\}/);
+  assert.doesNotMatch(b.out, /other/);
+});

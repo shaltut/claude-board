@@ -1,6 +1,7 @@
 import { cn } from '@/lib/utils'
 import { splitActor, STATUS } from '@/lib/format'
 import type { Status, Task } from '@/lib/api'
+import { go } from '@/lib/route'
 
 /** Stable hue per project slug, so a project keeps its colour everywhere. */
 export function projectHue(slug: string) {
@@ -50,4 +51,17 @@ export function Priority({ p }: { p: Task['priority'] }) {
 
 export function TaskId({ id, className }: { id: number; className?: string }) {
   return <span className={cn('font-mono text-xs text-muted-foreground', className)}>#{id}</span>
+}
+
+/** A tag (work stream). Click filters Board and Backlog to it; it doesn't open the card. */
+export function TagChip({ tag, className }: { tag: string; className?: string }) {
+  return (
+    <button type="button" title={`Show only ${tag}`}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => { e.stopPropagation(); go({ tag }) }}
+      className={cn('rounded-full border px-1.5 py-px text-[11px] leading-4 text-muted-foreground hover:border-ring hover:text-foreground', className)}
+      style={{ borderColor: `hsl(${projectHue(tag)} 45% 50% / .45)` }}>
+      #{tag}
+    </button>
+  )
 }

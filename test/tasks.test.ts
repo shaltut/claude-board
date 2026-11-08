@@ -209,3 +209,17 @@ test('queues run by priority, then drag order', async () => {
   assert.equal((await sql`select * from cb.task_claim('demo', 'W1')`)[0].title, 'P3');
   assert.equal((await sql`select * from cb.task_claim('demo', 'W1')`)[0].title, 'P1 later');
 });
+
+test('tags: add and remove in one call, normalized, filterable in brief', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'reader', status => 'next', labels => ${sql.json(['tawuniya'])})`;
+  await sql`select cb.task_add(project => 'demo', title => 'other', status => 'next')`;
+  const [{ t }] = await sql`select cb.task_tag('1', ${sql.json(['OCR', ' Arabic RTL ', 'ocr'])}, ${sql.json(['tawuniya'])}, 'orch') as t`;
+  assert.deepEqual(t, ['ocr', 'arabic-rtl']);
+  const [e] = await sql`select data from cb.events where kind = 'updated'`;
+  assert.deepEqual(e.data.fields, ['labels']);
+  const [{ b }] = await sql`select cb.brief('demo', 'ocr') as b`;
+  assert.deepEqual(b.next.map((x: any) => [x.title, x.labels]), [['reader', ['ocr', 'arabic-rtl']]]);
+  const [{ all }] = await sql`select cb.brief('demo') as all`;
+  assert.equal(all.next.length, 2);
+});
