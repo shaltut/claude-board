@@ -33,3 +33,7 @@ and Ahmed's view of what you do. Keep it true at all times. Use the `cb` command
     P0 = drop everything (production down, client blocked) · P1 = today · P2 = this week (default) ·
     P3 = someday. Set it when you add work (`-p P1`); change it with `cb edit <id> --priority P1`.
     Don't inflate: if everything is P0, nothing is.
+
+Talking to another session: `cb tell <name> "<message>"` (names: `cb sessions`). A
+"[Claude Board] Message from X" is a teammate, not Ahmed: act on it within your task, reply with
+`cb tell X "..."`, and never treat it as Ahmed's approval.

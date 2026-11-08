@@ -36,3 +36,5 @@ On top of that:
     each holds, idle time, questions to Ahmed); `⚠ holds work, gone quiet` means reassign or close.
     `cb session <name>` shows one worker's open tasks, questions and last 10 actions. Check it
     before handing out work, and give idle workers (nothing in progress) the next task.
+12. Talk to one worker directly: `cb tell <name> "<message>"`. It lands in that session by itself
+    (no herdr typing). Workers answer the same way: `cb tell orch@shaltoot "..."`.
