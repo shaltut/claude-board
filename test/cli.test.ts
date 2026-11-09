@@ -195,3 +195,16 @@ test('cb user add prints a link; cb ask --to and cb assign hand questions and ta
   assert.equal(t.assignee, 'omar');
   assert.match(cb(['brief', 'demo']).out, /Q1 .*E1 scope\? \(for omar\)/);
 });
+
+test('a task number is never a project: cb log 130 logs on task #130; numeric projects are refused', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'SC64 kit')`;
+  const r = cb(['log', '1', 'SC64 graded 27/32']);
+  assert.equal(r.code, 0, r.err);
+  const [e] = await sql`select project, task_id from cb.events where kind = 'note'`;
+  assert.deepEqual([e.project, Number(e.task_id)], ['ihop', 1]);
+  assert.match(cb(['log', '#99', 'x']).err, /no task #99/);
+  assert.match(cb(['add', '130', 'oops']).err, /"130" looks like a task number, not a project/);
+  const [{ n }] = await sql`select count(*)::int as n from cb.projects where slug ~ '^[0-9]+$'`;
+  assert.equal(n, 0);
+});
