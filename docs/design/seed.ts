@@ -24,10 +24,12 @@ const specs: [string, string, string, Record<string, unknown>][] = [
   ['rotate', core, 'Rotate staging database credentials', { status: 'in_progress', priority: 'P0', assignee: W1, labels: ['security'] }],
   ['batch', core, 'Batch submit endpoint with per-item results', { status: 'in_progress', priority: 'P1', assignee: W1, labels: ['payer-gw'], links: { branch: 'feat/batch-submit' } }],
   ['blob', core, 'Move attachments to blob storage v2', { status: 'in_progress', priority: 'P2', assignee: W2, labels: ['infra', 'attachments'] }],
-  ['xml', core, 'Remove the legacy XML exporter', { status: 'backlog', priority: 'P3', labels: ['cleanup'] }],
+  ['xml', core, 'Remove the legacy XML exporter', { status: 'backlog', priority: 'P3', type: 'chore', labels: ['cleanup'] }],
   ['ratelimit', core, 'Rate-limit the public status endpoint', { status: 'backlog', priority: 'P2', labels: ['reliability'] }],
   ['contract', core, 'Contract tests for the payer gateway', { status: 'backlog', priority: 'P1', labels: ['payer-gw', 'tests'] }],
   ['dedupe', core, 'Duplicate-claim check across resubmissions', { status: 'review', priority: 'P1', assignee: W3, labels: ['rules'], links: { pr: '#1184' } }],
+  ['cent', core, 'Split payments total one cent short on odd amounts', { status: 'next', priority: 'P1', type: 'bug', labels: ['money'], body: 'Rounding each part before summing. Round once, put the remainder on the last part.' }],
+  ['pilot', portal, 'Pick the clinics for the reviewer pilot', { status: 'in_progress', priority: 'P1', assignee: 'omar', labels: ['pilot'], body: 'Two or three clinics for the first four weeks. Reviewers there should be willing to send feedback weekly.' }],
   ['icd', core, 'Validate ICD-10 codes against the 2026 code set', { status: 'next', priority: 'P2', labels: ['rules', 'coding'] }],
   ['ocr-split', core, 'Split multi-claim PDFs before OCR', { status: 'blocked', priority: 'P1', assignee: W2, labels: ['ocr', 'attachments'] }],
   ['eligibility', core, 'Cache eligibility responses for 15 minutes', { status: 'backlog', priority: 'P2', labels: ['payer-gw', 'perf'] }],
@@ -35,15 +37,15 @@ const specs: [string, string, string, Record<string, unknown>][] = [
   ['currency', core, 'Store amounts as integer minor units', { status: 'done', priority: 'P1', assignee: W1, labels: ['money'] }],
   ['pgbouncer', core, 'Put PgBouncer in front of the write pool', { status: 'done', priority: 'P2', assignee: W3, labels: ['postgres', 'infra'] }],
   ['dark', portal, 'Dark mode for the reviewer screen', { status: 'review', priority: 'P2', assignee: W2, labels: ['ux'], links: { pr: '#412' } }],
-  ['kbd', portal, 'Keyboard shortcuts on the claim list', { status: 'next', priority: 'P2', labels: ['ux'] }],
-  ['tz', portal, 'Date picker shows the wrong day after 21:00', { status: 'done', priority: 'P1', assignee: W2, labels: ['bug'] }],
+  ['kbd', portal, 'Keyboard shortcuts on the claim list', { status: 'next', priority: 'P2', type: 'feature', labels: ['ux'] }],
+  ['tz', portal, 'Date picker shows the wrong day after 21:00', { status: 'done', priority: 'P1', assignee: W2, type: 'bug', labels: ['ui'] }],
   ['empty', portal, 'Empty state for search results', { status: 'backlog', priority: 'P3', labels: ['ux'] }],
   ['bundle', portal, 'Bundle size budget in CI', { status: 'backlog', priority: 'P3', labels: ['perf', 'ci'] }],
   ['diff', portal, 'Side-by-side diff of claim versions', { status: 'in_progress', priority: 'P1', assignee: R1, labels: ['review', 'ux'] }],
   ['a11y', portal, 'Screen-reader pass on the approval flow', { status: 'next', priority: 'P2', labels: ['ux', 'a11y'] }],
-  ['export', portal, 'CSV export keeps Arabic names intact', { status: 'blocked', priority: 'P2', assignee: R1, labels: ['bug', 'i18n'] }],
+  ['export', portal, 'CSV export keeps Arabic names intact', { status: 'blocked', priority: 'P2', assignee: R1, type: 'bug', labels: ['i18n'] }],
   ['retrain', ml, 'Retrain the anomaly model on 2026 data', { status: 'blocked', priority: 'P1', assignee: V, labels: ['model', 'eval'] }],
-  ['tokenizer', ml, 'Evaluate the new tokenizer on long clinical notes', { status: 'next', priority: 'P2', labels: ['eval'] }],
+  ['tokenizer', ml, 'Evaluate the new tokenizer on long clinical notes', { status: 'next', priority: 'P2', type: 'research', labels: ['eval'] }],
   ['codemap', ml, 'Dedup the procedure code mapping table', { status: 'done', priority: 'P2', assignee: W1, labels: ['data'] }],
   ['bench', ml, 'Download the benchmark set (40 GB)', { status: 'in_progress', priority: 'P2', assignee: V, labels: ['data'] }],
   ['report', ml, 'Eval report template with confusion matrix', { status: 'backlog', priority: 'P3', labels: ['eval'] }],
@@ -111,8 +113,18 @@ await callFn('answer', { id: String(q7), answer: '207 partial, with per-item err
 const q8 = await ask({ project: portal, actor: R1, task_id: String(T.export), body: 'Export as UTF-8 with BOM so Excel opens Arabic names correctly?',
   options: [{ label: 'Yes, add the BOM', description: null }, { label: 'No, offer XLSX instead', description: null }] });
 await callFn('answer', { id: String(q8), answer: 'Yes, add the BOM', actor: 'ahmed' });
-const q9 = await ask({ project: board, actor: W3, task_id: String(T.priority), body: 'Show the priority picker on hover only, or always?' });
+const q9 = await ask({ project: portal, actor: R1, task_id: String(T.pilot), blocking: true,
+  body: 'Start the reviewer pilot with two small clinics, or with one large hospital?',
+  options: [{ label: 'Two small clinics (recommended)', description: 'Quicker feedback, less risk if something breaks.' },
+            { label: 'One large hospital', description: 'More claims per week, but one site sets the whole picture.' }] });
 await callFn('question_assign', { id: String(q9), to_user: 'omar', actor: 'ahmed' }).catch(() => {});
+const q10 = await ask({ project: portal, actor: W2, body: 'Can the pilot reviewers get a short how-to video, or is a one-page guide enough?' });
+await callFn('question_assign', { id: String(q10), to_user: 'omar', actor: 'ahmed' }).catch(() => {});
+const q11 = await ask({ project: portal, actor: R1, body: 'Should reviewers see the claim amount before they open the attachments?',
+  options: [{ label: 'Yes', description: null }, { label: 'No, after', description: null }] });
+await callFn('question_assign', { id: String(q11), to_user: 'omar', actor: 'ahmed' }).catch(() => {});
+await callFn('answer', { id: String(q11), answer: 'Yes', actor: 'omar' });
+await callFn('log', { project: portal, task_id: String(T.pilot), summary: 'Called both clinic managers; both are in for a four-week pilot.', actor: 'omar' });
 
 const h = await callFn('huddle_open', { topic: 'Where should duplicate detection run: at intake or at adjudication?', members: [W3, W1, R1], task: String(T.dedupe), actor: W3, project: core });
 const say = (m: string, a: string) => callFn('huddle_say', { id: String(h), message: m, actor: a });
