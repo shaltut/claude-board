@@ -1,8 +1,9 @@
 // Creates the database if missing and applies schema.sql (idempotent).
-// --test targets claude_board_test. Without --test, also puts bin/ on the user PATH.
+// --test targets claude_board_test. Without --test, also puts bin/ on the user PATH (main checkout only, #373).
 import postgres from 'postgres';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { statSync } from 'node:fs';
 import { ensurePg } from './pg.ts';
 import { databaseUrl } from '../server/db.ts';
 
@@ -23,7 +24,9 @@ const sql = postgres(url.toString(), { onnotice: () => {} });
 await sql.file(join(ROOT, 'db', 'schema.sql'));
 await sql.end();
 
-if (!isTest && process.platform === 'win32') addBinToPath();
+// A worktree's .git is a file: its bin/ is a dev copy and must not shadow the live cb on PATH (#373).
+const isWorktree = statSync(join(ROOT, '.git'), { throwIfNoEntry: false })?.isFile() ?? false;
+if (!isTest && !isWorktree && process.platform === 'win32') addBinToPath();
 console.log(`claude-board: ${dbName} ready`);
 
 function addBinToPath() {

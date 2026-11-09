@@ -87,7 +87,7 @@ create table if not exists cb.events (
   data        jsonb not null default '{}'
 );
 alter table cb.events drop constraint if exists events_kind_check;
-alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user','epic'));
+alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user','epic','memory'));
 
 alter table cb.questions add column if not exists multi boolean not null default false;
 
@@ -807,7 +807,8 @@ begin
     'broadcasts', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'actor', e.actor, 'project', e.project, 'summary', e.summary, 'at', e.at)
                                                order by e.id desc)
       from cb.events e where e.kind = 'broadcast' and e.at > now() - interval '24 hours'
-                         and (p is null or e.project is null or e.project = p)), '[]'));
+                         and (p is null or e.project is null or e.project = p)), '[]'),
+    'memory', cb.mem_pack(p));  -- no project: the global entries only
 end $$;
 
 drop function if exists cb._brief_tasks cascade;
@@ -1639,3 +1640,318 @@ end $$;
 create or replace trigger tasks_unblock after update of status on cb.tasks
   for each row when (new.status in ('done', 'cancelled') and old.status not in ('done', 'cancelled'))
   execute function cb.tasks_unblock();
+
+-- ===========================================================================
+-- Shared memory (#167): short operational knowledge every session on every machine reads through cb.
+-- Kinds: rule (standing practice), ruling (Ahmed's decision, usually from an answered question), fact (system or
+-- environment state), gotcha (a known trap), runbook (a long procedure: listed by title, never pushed whole).
+-- Authority: only Ahmed's dashboard makes an entry 'ahmed' (he adds it, or confirms a proposal). A session's project
+-- fact or gotcha is live at once as 'team' (shown as "team, not Ahmed") and goes stale at review_after. A session's
+-- rule, ruling, runbook, global entry, or anything that reads like a command waits as 'proposed' and reaches no
+-- session until Ahmed confirms it. Rows are never deleted: superseded and retired ones stay readable (cb mem show).
+-- ===========================================================================
+create table if not exists cb.memories (
+  id            bigint generated always as identity primary key,
+  project       text references cb.projects(slug) on update cascade,   -- null = global: how we work, never client content
+  machine       text,                                                  -- null = every machine
+  kind          text not null check (kind in ('rule','ruling','fact','gotcha','runbook')),
+  title         text not null,
+  body          text not null default '',
+  status        text not null default 'proposed' check (status in ('proposed','active','superseded','retired')),
+  authority     text not null default 'team' check (authority in ('ahmed','team')),
+  source        jsonb not null default '{}',   -- {question_id, task_id, supersedes, flagged}
+  links         jsonb not null default '{}',
+  tags          text[] not null default '{}',
+  created_by    text not null,
+  confirmed_by  text,
+  confirmed_at  timestamptz,
+  review_after  date,                          -- facts and gotchas: stale after this (out of the pack, still searchable)
+  superseded_by bigint references cb.memories(id),
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  tsv tsvector generated always as (to_tsvector('english', title || ' ' || body)) stored
+);
+create index if not exists memories_tsv on cb.memories using gin (tsv);
+create index if not exists memories_scope on cb.memories (project, status, kind);
+create or replace trigger memories_notify after insert or update or delete on cb.memories
+  for each statement execute function cb.notify();
+
+drop function if exists cb._is_dashboard cascade;
+drop function if exists cb.norm_mem cascade;
+drop function if exists cb._mem_scope cascade;
+drop function if exists cb._mem_check cascade;
+drop function if exists cb._mem_text cascade;
+drop function if exists cb._mem_event cascade;
+drop function if exists cb._mem_json cascade;
+drop function if exists cb._mem_similar cascade;
+drop function if exists cb._mem_new cascade;
+drop function if exists cb.mem_add cascade;
+drop function if exists cb.mem_rule cascade;
+drop function if exists cb.mem_confirm cascade;
+drop function if exists cb.mem_retire cascade;
+drop function if exists cb.mem_supersede cascade;
+drop function if exists cb.mem_find cascade;
+drop function if exists cb.mem_list cascade;
+drop function if exists cb.mem_show cascade;
+drop function if exists cb.mem_pack cascade;
+
+create function cb._is_dashboard() returns boolean language sql stable as $$ select current_setting('application_name') = 'cb-web' $$;
+
+-- M12, m12 or 12 → 12; an unknown id is an error.
+create function cb.norm_mem(id text) returns bigint language plpgsql stable as $$
+#variable_conflict use_variable
+declare n bigint;
+begin
+  if coalesce(trim(id), '') !~* '^m?[0-9]+$' then raise exception 'bad memory id "%"; use one like M12', id; end if;
+  n := regexp_replace(trim(id), '^[mM]', '')::bigint;
+  if not exists (select 1 from cb.memories m where m.id = n) then raise exception 'memory M% not found', n; end if;
+  return n;
+end $$;
+
+-- 'global' (or nothing) = no project; anything else must be a known project: a memory never creates one.
+create function cb._mem_scope(project text) returns text language plpgsql stable as $$
+#variable_conflict use_variable
+begin
+  if coalesce(lower(trim(project)), '') in ('', 'global') then return null; end if;
+  return cb.read_project(project);
+end $$;
+
+-- Secrets and personal data never go in (memory reaches every session): record the shape and where it lives.
+-- Deliberately narrow so normal notes pass: a commit SHA, or the board's own passwordless postgres://cb@host URL.
+create function cb._mem_check(t text) returns void language plpgsql immutable as $$
+declare hit text := case
+    when t ~ '\m(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,})' then 'an access token'
+    when t ~ 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}' then 'a JWT'
+    when t ~ '-----BEGIN [A-Z ]*PRIVATE KEY' then 'a private key'
+    when t ~* '[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@' then 'a connection string with a password'
+    when t ~* '\m(password|passwd|pwd|secret|api[_-]?key|access[_-]?key|token)=[^\s<]' or t ~* '\m(password|passwd|pwd)\s*:\s*[^\s<]' then 'a credential'
+    when t ~ '\m[12][0-9]{9}\M' then 'a 10-digit ID number'
+    when t ~* '[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}\M' then 'an email address'
+    when t ~ '(\+[0-9][0-9 -]{8,}[0-9]|\m05[0-9]{8}\M)' then 'a phone number'
+  end;
+begin
+  if hit is not null then
+    raise exception 'that looks like %; memory is shared with every session, so record the shape and where it lives (e.g. "the key is in the vault"), not the value', hit;
+  end if;
+end $$;
+
+-- One-line title (≤ 200), body ≤ 500 unless a runbook, no secrets. Returns {title, body} cleaned.
+create function cb._mem_text(k text, t text, b text) returns text[] language plpgsql immutable as $$
+begin
+  t := regexp_replace(trim(coalesce(t, '')), '\s+', ' ', 'g');
+  b := trim(coalesce(b, ''));
+  if t = '' then raise exception 'title is required: one line, what a session needs to know'; end if;
+  if length(t) > 200 then raise exception 'title is % characters: keep it to one line under 200 and put the rest in -b', length(t); end if;
+  if k <> 'runbook' and length(b) > 500 then raise exception 'body is % characters; the limit is 500 (a runbook has none)', length(b); end if;
+  perform cb._mem_check(t || ' ' || b);
+  return array[t, b];
+end $$;
+
+-- One audit row per change (kind memory, data.action: add propose confirm renew supersede retire reject).
+create function cb._mem_event(m cb.memories, action text, summary text, a text) returns void language sql as $$
+  insert into cb.events (actor, project, kind, summary, data)
+  values ($4, $1.project, 'memory', $3, jsonb_build_object('memory', $1.id, 'action', $2, 'kind', $1.kind))
+$$;
+
+create function cb._mem_json(m cb.memories) returns jsonb language sql stable as $$
+  select (to_jsonb($1) - 'tsv') || jsonb_build_object('expired', $1.status = 'active' and coalesce($1.review_after < current_date, false))
+$$;
+
+-- Up to three live or proposed entries in the same scope that share words with this one's title: near-duplicates
+-- the writer should supersede instead of adding beside.
+create function cb._mem_similar(mid bigint) returns jsonb language plpgsql stable as $$
+declare m cb.memories; q tsquery;
+begin
+  select * into m from cb.memories x where x.id = mid;
+  q := nullif(replace(plainto_tsquery('english', m.title)::text, '&', '|'), '')::tsquery;
+  if q is null then return '[]'; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('id', o.id, 'kind', o.kind, 'title', o.title, 'status', o.status) order by o.r desc, o.id desc)
+    from (select x.id, x.kind, x.title, x.status, ts_rank(x.tsv, q) as r from cb.memories x
+           where x.id <> m.id and x.status in ('active', 'proposed') and (x.project is not distinct from m.project or x.project is null)
+             and x.tsv @@ q
+           order by r desc, x.id desc limit 3) o), '[]');
+end $$;
+
+-- Every new entry goes through here. hold = a proposal whatever the kind (a session replacing Ahmed's entry).
+create function cb._mem_new(p text, k text, t text, b text, src jsonb, lk jsonb, mach text, tg text[], days int, a text, hold boolean default false)
+returns cb.memories language plpgsql as $$
+declare dash boolean := cb._is_dashboard(); tb text[]; flagged boolean; live boolean; m cb.memories;
+begin
+  k := lower(trim(coalesce(k, '')));
+  if k not in ('rule', 'ruling', 'fact', 'gotcha', 'runbook') then
+    raise exception 'kind "%" is not one of rule, ruling, fact, gotcha, runbook', k;
+  end if;
+  if days is not null and (days < 1 or days > 365) then raise exception 'review must be 1 to 365 days, e.g. --review 30d'; end if;
+  tb := cb._mem_text(k, t, b);
+  -- reads like an order to the agent, or points somewhere to fetch: Ahmed sees it before any session does
+  flagged := (tb[1] || ' ' || tb[2]) ~* '(\mignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above|earlier)\M|\mdisregard\M|\malways\s+run\M|\mrun\s+this\M|\mcurl\M|\mwget\M|https?://)';
+  live := dash or (k in ('fact', 'gotcha') and p is not null and not flagged and not hold);
+  insert into cb.memories (project, machine, kind, title, body, status, authority, source, links, tags, created_by,
+                           confirmed_by, confirmed_at, review_after)
+  values (p, nullif(lower(trim(mach)), ''), k, tb[1], tb[2], case when live then 'active' else 'proposed' end,
+          case when dash then 'ahmed' else 'team' end,
+          coalesce(src, '{}') || case when flagged and not dash then '{"flagged": true}'::jsonb else '{}' end,
+          coalesce(lk, '{}'), coalesce(tg, '{}'), a,
+          case when dash then a end, case when dash then now() end,
+          case when k in ('fact', 'gotcha') then current_date + coalesce(days, 14) end)
+  returning * into m;
+  perform cb._mem_event(m, case when live then 'add' else 'propose' end,
+    'M' || m.id || ' ' || k || case when live then ' added: ' else ' proposed: ' end || m.title, a);
+  return m;
+end $$;
+
+-- project: a slug, or 'global'. review: days a fact or gotcha stays live ('30' or '30d'; default 14).
+-- Returns the entry plus up to three similar ones (supersede instead of adding a duplicate).
+create function cb.mem_add(project text, title text, kind text, body text default '', task_id text default null,
+                           review text default null, links jsonb default '{}', machine text default null,
+                           tags jsonb default '[]', actor text default null)
+returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); tid bigint; days int; m cb.memories;
+begin
+  if nullif(trim(task_id), '') is not null then
+    tid := cb.norm_id(task_id);
+    if not exists (select 1 from cb.tasks t where t.id = tid) then raise exception 'task #% not found', tid; end if;
+  end if;
+  if nullif(trim(review), '') is not null then
+    if trim(review) !~* '^[0-9]+d?$' then raise exception 'review "%" is not a number of days, e.g. 30d', review; end if;
+    days := rtrim(lower(trim(review)), 'd')::int;
+  end if;
+  m := cb._mem_new(cb._mem_scope(project), kind, title, body,
+         case when tid is null then '{}'::jsonb else jsonb_build_object('task_id', tid) end, links, machine,
+         array(select cb.norm_tag(x) from jsonb_array_elements_text(coalesce(tags, '[]')) x), days, a);
+  return cb._mem_json(m) || jsonb_build_object('similar', cb._mem_similar(m.id));
+end $$;
+
+-- An answered question becomes a ruling: from the dashboard ("Make it a rule") it is live at once; from a session it
+-- is a proposal. Title defaults to the answer. One live or proposed entry per question.
+create function cb.mem_rule(question text, title text default null, actor text default null) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); q cb.questions; dup bigint; m cb.memories;
+begin
+  select * into q from cb.questions x where x.id = cb.norm_id(regexp_replace(trim(coalesce(question, '')), '^[qQ]', ''));
+  if q.id is null then raise exception 'question % not found', question; end if;
+  if q.status not in ('answered', 'delivered') then raise exception 'Q% has no answer yet (it is %)', q.id, q.status; end if;
+  select x.id into dup from cb.memories x where x.source ->> 'question_id' = q.id::text and x.status in ('active', 'proposed') limit 1;
+  if dup is not null then raise exception 'Q% is already M%: cb mem show M%', q.id, dup, dup; end if;
+  m := cb._mem_new(q.project, 'ruling', coalesce(nullif(trim(title), ''), left(regexp_replace(q.answer, '\s+', ' ', 'g'), 200)),
+         left('Q' || q.id || ': ' || q.body || E'\n→ ' || q.answer, 500), jsonb_build_object('question_id', q.id),
+         '{}', null, '{}', null, a);
+  return cb._mem_json(m) || jsonb_build_object('similar', cb._mem_similar(m.id));
+end $$;
+
+-- Ahmed confirms a proposal (title/body edit it first), or renews a stale fact or gotcha for another 14 days.
+-- A confirmed replacement (source.supersedes) retires the entry it replaces.
+create function cb.mem_confirm(id text, title text default null, body text default null, actor text default null)
+returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; m cb.memories; was text; tb text[];
+begin
+  perform cb.dashboard_only('Memory');
+  a := cb.set_actor(actor);
+  select * into m from cb.memories x where x.id = cb.norm_mem(id) for update;
+  was := m.status;
+  if was not in ('proposed', 'active') then raise exception 'M% is %; only a proposed or live entry can be confirmed', m.id, was; end if;
+  tb := cb._mem_text(m.kind, coalesce(title, m.title), coalesce(body, m.body));
+  update cb.memories x set status = 'active', authority = 'ahmed', confirmed_by = a, confirmed_at = now(), updated_at = now(),
+         title = tb[1], body = tb[2],
+         review_after = case when x.kind in ('fact', 'gotcha') then greatest(x.review_after, current_date + 14) end
+   where x.id = m.id returning * into m;
+  if was = 'proposed' and m.source ? 'supersedes' then
+    update cb.memories x set status = 'superseded', superseded_by = m.id, updated_at = now()
+     where x.id = (m.source ->> 'supersedes')::bigint and x.status = 'active';
+  end if;
+  perform cb._mem_event(m, case when was = 'proposed' then 'confirm' else 'renew' end,
+    'M' || m.id || ' ' || m.kind || case when was = 'proposed' then ' confirmed: ' else ' renewed: ' end || m.title, a);
+end $$;
+
+-- Retire a live entry, or reject a proposal. Ahmed's entries only from his dashboard; a session retires team ones.
+-- ponytail: any session may retire any team entry (the design said orchestrators); narrow it if that gets abused.
+create function cb.mem_retire(id text, why text default null, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); m cb.memories; was text;
+begin
+  select * into m from cb.memories x where x.id = cb.norm_mem(id) for update;
+  was := m.status;
+  if was in ('superseded', 'retired') then raise exception 'M% is already %', m.id, was; end if;
+  if m.authority = 'ahmed' and not cb._is_dashboard() then
+    raise exception 'M% is Ahmed''s: only he retires it, on the Memory page. To change it, propose a replacement: cb mem supersede M% "<new title>"', m.id, m.id;
+  end if;
+  update cb.memories x set status = 'retired', updated_at = now() where x.id = m.id returning * into m;
+  perform cb._mem_event(m, case when was = 'proposed' then 'reject' else 'retire' end,
+    'M' || m.id || case when was = 'proposed' then ' rejected: ' else ' retired: ' end || m.title
+      || coalesce(' (' || nullif(trim(why), '') || ')', ''), a);
+end $$;
+
+-- Replace a live entry; the old one stays readable with a pointer. A session replacing Ahmed's entry only proposes:
+-- his stays live until he confirms the replacement.
+create function cb.mem_supersede(id text, title text, body text default null, actor text default null) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); old cb.memories; m cb.memories;
+begin
+  select * into old from cb.memories x where x.id = cb.norm_mem(id) for update;
+  if old.status <> 'active' then raise exception 'M% is %; only a live entry can be superseded', old.id, old.status; end if;
+  m := cb._mem_new(old.project, old.kind, title, coalesce(body, old.body), jsonb_build_object('supersedes', old.id),
+         old.links, old.machine, old.tags, null, a, old.authority = 'ahmed' and not cb._is_dashboard());
+  if m.status = 'active' then
+    update cb.memories x set status = 'superseded', superseded_by = m.id, updated_at = now() where x.id = old.id;
+    perform cb._mem_event(old, 'supersede', 'M' || old.id || ' superseded by M' || m.id || ': ' || old.title, a);
+  end if;
+  return cb._mem_json(m) || jsonb_build_object('similar', '[]'::jsonb);
+end $$;
+
+-- Search titles and bodies (full text, plus a plain substring match for words FTS drops). A project includes the
+-- global entries; no project = everywhere. Live and proposed entries; include_old adds superseded and retired.
+create function cb.mem_find(q text, project text default null, include_old boolean default false) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb._mem_scope(project); s text := trim(coalesce(q, '')); tq tsquery;
+begin
+  if s = '' then raise exception 'what to look for is required: cb mem find "<words>"'; end if;
+  tq := websearch_to_tsquery('english', s);
+  return coalesce((select jsonb_agg(cb._mem_json(y.m) order by y.n) from (
+    select m, row_number() over (order by ts_rank(m.tsv, tq) desc, m.id desc) as n
+      from cb.memories m
+     where (m.tsv @@ tq or m.title ilike '%' || s || '%' or m.body ilike '%' || s || '%')
+       and (p is null or m.project = p or m.project is null)
+       and (coalesce(include_old, false) or m.status in ('active', 'proposed'))) y
+   where y.n <= 20), '[]');
+end $$;
+
+-- Browse: rules and rulings, facts and gotchas, runbooks; proposals and stale entries are marked.
+create function cb.mem_list(project text default null, kind text default null, include_old boolean default false) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb._mem_scope(project); k text := nullif(lower(trim(kind)), '');
+begin
+  return coalesce((select jsonb_agg(cb._mem_json(m) order by
+      case m.kind when 'rule' then 0 when 'ruling' then 1 when 'fact' then 2 when 'gotcha' then 3 else 4 end, m.project nulls first, m.id)
+    from cb.memories m
+   where (p is null or m.project = p or m.project is null) and (k is null or m.kind = k)
+     and (coalesce(include_old, false) or m.status in ('active', 'proposed'))), '[]');
+end $$;
+
+create function cb.mem_show(id text) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare m cb.memories;
+begin
+  select * into m from cb.memories x where x.id = cb.norm_mem(id);
+  return cb._mem_json(m);
+end $$;
+
+-- What a session is told when it binds (cb iam) and in cb brief: Ahmed's rules and rulings (global first), then live
+-- facts and gotchas not past review (Ahmed's first, then newest), then runbook titles. Never a proposal. Hard cap of
+-- 20 entries and 2000 characters of titles, because ~20 sessions pay for it; total says how many exist (cb mem find).
+create function cb.mem_pack(project text default null, machine text default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb._mem_scope(project); mc text := nullif(lower(trim(machine)), '');
+begin
+  return (with c as (
+    select m.id, m.project, m.kind, m.title, m.authority, m.created_by, m.review_after,
+           row_number() over (order by case when m.kind in ('rule', 'ruling') then 0 when m.kind in ('fact', 'gotcha') then 1 else 2 end,
+                                       m.project is not null, m.authority <> 'ahmed', m.id desc) as n
+      from cb.memories m
+     where m.status = 'active' and (m.project is null or m.project = p) and (m.machine is null or m.machine = mc)
+       and not (m.kind in ('fact', 'gotcha') and coalesce(m.review_after < current_date, false))
+  ), s as (select c.*, sum(length(c.title)) over (order by c.n) as chars from c)
+  select jsonb_build_object('project', p, 'total', (select count(*) from c),
+    'entries', coalesce((select jsonb_agg(to_jsonb(s) - 'chars' - 'n' order by s.n) from s where s.n <= 20 and s.chars <= 2000), '[]')));
+end $$;
