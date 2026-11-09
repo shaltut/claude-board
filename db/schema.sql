@@ -1048,7 +1048,10 @@ begin
      where t.status = 'blocked' and (p is null or t.project = p) and coalesce(b.at, t.updated_at) < now() - interval '1 hour'), '[]'),
     'unreviewed', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'assignee', t.assignee, 'pr', t.links ->> 'pr') order by t.id)
       from cb.tasks t where t.status = 'review' and (p is null or t.project = p)
-       and not cb._is_review(t.labels, t.title) and not cb._has_reviewer(t)), '[]'),
+       and not cb._is_review(t.labels, t.title) and not cb._has_reviewer(t)
+       -- held by Ahmed, a user or an orchestrator, "review" means waiting on a person, not on a code review
+       and coalesce(t.assignee, '') not in ('ahmed', 'orch') and coalesce(t.assignee, '') not like 'orch@%'
+       and coalesce(t.assignee, '') not in (select u.name from cb.users u)), '[]'),
     -- in progress, but the last one to move it or write on it is another worker (not Ahmed, the relay or an orchestrator)
     'misheld', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'assignee', t.assignee, 'by', l.actor) order by t.id)
       from cb.tasks t cross join lateral (select e.actor from cb.events e where e.task_id = t.id and e.kind in ('moved', 'note', 'done')

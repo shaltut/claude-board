@@ -83,6 +83,7 @@ test('tick: stuck work (silent holder, long block, review with no reviewer, some
   await sql`select cb.task_add(project => 'demo', title => 'Cross-review #5 (W2)', status => 'next', labels => '["review"]', actor => 'orch@test')`;
   await sql`select cb.task_add(project => 'demo', title => 'W4 job', status => 'in_progress', assignee => 'W4@m', actor => 'orch@test')`;
   await sql`select cb.log('demo', 'I am on it', '7', '{}', 'W3@m')`;
+  await sql`select cb.task_add(project => 'demo', title => 'PO questions for Omar', status => 'review', assignee => 'orch@test', actor => 'orch@test')`;
   await ago(sql, sql`actor in ('W7@m', 'W9@m')`, '2 hours');
   const r = cb(['tick', 'demo']);
   assert.match(r.out, /STUCK/);
@@ -91,6 +92,7 @@ test('tick: stuck work (silent holder, long block, review with no reviewer, some
   assert.match(r.out, /#3 blocked 2h, W9@m: waiting for the DB lock → cb tell W9@m/);
   assert.match(r.out, /#4 in review, no reviewer task \(W2@m\) → cb add demo 'Review #4 \(W2@m\): parser fix' -s next -l review/);
   assert.doesNotMatch(r.out, /#5 in review/);
+  assert.doesNotMatch(r.out, /#8 in review/); // the orchestrator's: waiting on a person, not a code review
   assert.match(r.out, /#7 assigned W4@m, W3@m works it → cb edit 7 --assignee W3@m/);
   // W9 is silent too, but its task is blocked, not in progress
   assert.doesNotMatch(r.out, /#3 W9@m silent/);
@@ -112,6 +114,10 @@ test('tick: idle live sessions get the unassigned Next task matching their tags'
   assert.match(r.out, /W5@macbook idle → cb tell W5@macbook 'take #4 ocr second'/);
   assert.match(r.out, /W6@macbook idle → cb tell W6@macbook 'take #3 money first'/);
   assert.doesNotMatch(r.out, /W7@macbook idle|orch@test idle/);
+  // more idle sessions than free tasks: the rest share one line asking for work
+  await sql`select cb.iam('macbook', 'p4', 'W8@macbook', 'demo')`;
+  await sql`select cb.iam('macbook', 'p5', 'W9@macbook', 'demo')`;
+  assert.match(cb(['tick', 'demo']).out, /\n\s+W8@macbook, W9@macbook idle, nothing unassigned in Next → cb add demo '<title>' -s next$/);
 });
 
 test('tick: quiet huddles and held locks', async () => {
@@ -210,8 +216,7 @@ test('tick: ready to merge compares the PR head with the reviewed commit; board 
 test('tick: GitHub results are cached for 5 minutes', async () => {
   const sql = await db();
   await seedReviews(sql);
-  // UNKNOWN mergeability is never cached (GitHub computes it lazily), so every PR here is known
-  const gh = fakeGh({ ...PRS, 11: { ...PRS[11], mergeable: 'MERGEABLE' } });
+  const gh = fakeGh(PRS);
   cb(['tick', 'demo'], { ...gh, GITHUB_REPO_DEMO: 'acme/app' });
   writeFileSync(gh.CB_GH, `process.exit(9)`); // gh now fails: the cache answers
   const r = cb(['tick', 'demo'], { ...gh, GITHUB_REPO_DEMO: 'acme/app' });

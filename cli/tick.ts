@@ -58,11 +58,10 @@ function github(refs: { repo: string; n: string }[]): { prs: Record<string, Pr>;
       if (!data) { skipped = r.error ? `gh not runnable (${r.error.message})` : `gh failed (${cut(r.stderr.trim().split('\n')[0] || `exit ${r.status}`, 120)})`; break; }
       for (const [k, v] of Object.entries<any>(data)) {
         if (!v) continue;
+        // mergeable is often UNKNOWN (GitHub computes it lazily): it reads as not conflicting; gh pr merge says if it is
         const key = `${repo}#${k.slice(1)}`;
         prs[key] = { state: v.state, head: v.headRefOid, mergeable: v.mergeable };
-        // GitHub computes mergeability lazily: UNKNOWN now is usually known on the next run, so it isn't cached
-        if (v.mergeable === 'UNKNOWN' && v.state === 'OPEN') delete cache[key];
-        else cache[key] = { ...prs[key], at: Date.now() };
+        cache[key] = { ...prs[key], at: Date.now() };
       }
     }
   }
@@ -134,13 +133,14 @@ export async function tick(project: string, actor: string) {
     add('stuck', actor, `#${t.id} assigned ${t.assignee}, ${t.by} works it`, `cb edit ${t.id} --assignee ${t.by}`);
 
   // Idle: the first unassigned Next task sharing a tag, else the first unassigned one; each task offered once.
-  const free = b.next.filter((t: any) => !t.assignee);
+  const free = b.next.filter((t: any) => !t.assignee), workless: string[] = [];
   for (const s of b.idle) {
     const i = Math.max(0, free.findIndex((t: any) => t.labels.some((l: string) => s.tags.includes(l))));
     const t = free.splice(i, 1)[0];
-    add('idle', s.actor, t ? `${s.actor} idle` : `${s.actor} idle, nothing unassigned in Next`,
-      t ? `cb tell ${s.actor} ${q(`take #${t.id} ${cut(t.title, 60)}`)}` : null);
+    if (t) add('idle', s.actor, `${s.actor} idle`, `cb tell ${s.actor} ${q(`take #${t.id} ${cut(t.title, 60)}`)}`);
+    else workless.push(s.actor);
   }
+  if (workless.length) add('idle', actor, `${workless.join(', ')} idle, nothing unassigned in Next`, `cb add ${project} '<title>' -s next`);
 
   for (const t of prs) {
     const pr = stateOf(t);
