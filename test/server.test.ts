@@ -357,7 +357,8 @@ test('memory stats: the weekly metric and the Today counts; owner only', async (
   await sql`update cb.memories set status = 'proposed' where id = ${r.id}`; // stands in for a session's proposal
   await sql`select cb.ask(project => 'demo', body => 'merge?', actor => 'W1@pc')`;
   await sql`select cb.answer(id => '1', ruled_by => ${'M' + g.id})`; // tests connect as the dashboard
-  for (const n of ['Correction: the receipt finding was already fixed', 'STALE finding, closed', 'I was wrong about the lock', 'all green'])
+  for (const n of ['Correction: the receipt finding was already fixed', 'STALE finding, closed', 'I was wrong about the lock', 'all green',
+    'removed stale branches', 'pruned the stale worktree', 'cache was stale, rebuilt', 'corrections to the doc typo'])
     await sql`select cb.log('demo', ${n}, null, '{}', 'W1@pc')`;
   await sql`select cb.log('demo', 'old correction', null, '{}', 'W1@pc')`;
   await sql`update cb.events set at = now() - interval '8 days' where summary = 'old correction'`;

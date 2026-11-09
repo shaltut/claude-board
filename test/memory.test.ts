@@ -18,9 +18,9 @@ function cb(args: string[], env: Record<string, string> = {}) {
   return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
 }
 
-const add = async (sql: any, o: { project?: string; title: string; kind: string; body?: string; review?: string; machine?: string; actor?: string }) =>
+const add = async (sql: any, o: { project?: string; title: string; kind: string; body?: string; review?: string; machine?: string; actor?: string; propose?: boolean }) =>
   (await sql`select cb.mem_add(project => ${o.project ?? 'demo'}, title => ${o.title}, kind => ${o.kind}, body => ${o.body ?? ''},
-    review => ${o.review ?? null}, machine => ${o.machine ?? null}, actor => ${o.actor ?? 'W1@pc'}) as m`)[0].m;
+    review => ${o.review ?? null}, machine => ${o.machine ?? null}, actor => ${o.actor ?? 'W1@pc'}${o.propose ? sql`, propose => true` : sql``}) as m`)[0].m;
 const mem = async (sql: any, id: number) => (await sql`select * from cb.memories where id = ${id}`)[0];
 const pack = async (sql: any, project: string | null, machine: string | null = null) =>
   (await sql`select cb.mem_pack(${project}, ${machine}) as p`)[0].p;
@@ -385,4 +385,19 @@ test('"Already ruled" with #472 follow-ups: an --if branch stays dormant and is 
   assert.deepEqual(await st(), ['answered', 'dormant', 'open']);
   await web`select cb.answer_delivered('1', 'W1@pc', 'relay')`;
   assert.deepEqual(await st(), ['delivered', 'withdrawn', 'open']);
+});
+
+test('memory: --propose holds a session fact or gotcha for Ahmed instead of making it live (#635)', async () => {
+  const web = await db();
+  const s = session();
+  await web`select cb.ensure_project('demo')`;
+  const f = await add(s, { title: 'GitHub CI is disabled on the repo', kind: 'fact', propose: true });
+  assert.equal(f.status, 'proposed');
+  const g = await add(s, { title: 'lefthook prettier does nothing on Windows', kind: 'gotcha', propose: true });
+  assert.equal(g.status, 'proposed');
+  assert.equal((await add(s, { title: 'plain fact still goes live', kind: 'fact' })).status, 'active');
+  await web`select cb.mem_confirm(${String(f.id)}, null, null, 'ahmed')`;
+  assert.equal((await mem(web, f.id)).status, 'active', 'Ahmed confirms it like any proposal');
+  const out = cb(['mem', 'add', 'demo', 'UAT DB session time zone is Asia/Riyadh', '-k', 'fact', '--propose']);
+  assert.match(out.out, /proposed/);
 });

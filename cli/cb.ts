@@ -20,7 +20,7 @@ const OPTIONS = {
   multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, to: { type: 'string' }, context: { type: 'string', short: 'c' },
   'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' }, type: { type: 'string' }, force: { type: 'boolean' },
   epic: { type: 'string' }, by: { type: 'string' }, after: { type: 'string' }, if: { type: 'string' },
-  kind: { type: 'string', short: 'k' }, review: { type: 'string' }, machine: { type: 'string' }, all: { type: 'boolean' },
+  kind: { type: 'string', short: 'k' }, review: { type: 'string' }, machine: { type: 'string' }, all: { type: 'boolean' }, propose: { type: 'boolean' },
 } as const;
 
 // Text like "-5% latency" is text, not a flag: only --name, --name=x and -x look like options.
@@ -231,7 +231,7 @@ async function mem(): Promise<{ out?: string; json?: unknown }> {
       if (!project) throw new Error('name the project (or global): cb mem add <project> "<title>" -k <kind>, or bind this pane first with cb iam <name> <project>');
       const m: any = await callFn('mem_add', { project, title: a.length > 1 ? a.slice(1).join(' ') : a[0], kind: o.kind, body: o.body ?? '',
         task_id: o.task ?? null, review: o.review ?? null, links: links(), machine: o.machine ?? null,
-        tags: o.labels ? o.labels.split(',') : [], actor });
+        tags: o.labels ? o.labels.split(',') : [], actor, propose: o.propose ?? false });
       return { out: after(m, 'added'), json: m };
     }
     if (sub === 'rule') {

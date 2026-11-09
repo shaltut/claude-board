@@ -2154,7 +2154,7 @@ end $$;
 -- Returns the entry plus up to three similar ones (supersede instead of adding a duplicate).
 create function cb.mem_add(project text, title text, kind text, body text default '', task_id text default null,
                            review text default null, links jsonb default '{}', machine text default null,
-                           tags jsonb default '[]', actor text default null)
+                           tags jsonb default '[]', actor text default null, propose boolean default false)
 returns jsonb language plpgsql as $$
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); tid bigint; days int; m cb.memories;
@@ -2169,7 +2169,8 @@ begin
   end if;
   m := cb._mem_new(cb._mem_scope(project), kind, title, body,
          case when tid is null then '{}'::jsonb else jsonb_build_object('task_id', tid) end, links, machine,
-         array(select cb.norm_tag(x) from jsonb_array_elements_text(coalesce(tags, '[]')) x), days, a);
+         array(select cb.norm_tag(x) from jsonb_array_elements_text(coalesce(tags, '[]')) x), days, a,
+         coalesce(propose, false)); -- --propose (#635): a fact or gotcha waits for Ahmed like a rule
   return cb._mem_json(m) || jsonb_build_object('similar', cb._mem_similar(m.id));
 end $$;
 
@@ -2336,6 +2337,8 @@ begin
     'already_ruled', (select count(*) from cb.questions q
                        where q.ruled_by is not null and q.answered_at > now() - interval '7 days' and (p is null or q.project = p)),
     'corrections', (select count(*) from cb.events e
-                     where e.kind = 'note' and e.at > now() - interval '7 days' and e.summary ~* '(correction|stale|was wrong)'
+                     where e.kind = 'note' and e.at > now() - interval '7 days' and (e.summary ~* '^\W*correction\M' or e.summary ~* '\mwas wrong\M'
+                            or e.summary ~* '\mstale\s+(finding|review|claim|comment|report)'
+                            or e.summary ~* '\m(finding|review|claim|comment|report)s?\W+(is|was|were|are)\s+stale\M')
                        and (p is null or e.project = p)));
 end $$;
