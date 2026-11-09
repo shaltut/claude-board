@@ -21,14 +21,14 @@ function param(i: number, v: unknown): { expr: string; value: unknown } {
   return { expr: n, value: typeof v === "boolean" ? v : String(v) }; // postgres.js serializes booleans by identity
 }
 
-export async function callFn(fn: string, args: Record<string, unknown> = {}) {
+export async function callFn(fn: string, args: Record<string, unknown> = {}, db: any = sql) {
   if (!RPC_FUNCTIONS.includes(fn)) throw new RpcError(404, `unknown function ${fn}; available: ${RPC_FUNCTIONS.join(', ')}`);
   const keys = Object.keys(args);
   for (const k of keys) if (!/^[a-z_]+$/.test(k)) throw new RpcError(400, `bad argument name "${k}"`);
   const ps = keys.map((k, i) => param(i + 1, args[k]));
   const call = keys.map((k, i) => `${k} => ${ps[i].expr}`).join(', ');
   const values = ps.map((p) => p.value) as any[];
-  if (SETOF.has(fn)) return await sql.unsafe(`select * from cb.${fn}(${call})`, values);
-  const [row] = await sql.unsafe(`select cb.${fn}(${call}) as result`, values);
+  if (SETOF.has(fn)) return await db.unsafe(`select * from cb.${fn}(${call})`, values);
+  const [row] = await db.unsafe(`select cb.${fn}(${call}) as result`, values);
   return row?.result ?? null;
 }

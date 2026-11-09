@@ -162,9 +162,10 @@ function ThreadView({ id }: { id: number }) {
     try { await rpc('huddle_close', { id, summary: closing }); setClosing(null); await qc.invalidateQueries() }
     catch (err: any) { toast.error(err.message) }
   }
-  // posted as Ahmed, so the thread (and the relay) reads "Ahmed: created #12 ..."
-  const madeTask = (line: Line) => (tid: number, title: string) => live &&
-    rpc('huddle_say', { id, message: `created #${tid} "${title}" from ${name(line.actor)}'s line at ${clock(line.at)}` }).catch((err) => toast.error(err.message))
+  // Posted as Ahmed, so it carries his authority in the relay: never repeat a session's words (or a title
+  // taken from them) in it, only the task id and whose line it came from.
+  const madeTask = (line: Line) => (tid: number) => live &&
+    rpc('huddle_say', { id, message: `created #${tid} from ${name(line.actor)}'s line at ${clock(line.at)}` }).catch((err) => toast.error(err.message))
 
   return (
     <section aria-labelledby="thread" className="rounded-lg border bg-card">

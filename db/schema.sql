@@ -119,6 +119,7 @@ create index if not exists questions_status on cb.questions (status);
 -- ===========================================================================
 
 drop function if exists cb.set_actor cascade;
+drop function if exists cb.not_ahmed cascade;
 drop function if exists cb.norm_status cascade;
 drop function if exists cb.norm_priority cascade;
 drop function if exists cb.norm_type cascade;
@@ -163,11 +164,23 @@ drop function if exists cb.lock_take cascade;
 drop function if exists cb.lock_release cascade;
 drop function if exists cb.lock_queue cascade;
 
+-- Only Ahmed's dashboard (the web server sets application_name 'cb-web' on its writes) may act as
+-- ahmed: the relay tells sessions to act on his lines, so a session must not be able to speak as him.
+-- ponytail: anyone with psql can still set application_name and forge this; it stops accidents and
+-- prompt-injected sessions, not a determined local process. Real auth (a role per client) if that matters.
+create function cb.not_ahmed(a text) returns void language plpgsql as $$
+begin
+  if (lower(trim(a)) = 'ahmed' or lower(trim(a)) like 'ahmed@%') and current_setting('application_name') <> 'cb-web' then
+    raise exception 'only Ahmed''s dashboard can act as ahmed: sessions use their own name';
+  end if;
+end $$;
+
 -- Effective actor for this transaction; triggers read it back from cb.actor.
 create function cb.set_actor(actor text) returns text language plpgsql as $$
 #variable_conflict use_variable
 declare a text := coalesce(nullif(trim(actor), ''), nullif(current_setting('cb.actor', true), ''), 'unknown');
 begin
+  perform cb.not_ahmed(a);
   perform set_config('cb.actor', a, true);
   return a;
 end $$;
@@ -687,6 +700,7 @@ create function cb.iam(machine text, pane text, actor text, project text default
 declare p text := cb.read_project(project);  -- unknown project raises; null keeps the session's current one
 begin
   if coalesce(trim(actor), '') = '' or coalesce(trim(pane), '') = '' then raise exception 'pane and actor are required'; end if;
+  perform cb.not_ahmed(actor);
   -- a new session starts from now: it never gets broadcasts or messages sent before it existed
   insert into cb.sessions (machine, pane, actor, project, broadcast_seen)
   values (lower(trim(machine)), trim(pane), trim(actor), p, coalesce((select max(e.id) from cb.events e), 0))
@@ -971,6 +985,7 @@ create function cb.user_add(name text, display text default null) returns text l
 declare n text := lower(trim(name)); t text;
 begin
   if n !~ '^[a-z][a-z0-9_-]*$' then raise exception 'user name: lowercase letters, digits, - or _ (e.g. omar)'; end if;
+  if n = 'ahmed' then raise exception 'ahmed is the board owner, not a guest user: pick another name'; end if;
   insert into cb.users (name, display) values (n, coalesce(nullif(trim(display), ''), initcap(n)))
   on conflict on constraint users_pkey do update set display = coalesce(nullif(trim(user_add.display), ''), cb.users.display)
   returning cb.users.token into t;

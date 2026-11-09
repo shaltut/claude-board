@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button'
 /** `initial` and `links` apply on mount: give the dialog a `key` per draft (e.g. a huddle line). */
 export function NewTask({ open, onOpenChange, project, initial, links, onCreated }: {
   open: boolean; onOpenChange: (o: boolean) => void; project?: string
-  initial?: { title?: string; body?: string }; links?: Record<string, string>; onCreated?: (id: number, title: string) => void
+  initial?: { title?: string; body?: string }; links?: Record<string, string>; onCreated?: (id: number) => void
 }) {
   const qc = useQueryClient()
   const { data: projects = [] } = useProjects()
@@ -31,7 +31,7 @@ export function NewTask({ open, onOpenChange, project, initial, links, onCreated
       toast.success(`Created #${id}`, { action: { label: 'Open', onClick: () => go({ task: id }) } })
       setTitle(''); setBody('')
       onOpenChange(false)
-      onCreated?.(id, title.trim())
+      onCreated?.(id)
       await qc.invalidateQueries()
     } catch (err: any) { toast.error(err.message) }
   }
