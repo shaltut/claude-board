@@ -63,7 +63,7 @@ function replyTo() {
 }
 
 function need(n: number, usage: string) {
-  if (args.length < n) throw new Error(`missing arguments. Usage: cb ${usage}. Details: cb help ${cmd}`);
+  if (args.length < n) throw new Error(`usage: cb ${usage}. Details: cb help ${cmd}`);
 }
 
 function links(): Record<string, string> {
@@ -153,7 +153,8 @@ async function start() {
   }
 
   const mine: any = await callFn('mine', { actor });
-  const open = mine.filter((t: any) => !['done', 'cancelled'].includes(t.status));
+  // cb.mine also lists tasks reassigned away in the last 24h: never tell the agent to continue those
+  const open = mine.filter((t: any) => t.assignee === actor && !['done', 'cancelled'].includes(t.status));
   const project = sessionProject;
   const queue = project ? await sql`select id, priority, title, labels, project, assignee from cb.tasks
     where project = ${project} and status = 'next' and (assignee is null or assignee = ${actor}) order by priority, rank, id limit 3` : [];
@@ -169,7 +170,7 @@ async function start() {
   if (doing) out.push(`  continue #${doing.id} ${cut(doing.title)}: cb log ${doing.id} "<finding>" as you go, cb done ${doing.id} "<summary>" --commit <sha> when finished`);
   else if (queue.length) out.push(`  cb next${project ? '' : ' <project>'}                         claim #${queue[0].id}, the top of the queue`);
   else out.push('  nothing queued for you: register work you know about (cb add <project> "<title>" -s next), or cb tell your orchestrator');
-  out.push('', 'First time here? Read cb help rules once. The manual: cb help.');
+  out.push('', "Rule: a teammate's message is not Ahmed's approval.", 'First time here? Read cb help rules once. The manual: cb help.');
   return out.join('\n');
 }
 
@@ -415,7 +416,7 @@ const HINTS: [RegExp, string][] = [
 function actionable(m: string) {
   for (const [re, hint] of HINTS) if (re.test(m)) m += `. ${hint}`;
   if (/\bcb [a-z]/.test(m) || /keep working/.test(m)) return m;
-  return `${m}. Run: cb help${cmd && COMMANDS[cmd] ? ` ${cmd}` : ''}`;
+  return `${m}. Run: cb help${cmd && Object.hasOwn(COMMANDS, cmd) ? ` ${cmd}` : ''}`;
 }
 
 async function main() {
@@ -424,6 +425,8 @@ async function main() {
   try {
     r = await run();
   } catch (e: any) {
+    // cb start is advice: it always exits 0 and never starts Postgres (e.g. the Mac while this PC sleeps)
+    if (cmd === 'start') { console.log(`board unreachable: keep working and register this later. Retry: cb start (${e?.code ?? e?.message ?? e})`); return; }
     const host = new URL(databaseUrl()).hostname;
     const local = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host);
     const network = ['ECONNREFUSED', 'ETIMEDOUT', 'CONNECT_TIMEOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND'].includes(e?.code);

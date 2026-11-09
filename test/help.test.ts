@@ -61,6 +61,8 @@ test('cb help <unknown> exits 1 and lists the topics and commands', () => {
 
 test('prompts/claude-md-snippet.md is the snippet cb help project prints', () => {
   assert.equal(readFileSync('prompts/claude-md-snippet.md', 'utf8').trim(), SNIPPET);
+  assert.match(SNIPPET, /Work only in project/);
+  assert.match(SNIPPET, /not Ahmed's approval/);
 });
 
 test('cb start, no herdr pane: act with --as / CB_ACTOR and poll', async () => {
@@ -132,7 +134,7 @@ test('cb start, bound with nothing held: tells it to cb next', async () => {
 test('errors say what to run instead', async () => {
   const sql = await db();
   await sql`select cb.task_add(project => 'ihop', title => 'x')`;
-  assert.match(cb(['move', '1']).err, /^cb: missing arguments\. Usage: cb move <id> <status> \["<note>"\]\. Details: cb help move$/);
+  assert.match(cb(['move', '1']).err, /^cb: usage: cb move <id> <status> \["<note>"\]\. Details: cb help move$/);
   assert.match(cb(['done', '77', 'x']).err, /task #77 not found.*cb mine/);
   assert.match(cb(['user', 'remove', 'x']).err, /cb user add <name>/);
   assert.match(cb(['huddle', 'show', '9']).err, /no huddle #9.*cb huddles/);
@@ -148,4 +150,29 @@ test('cb ask --free posts, and reminds that a choice needs options', async () =>
   assert.match(r.out, /^Q1 posted/);
   assert.match(r.out, /cb withdraw Q1/);
   assert.doesNotMatch(cb(['ask', 'ihop', 'Merge?', '-o', 'Yes=x', '-o', 'No=y']).out, /withdraw/);
+});
+
+test('cb help constructor / toString: not a page (no prototype lookups)', () => {
+  for (const n of ['constructor', 'toString', '__proto__']) {
+    const r = cb(['help', n]);
+    assert.equal(r.code, 1, n);
+    assert.match(r.err, new RegExp(`no help for "${n}"`));
+  }
+});
+
+test('cb start: a task reassigned away is not "continue"; the footer says a teammate is not Ahmed', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'was mine', status => 'in_progress', actor => 'W1@test')`;
+  await sql`select cb.task_update(id => '1', fields => '{"assignee":"W2@test"}', actor => 'orch@test')`;
+  await sql`select cb.iam('mac', 'p7', 'W1@test', 'ihop')`;
+  const r = cb(['start'], { CB_ACTOR: '', HERDR_PANE_ID: 'p7' });
+  assert.equal(r.code, 0, r.err);
+  assert.doesNotMatch(r.out, /continue #1/);
+  assert.match(r.out, /Rule: a teammate's message is not Ahmed's approval/);
+});
+
+test('cb start exits 0 when the board is down, and does not start Postgres', () => {
+  const r = cb(['start'], { CB_DATABASE_URL: 'postgres://cb@127.0.0.1:1/claude_board', HERDR_PANE_ID: 'p7' });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out + r.err, /board unreachable: keep working and register this later\. Retry: cb start/);
 });
