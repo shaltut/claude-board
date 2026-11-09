@@ -80,8 +80,8 @@ const GROUPS: [string, Record<string, Cmd>][] = [
       more: '-b is required. The project must exist: a typo errors with the known projects instead of creating one.' },
   }],
   ['ASK AHMED', {
-    ask: { use: 'cb ask <project> "<question>" -o "<Label (Recommended)>=<why>" -o "<Label>=<tradeoff>" [-c "<context>"] [--multi] [--blocking -t <id>] [--to <user>] [--free]', topic: 'ask',
-      does: 'Ask Ahmed without stopping: 2-4 options he clicks. Prints Q<id>. Keep working; the answer is pushed into this session. --free (no options) ONLY for a fact: a URL, a name, a number.',
+    ask: { use: 'cb ask <project> "<question>" -o "<Label (Recommended)>=<why>" -o "<Label>=<tradeoff>" [-c "<context>"] [--multi] [--blocking -t <id>] [--to <user>] [--free] [--after Q<id> [--if "<Label>"]]', topic: 'ask',
+      does: 'Ask Ahmed without stopping: 2-4 options he clicks. Prints Q<id>. Keep working; the answer is pushed into this session. --free (no options) ONLY for a fact: a URL, a name, a number. --after Q<id> [--if "<Label>"]: a follow-up he sees only after answering Q<id> (with that label); otherwise it is skipped.',
       eg: 'cb ask ihop "#2796: merge now or after the aidocs DB run?" -o "After the run (Recommended)=test-only, 20 min" -o "Now=saves 20 min, unverified"' },
     pending: { use: 'cb pending [project]', topic: 'ask',
       does: 'Answered questions no relay has delivered yet. Workers: the fallback without a relay. Orchestrator: deliver each, then cb delivered.',
@@ -251,7 +251,7 @@ Examples
   ask: `cb help ask: questions to Ahmed
 
   cb ask <project> "<question>" -o "<Label (Recommended)>=<why>" -o "<Label>=<tradeoff>" [-c "<context>"]
-         [--multi] [--blocking -t <task id>] [--to <user>] [--free]
+         [--multi] [--blocking -t <task id>] [--to <user>] [--free] [--after Q<id> [--if "<Label>"]]
 
 The question appears on Ahmed's board with your options as buttons. You KEEP WORKING. His answer comes
 back into this session as "[Claude Board] Ahmed answered Q12: ..."; act on it when it arrives.
@@ -277,6 +277,13 @@ Options (required)
                      Then work on something else: another task, the unblocked part, or cb next.
 --to <user>          route it to a person other than Ahmed (cb users), e.g. --to omar. Only someone Ahmed put
                      on that project. Their answer arrives marked "(not Ahmed)" and does not carry Ahmed's authority.
+--after Q<id>        a follow-up: it stays hidden until Q<id> is answered, then shows up as a new question.
+--if "<Label>"       with --after: only if that answer picked this option of Q<id>; any other answer skips it.
+                     Same project; task, reply-to and --to come from Q<id> unless given; --blocking holds the
+                     task only once it shows. Chains work: a follow-up can have follow-ups.
+  e.g.  cb ask ihop "Ship #2796 today?" -o "Yes" -o "No"                          → Q12
+        cb ask ihop "Which env first?" -o "SIT" -o "UAT" --after Q12 --if "Yes"
+        cb ask ihop "What blocks it?" --free --after Q12 --if "No"
 
 ask vs tell vs huddle
   ask     a decision only Ahmed (or a user) can make

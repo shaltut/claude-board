@@ -43,8 +43,14 @@ export async function epic(id: number) {
   return { epic: e, steps };
 }
 
+/** Follow-ups (#472): what the parent was answered, and the dormant branches still to come (a guest sees only theirs). */
+const followups = (user?: string) => sql`
+  (select p.answer from cb.questions p where p.id = q.parent_id) as parent_answer,
+  (select jsonb_agg(jsonb_build_object('id', c.id, 'if_answer', c.if_answer, 'body', c.body) order by c.id) from cb.questions c
+    where c.parent_id = q.id and c.status = 'dormant' ${user ? sql`and c.assigned_to = ${user}` : sql``}) as branches`;
+
 export function questions(project?: string, status?: string) {
-  return sql`select * from cb.questions where true ${proj(project)} ${status ? sql`and status = ${status}` : sql``}
+  return sql`select q.*, ${followups()} from cb.questions q where true ${proj(project)} ${status ? sql`and status = ${status}` : sql``}
     order by (status = 'open') desc, blocking desc, created_at`;
 }
 
@@ -98,7 +104,7 @@ export async function huddle(id: number) {
 /** A guest's own page: questions handed to them (open, and answered this week) and their open tasks, on their projects. */
 export async function me(user: string, scope: ReturnType<typeof sql>) {
   const [questions, tasks] = await Promise.all([
-    sql`select * from cb.questions where assigned_to = ${user} and ${scope}
+    sql`select q.*, ${followups(user)} from cb.questions q where assigned_to = ${user} and ${scope}
           and (status = 'open' or answered_at > now() - interval '7 days') order by status = 'open' desc, id desc`,
     // only the guest's own notes come back: session notes on the same task can hold anything
     sql`select t.*, coalesce((select jsonb_agg(jsonb_build_object('summary', e.summary, 'at', e.at) order by e.at)

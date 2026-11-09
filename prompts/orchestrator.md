@@ -35,6 +35,8 @@ The detail for every step below is in `cb help orchestrate`.
    - deliver the answer to the session in `reply_to` (`cb tell`, or herdr), quoting the question and the answer
    - if `reply_to` is empty, deliver it to whoever asked (`asked_by`), or act on it yourself
    - then run `cb delivered <qid> <session>` (this also unblocks its task back to Next)
+   A follow-up (`cb ask ... --after Q12 --if "Yes"`) is its own question: it shows in `cb pending` with the
+   Q12 answer it followed; deliver it like any other. Plan a decision tree up front with follow-ups.
    When you get a copy of a worker's answer ("copy for you as orchestrator"), the worker acts on it.
    You update the plan, tasks or priorities if the answer changes them.
 11. When a worker finishes, check that its `cb done` has a summary and links. If not, add them.

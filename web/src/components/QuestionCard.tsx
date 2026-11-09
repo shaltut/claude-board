@@ -89,7 +89,12 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
           {!guest && <AssignPicker q={q} />}
         </header>
 
-        <p id={`q${q.id}-body`} className="mt-2.5 max-w-[68ch] text-base leading-normal text-pretty">{q.body}</p>
+        {q.parent_id && (
+          <p className="mt-2.5 truncate text-xs text-muted-foreground">
+            Follow-up to <span className="callsign">Q{q.parent_id}</span>{q.parent_answer && <> — you answered {q.parent_answer}</>}
+          </p>
+        )}
+        <p id={`q${q.id}-body`} className={cn('max-w-[68ch] text-base leading-normal text-pretty', q.parent_id ? 'mt-1' : 'mt-2.5')}>{q.body}</p>
 
         {q.context && (
           <div className="mt-2">
@@ -129,6 +134,12 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
               )
             })}
           </div>
+        )}
+
+        {!!q.branches?.length && (
+          <p className="mt-3 text-xs text-muted-foreground text-pretty">
+            Then: {q.branches.map((b) => `${b.if_answer ? `if ${b.if_answer.replace(RECOMMENDED, '')}` : 'after any answer'} → ${b.body}`).join(' · ')}
+          </p>
         )}
 
         <div className="mt-3 flex items-end gap-2">

@@ -20,10 +20,13 @@ export interface Epic {
 export interface QOption { label: string; description: string | null }
 export interface Question {
   id: number; project: string; task_id: number | null; asked_by: string; body: string; context: string | null
-  options: QOption[] | null; multi: boolean; blocking: boolean; status: 'open' | 'answered' | 'delivered' | 'withdrawn'
+  options: QOption[] | null; multi: boolean; blocking: boolean; status: 'open' | 'answered' | 'delivered' | 'withdrawn' | 'dormant'
   answer: string | null; answered_at: string | null; delivered_at: string | null; delivered_to: string | null
   reply_to: { machine?: string; pane?: string } | null; created_at: string
   assigned_to: string | null; answered_by: string | null
+  // follow-ups (#472): a dormant question waits for parent_id's answer (if_answer: one label, null = any)
+  parent_id: number | null; if_answer: string | null; parent_answer?: string | null
+  branches?: { id: number; if_answer: string | null; body: string }[] | null // this question's dormant follow-ups
 }
 export interface User { name: string; display: string; projects?: string[] } // projects: only from /api/users, not on a guest's whoami
 /** People who can take work on a project (they're on it), plus whoever already holds the item. */

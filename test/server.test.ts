@@ -198,6 +198,29 @@ test('a guest link sets a cookie; the guest sees and answers only what is assign
   assert.deepEqual(after.tasks[0].my_notes.map((n: any) => n.summary), ['signed']);
 });
 
+test('a guest answers a follow-up once it opens, and sees what comes next on the parent', async () => {
+  const sql = await db();
+  const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
+  await onProject(sql, 'omar', 'ihop');
+  await sql`select cb.ask(project => 'ihop', body => 'Ship today?', options => ${sql.json(['Yes', 'No'])}, to_user => 'omar', actor => 'orch@shaltoot')`;
+  await sql`select cb.ask(project => 'ihop', body => 'Which env first?', options => ${sql.json(['SIT', 'UAT'])}, parent => '1', if_answer => 'Yes', actor => 'orch@shaltoot')`;
+  await sql`select cb.ask(project => 'ihop', body => 'for Ahmed only', parent => '1', if_answer => 'No', to_user => null, actor => 'orch@shaltoot')`;
+  await sql`update cb.questions set assigned_to = null where id = 3`; // a branch for someone else stays out of the guest's view
+  const rpc = (fn: string, args: object) => remote(`/api/rpc/${fn}`, { cookie: token, method: 'POST', body: JSON.stringify(args), headers: { 'content-type': 'application/json' } });
+
+  let me = await (await remote('/api/me', { cookie: token })).json();
+  assert.deepEqual(me.questions.map((q: any) => [q.id, q.status]), [[1, 'open']], 'the dormant follow-up is not on his page yet');
+  assert.deepEqual(me.questions[0].branches, [{ id: 2, if_answer: 'Yes', body: 'Which env first?' }]);
+  assert.equal((await rpc('answer', { id: '2', answer: 'SIT' })).status, 400, 'dormant: not answerable yet');
+  assert.equal((await rpc('answer', { id: '1', answer: 'Yes' })).status, 200);
+  me = await (await remote('/api/me', { cookie: token })).json();
+  const f = me.questions.find((q: any) => q.id === 2);
+  assert.deepEqual([f.status, f.parent_id, f.parent_answer], ['open', 1, 'Yes']);
+  assert.equal((await rpc('answer', { id: '2', answer: 'SIT' })).status, 200);
+  const local = await (await app.request('/api/questions?status=answered')).json();
+  assert.deepEqual(local.map((q: any) => [q.id, q.parent_answer ?? null]), [[1, null], [2, 'Yes']]);
+});
+
 test('a web page on another site cannot drive the board through the browser (CSRF)', async () => {
   await db();
   const post = (origin?: string) => app.request('http://localhost:4747/api/rpc/task_add', {

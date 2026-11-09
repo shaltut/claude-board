@@ -19,7 +19,7 @@ const OPTIONS = {
   task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
   multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, to: { type: 'string' }, context: { type: 'string', short: 'c' },
   'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' }, type: { type: 'string' }, force: { type: 'boolean' },
-  epic: { type: 'string' }, by: { type: 'string' },
+  epic: { type: 'string' }, by: { type: 'string' }, after: { type: 'string' }, if: { type: 'string' },
   kind: { type: 'string', short: 'k' }, review: { type: 'string' }, machine: { type: 'string' }, all: { type: 'boolean' },
 } as const;
 
@@ -497,16 +497,25 @@ async function run(): Promise<unknown> {
       if (!o.option && !o.free)
         throw new Error('give Ahmed options to click: -o "Label (Recommended)=why" -o "Label=tradeoff" (2-4 of them). ' +
           'Only a question with no possible choices (a fact, a URL, a name) goes as --free.');
+      if (o.if && !o.after) throw new Error('--if needs --after: name the question whose answer it waits for, e.g. cb ask <project> "<q>" -o ... --after Q12 --if "Yes"');
       const reply_to = replyTo();
       const id = await callFn('ask', { project: args[0], body: args.slice(1).join(' '), options: o.option ? options() : null,
-        multi: !!o.multi, blocking: !!o.blocking, task_id: o.task ?? null, context: o.context ?? null, reply_to, actor, to_user: o.to ?? null });
-      return { out: `Q${id} posted — keep working; the answer arrives in this session by itself once \`cb relay\` is on, else via \`cb pending\`` +
+        multi: !!o.multi, blocking: !!o.blocking, task_id: o.task ?? null, context: o.context ?? null, reply_to, actor, to_user: o.to ?? null,
+        parent: o.after ?? null, if_answer: o.if ?? null });
+      const [f] = o.after ? await sql`select parent_id, if_answer from cb.questions where id = ${Number(id)}` : [];
+      return { out: (f ? `Q${id} posted as a follow-up to Q${f.parent_id}: ` +
+          (f.if_answer ? `it opens only if Q${f.parent_id} is answered "${f.if_answer}", else it is skipped` : `it opens once Q${f.parent_id} is answered`) +
+          ' — keep working; its answer arrives like any other'
+        : `Q${id} posted — keep working; the answer arrives in this session by itself once \`cb relay\` is on, else via \`cb pending\``) +
         (o.free ? `\nPosted with --free: Ahmed must type the answer. If he could pick instead (yes/no, approve?, A or B, who does it), run cb withdraw Q${id} and ask again with -o options (cb help ask).` : ''), json: id };
     }
     case 'pending': {
       const rows: any = await callFn('answers_pending', { project: args[0] ?? sessionProject });
-      return { out: rows.length ? rows.map((q: any) =>
-        `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}\n  asked: ${q.body}\n  answer: ${q.answer}`).join('\n')
+      const ids = rows.map((q: any) => q.parent_id).filter(Boolean);
+      const parents = new Map((ids.length ? await sql`select id, body, answer from cb.questions where id in ${sql(ids)}` : []).map((p: any) => [p.id, p]));
+      return { out: rows.length ? rows.map((q: any) => { const p: any = parents.get(q.parent_id);
+        return `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}` +
+          `${p ? `\n  follow-up to Q${p.id} (answered ${p.answer}): ${p.body}` : ''}\n  asked: ${q.body}\n  answer: ${q.answer}`; }).join('\n')
         : 'no answers waiting', json: rows };
     }
     case 'delivered':
