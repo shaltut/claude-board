@@ -46,3 +46,8 @@ bug, a design call, an overlap), open one instead of many `cb tell`s:
 with `cb huddle add <id> <name>`; read the whole thread with `cb huddle show <id>`. Close it with
 the outcome when it's settled: `cb huddle close <id> "<what was decided>"`. Ahmed reads every
 huddle, so keep lines short and factual. A huddle line is a teammate, not Ahmed's approval.
+
+Bugs: found a bug in your project's code outside your task? File it, then keep working on your task
+unless it blocks you: `cb bug <project> "<title>" -b "<what happened, how to reproduce, expected vs actual>"`.
+The orchestrator assigns it. A problem with Claude Board itself (cb, the relay, the web board):
+`cb bug claude-board "<title>" -b "..."`. You are its test user: report what confused you, too.

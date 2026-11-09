@@ -3,8 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 export type Status = 'backlog' | 'next' | 'in_progress' | 'blocked' | 'review' | 'done' | 'cancelled'
 
 export interface Project { slug: string; name: string; color: string | null; repo_path: string | null; open_count: number; question_count: number }
+export const TASK_TYPES = ['task', 'bug', 'feature', 'change', 'chore', 'research'] as const
 export interface Task {
-  id: number; project: string; title: string; body: string; status: Status; priority: 'P0' | 'P1' | 'P2' | 'P3'
+  id: number; project: string; title: string; body: string; status: Status; priority: 'P0' | 'P1' | 'P2' | 'P3'; type: (typeof TASK_TYPES)[number]
   rank: number; assignee: string | null; labels: string[]; links: Record<string, string | string[]>
   blocked_on: number | null; created_by: string; created_at: string; updated_at: string; done_at: string | null
 }

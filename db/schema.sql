@@ -81,6 +81,12 @@ alter table cb.events add constraint events_kind_check check (kind in ('task_cre
 
 alter table cb.questions add column if not exists multi boolean not null default false;
 
+-- What kind of work a task is. 'task' (unclassified) is the default: existing rows were never typed,
+-- and calling them features would be a lie. The list lives in the check and in cb.norm_type.
+alter table cb.tasks add column if not exists type text not null default 'task';
+alter table cb.tasks drop constraint if exists tasks_type_check;
+alter table cb.tasks add constraint tasks_type_check check (type in ('task','bug','feature','change','chore','research'));
+
 -- Which actor a session (herdr pane on a machine) is: set by `cb iam`, used by the CLI and the relay.
 create table if not exists cb.sessions (
   machine    text not null,
@@ -115,6 +121,8 @@ create index if not exists questions_status on cb.questions (status);
 drop function if exists cb.set_actor cascade;
 drop function if exists cb.norm_status cascade;
 drop function if exists cb.norm_priority cascade;
+drop function if exists cb.norm_type cascade;
+drop function if exists cb.triagers cascade;
 drop function if exists cb.norm_id cascade;
 drop function if exists cb.ensure_project cascade;
 drop function if exists cb.slug cascade;
@@ -187,6 +195,26 @@ begin
   end if;
   return v;
 end $$;
+
+create function cb.norm_type(t text) returns text language plpgsql immutable as $$
+#variable_conflict use_variable
+declare v text := lower(trim(coalesce(t, 'task')));
+begin
+  if v not in ('task','bug','feature','change','chore','research') then
+    raise exception 'unknown type "%"; use one of task, bug, feature, change, chore, research', t;
+  end if;
+  return v;
+end $$;
+
+-- Who triages a project's new bugs: its live orchestrator(s) (orch@*, relay seen in 90s), else every
+-- session bound to it. One rule for the relay push (cb.inbox) and for what `cb bug` prints.
+create function cb.triagers(project text) returns text[] language sql stable as $$
+  select coalesce(
+    nullif(array(select s.actor from cb.sessions s
+                  where s.project = $1 and (s.actor like 'orch@%' or s.actor = 'orch')
+                    and s.last_seen > now() - interval '90 seconds' order by s.actor), '{}'),
+    array(select distinct s.actor from cb.sessions s where s.project = $1 order by s.actor))
+$$;
 
 create function cb.norm_id(id text) returns bigint language plpgsql immutable as $$
 #variable_conflict use_variable
@@ -349,7 +377,7 @@ create or replace trigger projects_notify after insert or update or delete on cb
 
 create function cb.task_add(project text, title text, body text default '', status text default 'backlog',
                             priority text default 'P2', labels jsonb default '[]', links jsonb default '{}',
-                            assignee text default null, actor text default null)
+                            assignee text default null, actor text default null, type text default null)
 returns bigint language plpgsql as $$
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); p text := cb.ensure_project(project); new_id bigint;
@@ -358,10 +386,10 @@ begin
   if coalesce(trim(title), '') = '' then raise exception 'title is required'; end if;
   -- work added through an alias ("tawuniya") keeps that stream's tags
   l := l || array(select g from cb.project_aliases pa, unnest(pa.tags) g where pa.alias = cb.slug(project) and g <> all(l));
-  insert into cb.tasks (project, title, body, status, priority, labels, links, assignee, created_by)
+  insert into cb.tasks (project, title, body, status, priority, labels, links, assignee, created_by, type)
   values (p, trim(title), coalesce(body, ''), cb.norm_status(status), cb.norm_priority(priority),
           l, coalesce(links, '{}'),
-          coalesce(assignee, case when cb.norm_status(status) = 'in_progress' then a end), a)
+          coalesce(assignee, case when cb.norm_status(status) = 'in_progress' then a end), a, cb.norm_type(type))
   returning cb.tasks.id into new_id;
   return new_id;
 end $$;
@@ -385,11 +413,12 @@ declare tid bigint := cb.norm_id(id); bad text;
 begin
   perform cb.set_actor(actor);
   select string_agg(k, ', ') into bad from jsonb_object_keys(coalesce(fields, '{}')) k
-   where k not in ('title','body','priority','assignee','labels','links','project','rank');
+   where k not in ('title','body','priority','assignee','labels','links','project','rank','type');
   if bad is not null then
-    raise exception 'unknown field(s) %; allowed: title, body, priority, assignee, labels, links, project, rank', bad;
+    raise exception 'unknown field(s) %; allowed: title, body, priority, assignee, labels, links, project, rank, type', bad;
   end if;
   update cb.tasks t set
+    type     = case when fields ? 'type' then cb.norm_type(fields ->> 'type') else t.type end,
     title    = case when fields ? 'title' then fields ->> 'title' else t.title end,
     body     = case when fields ? 'body' then coalesce(fields ->> 'body', '') else t.body end,
     priority = case when fields ? 'priority' then cb.norm_priority(fields ->> 'priority') else t.priority end,
@@ -597,16 +626,17 @@ begin
 end $$;
 
 -- Snapshot a session reads at start.
-create function cb.brief(project text default null, tag text default null)
+create function cb.brief(project text default null, tag text default null, type text default null)
 returns jsonb language plpgsql stable as $$
 #variable_conflict use_variable
 declare p text := cb.read_project(project); tg text := nullif(cb.norm_tag(tag), '');
+  ty text := case when nullif(trim(type), '') is null then null else cb.norm_type(type) end;
 begin
   return jsonb_build_object(
-    'in_progress', cb._brief_tasks(p, tg, 'in_progress', 50),
-    'next', cb._brief_tasks(p, tg, 'next', 10),
-    'blocked', cb._brief_tasks(p, tg, 'blocked', 50),
-    'review', cb._brief_tasks(p, tg, 'review', 50),
+    'in_progress', cb._brief_tasks(p, tg, 'in_progress', 50, ty),
+    'next', cb._brief_tasks(p, tg, 'next', 10, ty),
+    'blocked', cb._brief_tasks(p, tg, 'blocked', 50, ty),
+    'review', cb._brief_tasks(p, tg, 'review', 50, ty),
     'open_questions', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body,
         'blocking', q.blocking, 'asked_by', q.asked_by, 'task_id', q.task_id, 'options', q.options, 'assigned_to', q.assigned_to) order by q.blocking desc, q.id)
       from cb.questions q where q.status = 'open' and (p is null or q.project = p)), '[]'),
@@ -620,10 +650,11 @@ begin
 end $$;
 
 drop function if exists cb._brief_tasks cascade;
-create function cb._brief_tasks(p text, tg text, s text, lim int) returns jsonb language sql stable as $$
+create function cb._brief_tasks(p text, tg text, s text, lim int, ty text default null) returns jsonb language sql stable as $$
   select coalesce(jsonb_agg(x order by x.priority, x.rank), '[]') from (
-    select t.id, t.project, t.title, t.priority, t.assignee, t.updated_at, t.blocked_on, t.rank, t.labels
+    select t.id, t.project, t.title, t.priority, t.assignee, t.updated_at, t.blocked_on, t.rank, t.labels, t.type
       from cb.tasks t where t.status = s and (p is null or t.project = p) and (tg is null or tg = any(t.labels))
+                        and (ty is null or t.type = ty)
      order by t.priority, t.rank limit lim) x
 $$;
 
@@ -681,6 +712,13 @@ begin
                                  from cb.events e join cb.questions q on q.id = e.question_id
                                 where e.kind = 'answered' and (me like 'orch@%' or me = 'orch') and e.project = proj
                                   and q.asked_by <> me and e.id > seen and e.at > now() - interval '24 hours'), '[]'),
+    -- new unassigned bugs filed in my project, if I triage it (cb.triagers: the live orchestrator, else everyone bound)
+    'bugs', coalesce((select jsonb_agg(jsonb_build_object('event_id', e.id, 'id', t.id, 'project', t.project, 'title', t.title,
+                                                          'body', t.body, 'priority', t.priority, 'actor', e.actor) order by e.id)
+                        from cb.events e join cb.tasks t on t.id = e.task_id
+                       where e.kind = 'task_created' and t.type = 'bug' and t.assignee is null and t.status not in ('done', 'cancelled')
+                         and t.project = proj and e.actor <> me and e.id > seen and e.at > now() - interval '24 hours'
+                         and me = any(cb.triagers(proj))), '[]'),
     -- huddle lines for huddles I'm in; a member added later hears only from its own 'add' on
     'huddles', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'huddle', h.id, 'topic', h.topic, 'action', e.data ->> 'action',
                                                              'actor', e.actor, 'summary', e.summary) order by e.id)
@@ -701,10 +739,11 @@ begin
                            and e.kind in ('task_created', 'moved', 'updated', 'done', 'note')
                            and (t.assignee = me or e.data -> 'assignee' ->> 'from' = me)), '[]'),
     -- New work in my project's Next (unassigned or mine), only while I have nothing in progress.
+    -- A new unassigned bug goes to triage ('bugs') instead: one decision, not every idle worker racing for it.
     'next_work', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'priority', t.priority) order by t.priority, t.rank)
                              from cb.tasks t
                             where me is not null and proj is not null and t.project = proj and t.status = 'next'
-                              and (t.assignee is null or t.assignee = me)
+                              and (t.assignee is null or t.assignee = me) and not (t.type = 'bug' and t.assignee is null)
                               and exists (select 1 from cb.events e where e.task_id = t.id and e.id > after_event and e.actor <> me
                                             and ((e.kind = 'task_created' and e.data ->> 'status' = 'next')
                                                  or (e.kind = 'moved' and e.data ->> 'to' = 'next')))

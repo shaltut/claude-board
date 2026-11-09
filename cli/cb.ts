@@ -12,13 +12,14 @@ const HELP = `cb — Claude Board (http://localhost:4747)
   cb relay [--restart]                       push answers, task changes, broadcasts and new work into this session
   cb iam <name> [project]                    name this session once (e.g. W1@macbook ihop); later commands act as it, in that project
   cb tag <id> <tag>... [-<tag>]...           tag work streams (ocr, tawuniya); -tag removes
-  cb brief [project] [--tag t]               what's in progress / next / blocked / waiting
+  cb brief [project] [--tag t] [--type bug]  what's in progress / next / blocked / waiting
   cb next [project]                          claim the top task in Next (sets in_progress + you)
   cb mine                                    your tasks (re-check between steps; obey moves/cancels)
-  cb add <project> "<title>" [-s next] [-p P1] [-b body] [-l a,b] [--link k=v]
+  cb add <project> "<title>" [-s next] [-p P1] [-b body] [-l a,b] [--link k=v] [--type bug|feature|change|chore|research]
+  cb bug <project> "<title>" -b "what happened, repro, expected vs actual" [-p P1]   file a bug (project claude-board = the board itself); its orchestrator assigns it
   cb move <id> <status> ["note"]             status: backlog next in_progress blocked review done cancelled
   cb done <id> "summary" [--pr x] [--commit x] [--branch x] [--link k=v]
-  cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x]
+  cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x] [--type bug]
   cb log <project|task id> "what happened" [-t id]   (cb log 130 "..." logs on task #130)
   cb ask <project> "question" -o "Label (Recommended)=why" -o "Label=tradeoff"... [--multi] [-c "context"] [--blocking -t id] [--free: no options]
   cb tell <session> "<msg>"                  message one session; it arrives in that session by itself
@@ -44,7 +45,7 @@ const OPTIONS = {
   title: { type: 'string' }, assignee: { type: 'string' }, project: { type: 'string' },
   task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
   multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, to: { type: 'string' }, context: { type: 'string', short: 'c' },
-  'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' },
+  'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' }, type: { type: 'string' },
 } as const;
 
 // Text like "-5% latency" is text, not a flag: only --name, --name=x and -x look like options.
@@ -111,7 +112,7 @@ function options() {
 }
 
 const line = (t: any) =>
-  `#${t.id} [${t.status ?? ''}] ${t.priority} ${t.title}${t.labels?.length ? ` {${t.labels.join(', ')}}` : ''}${t.assignee ? ` (${t.assignee})` : ''} · ${t.project}`.replace(' [] ', ' ');
+  `#${t.id} [${t.status ?? ''}] ${t.priority} ${t.type && t.type !== 'task' ? `${t.type}: ` : ''}${t.title}${t.labels?.length ? ` {${t.labels.join(', ')}}` : ''}${t.assignee ? ` (${t.assignee})` : ''} · ${t.project}`.replace(' [] ', ' ');
 
 function printBrief(b: any) {
   const sec = (name: string, rows: any[], fmt: (r: any) => string) => {
@@ -244,7 +245,7 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
     case 'session': {
       need(1, 'session <name>   e.g. cb session W6@macbook');
       const who = args[0];
-      const tasks = await sql`select id, status, priority, title, project from cb.tasks where assignee = ${who} and status not in ('done','cancelled') order by status, priority, rank`;
+      const tasks = await sql`select id, status, priority, type, title, project from cb.tasks where assignee = ${who} and status not in ('done','cancelled') order by status, priority, rank`;
       const qs = await sql`select id, status, body from cb.questions where asked_by = ${who} and status in ('open','answered') order by id`;
       const ev = await sql`select at, kind, task_id, summary from cb.events where actor = ${who} order by id desc limit 10`;
       const out = [`${who}: ${tasks.length} open tasks`, ...tasks.map((t: any) => '  ' + line(t)),
@@ -274,8 +275,20 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       need(2, 'add <project> "<title>"');
       const id = await callFn('task_add', { project: args[0], title: args.slice(1).join(' '), body: o.body ?? '',
         status: o.status ?? 'backlog', priority: o.priority ?? 'P2', labels: o.labels ? o.labels.split(',') : [],
-        links: links(), assignee: o.assignee ?? null, actor });
+        links: links(), assignee: o.assignee ?? null, actor, ...(o.type ? { type: o.type } : {}) });
       return { out: `#${id}`, json: id };
+    }
+    case 'bug': {
+      need(2, 'bug <project> "<title>" -b "what happened, how to reproduce, expected vs actual"');
+      if (!o.body?.trim()) throw new Error('describe it: -b "what happened, how to reproduce, expected vs actual"');
+      const id = await callFn('task_add', { project: args[0], title: args.slice(1).join(' '), body: o.body, status: 'next',
+        priority: o.priority ?? 'P2', labels: o.labels ? o.labels.split(',') : [], links: links(), actor, type: 'bug' });
+      const [{ project, all }] = await sql`select t.project, cb.triagers(t.project) as all from cb.tasks t where t.id = ${id}`;
+      const told = all.filter((a: string) => a !== actor);
+      const orch = told.some((a: string) => a === 'orch' || a.startsWith('orch@'));
+      const who = told.length ? `told ${told.join(', ')}${orch ? '' : ' (no live orchestrator there)'}`
+        : all.length ? `you triage it: cb edit ${id} --assignee <worker>` : `no session works in ${project} yet: it waits in Next`;
+      return { out: `#${id} bug filed in ${project}; ${who}`, json: { id, project, told } };
     }
     case 'move':
       need(2, 'move <id> <status> ["note"]');
@@ -288,10 +301,10 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       await callFn('task_done', { id: args[0], summary: args.slice(1).join(' '), links: links(), actor });
       return { out: `#${args[0].replace('#', '')} done` };
     case 'edit': {
-      need(1, 'edit <id> --title/--body/--priority/--assignee/--project');
+      need(1, 'edit <id> --title/--body/--priority/--assignee/--project/--type');
       await guard(args[0]);
       const fields: Record<string, unknown> = {};
-      for (const k of ['title', 'body', 'priority', 'assignee', 'project'] as const) if (o[k] !== undefined) fields[k] = o[k];
+      for (const k of ['title', 'body', 'priority', 'assignee', 'project', 'type'] as const) if (o[k] !== undefined) fields[k] = o[k];
       if (o.labels) fields.labels = o.labels.split(',');
       const l = links(); if (Object.keys(l).length) fields.links = l;
       await callFn('task_update', { id: args[0], fields, actor });
@@ -350,7 +363,7 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       await callFn('withdraw', { id: args[0].replace(/^q/i, ''), actor });
       return { out: `Q${args[0].replace(/^q/i, '')} withdrawn` };
     case 'brief': {
-      const b = await callFn('brief', { project: args[0] ?? sessionProject, tag: o.tag ?? null });
+      const b = await callFn('brief', { project: args[0] ?? sessionProject, tag: o.tag ?? null, ...(o.type ? { type: o.type } : {}) });
       if (o.json) return { json: b };
       printBrief(b);
       return {};
