@@ -85,6 +85,15 @@ test('cb start, unbound pane: says how to bind and lists the projects', async ()
   assert.doesNotMatch(r.out, /cb relay/); // one step at a time
 });
 
+test('cb start, relay started before cb iam (the hook): its row has no project, so still not bound', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'a')`;
+  await sql`select cb.inbox('mac', 'p7')`; // what the SessionStart relay does first
+  const r = cb(['start'], { CB_ACTOR: '', HERDR_PANE_ID: 'p7' });
+  assert.match(r.out, /You +p7@mac \(not bound\)/);
+  assert.match(r.out, /cb iam <name> <project>/);
+});
+
 test('cb start, bound without relay: run cb relay; then shows work and the queue head', async () => {
   const sql = await db();
   await sql`select cb.task_add(project => 'ihop', title => 'held', status => 'in_progress', actor => 'W1@test')`;

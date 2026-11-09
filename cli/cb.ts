@@ -131,7 +131,7 @@ async function start() {
       (select count(*)::int from cb.sessions s where s.project = p.slug and s.last_seen > now() - interval '90 seconds') as live
     from cb.projects p left join cb.tasks t on t.project = p.slug group by p.slug order by p.slug`)
     .map((p: any) => `    ${p.slug.padEnd(16)} ${p.next} next, ${p.doing} in progress, ${p.live} sessions live`).join('\n') || '    (none yet: cb help project)';
-  const via = o.as ? '--as' : process.env.CB_ACTOR ? '$CB_ACTOR' : row ? 'bound to this pane' : 'default name; not bound';
+  const via = o.as ? '--as' : process.env.CB_ACTOR ? '$CB_ACTOR' : row?.project ? 'bound to this pane' : 'not bound'; // the relay's own row (before cb iam) has no project
   const out = [`You       ${actor} (${via})`,
     `Project   ${sessionProject ?? (pane ? 'NOT BOUND' : 'none (no herdr pane)')}`,
     `Relay     ${relay === null ? `unavailable (${pane ? 'no Claude Code inbox here' : 'no herdr pane'}): run cb mine and cb pending between steps` : relay ? 'on' : 'OFF'}`, ''];
