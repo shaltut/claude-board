@@ -956,9 +956,12 @@ create table if not exists cb.locks (
   unique (name, actor)
 );
 
--- [{name, holder, held_at, queue: [actor...]}] for one lock or all.
+-- [{name, holder, held_at, holder_seen, queue: [actor...]}] for one lock or all. holder_seen: the holder's last sign
+-- of life (relay heartbeat, any event, or taking the lock).
 create function cb.lock_queue(name text default null) returns jsonb language sql stable as $$
-  select coalesce(jsonb_agg(jsonb_build_object('name', g.name, 'holder', g.holder, 'held_at', g.held_at, 'queue', g.queue) order by g.name), '[]')
+  select coalesce(jsonb_agg(jsonb_build_object('name', g.name, 'holder', g.holder, 'held_at', g.held_at, 'queue', g.queue,
+           'holder_seen', greatest(g.held_at, (select max(s.last_seen) from cb.sessions s where s.actor = g.holder),
+                                   (select max(e.at) from cb.events e where e.actor = g.holder))) order by g.name), '[]')
     from (select l.name, max(l.actor) filter (where l.held_at is not null) as holder, max(l.held_at) as held_at,
                  coalesce(jsonb_agg(l.actor order by l.id) filter (where l.held_at is null), '[]') as queue
             from cb.locks l where $1 is null or l.name = lower(trim($1)) group by l.name) g
@@ -979,13 +982,24 @@ begin
 end $$;
 
 -- Release a lock (or leave its queue). The next in the queue holds it and gets a message. Returns the new holder.
-create function cb.lock_release(name text, actor text default null) returns text language plpgsql as $$
+-- force: any session takes the lock off its holder (a dead session); logged, and the old holder is told.
+create function cb.lock_release(name text, actor text default null, force boolean default false) returns text language plpgsql as $$
 #variable_conflict use_variable
-declare a text := cb.set_actor(actor); n text := lower(trim(coalesce(name, ''))); nxt text;
+declare a text := cb.set_actor(actor); n text := lower(trim(coalesce(name, ''))); nxt text; old text;
 begin
   perform pg_advisory_xact_lock(hashtext('cb.lock:' || n));
-  delete from cb.locks l where l.name = n and l.actor = a;
-  if not found then raise exception '% does not hold or wait for lock %', a, n; end if;
+  if coalesce(force, false) then
+    delete from cb.locks l where l.name = n and l.held_at is not null returning l.actor into old;
+    if old is null then raise exception 'lock % is not held', n; end if;
+    if old <> a then
+      insert into cb.events (actor, kind, summary, data)
+      values (a, 'note', format('force-released lock %s from %s', n, old), jsonb_build_object('lock', n, 'from', old)),
+             (a, 'message', format('%s force-released your lock %s (you seemed gone); cb lock take %s to queue again', a, n, n), jsonb_build_object('to', old));
+    end if;
+  else
+    delete from cb.locks l where l.name = n and l.actor = a;
+    if not found then raise exception '% does not hold or wait for lock %', a, n; end if;
+  end if;
   if not exists (select 1 from cb.locks h where h.name = n and h.held_at is not null) then
     update cb.locks l set held_at = now() where l.id = (select min(x.id) from cb.locks x where x.name = n)
     returning l.actor into nxt;

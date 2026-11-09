@@ -1,5 +1,5 @@
 // cb tick: the actions due now in one project, most urgent first, one person and one command per line.
-// Board data from cb.tick (read-only); PR state from GitHub through gh, cached 5 minutes.
+// Board data from cb.tick (read-only); PR state from GitHub through gh, cached 5 minutes (1 for a PR about to be merged).
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,8 +11,9 @@ export const dur = (m: number) => (m === Infinity ? 'never' : m < 60 ? `${Math.r
 const mins = (t: any) => (t ? (Date.now() - +new Date(t)) / 60000 : Infinity);
 const ago = (t: any) => dur(mins(t));
 const cut = (s: any, n = 100) => { const v = String(s ?? '').replace(/\s+/g, ' ').trim(); return v.length > n ? v.slice(0, n - 1) + '…' : v; };
-// A single-quoted shell argument: nothing expands in bash or PowerShell.
-const q = (s: string) => `'${s.replace(/'/g, '’')}'`;
+// One shell argument, inert in bash and PowerShell: a safe word as is, else single-quoted with every quote doubled.
+// PowerShell also reads ‘ ’ ‚ ‛ as single quotes; in bash '' just closes and reopens the quote.
+export const q = (s: any) => { const v = String(s); return /^\w[\w@.:/=-]*$/.test(v) ? v : `'${v.replace(/['‘’‚‛]/g, "''")}'`; };
 
 type Item = { section: string; who: string; text: string; cmd: string | null; detail?: string };
 type Pr = { state: string; head: string; mergeable: string };
@@ -21,32 +22,36 @@ const SECTIONS: [string, string][] = [
   ['answers', 'ANSWERS NOT ACTED ON'], ['questions', 'YOUR OPEN QUESTIONS'], ['ready', 'READY TO MERGE'], ['stuck', 'STUCK'],
   ['idle', 'IDLE'], ['github', 'BOARD VS GITHUB'], ['locks', 'LOCKS'], ['huddles', 'HUDDLES'],
 ];
+const REPO = /^[\w.-]+\/[\w.-]+$/;
+const SHA = /^[0-9a-f]{40}$/;
 
 /** owner/repo and number of a PR link: a GitHub URL, or "#2800" with GITHUB_REPO_<PROJECT> from the env or .env. */
 function prRef(link: string, project: string) {
   const u = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(link);
-  if (u) return { repo: u[1], n: u[2] };
-  const n = /(\d+)\/?$/.exec(link)?.[1];
   const key = `GITHUB_REPO_${project.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
-  const repo = process.env[key] || dotenv(key);
-  return n && repo ? { repo, n } : null;
+  const repo = u ? u[1] : process.env[key] || dotenv(key), n = u ? u[2] : /(\d+)\/?$/.exec(link)?.[1];
+  return n && repo && REPO.test(repo) ? { repo, n } : null;  // a repo that isn't owner/name never reaches gh
 }
 
-/** State of each PR ("owner/repo#n" → Pr): one gh graphql call per repo for what the cache doesn't hold. */
-function github(refs: { repo: string; n: string }[]): { prs: Record<string, Pr>; skipped: string | null } {
+/** State of each PR ("owner/repo#n" → Pr): one gh graphql call per repo for what the cache doesn't hold fresh
+ *  (ttl per PR). A repo gh can't read is skipped, and its failure cached a minute. */
+function github(refs: { repo: string; n: string }[], ttl: (key: string) => number) {
   const file = process.env.CB_GH_CACHE || join(tmpdir(), 'cb-gh-cache.json');
-  let cache: Record<string, Pr & { at: number }> = {};
-  try { cache = JSON.parse(readFileSync(file, 'utf8')); } catch {}
-  const fresh = (k: string) => cache[k] && Date.now() - cache[k].at < 5 * 60_000;
-  const want = new Map<string, Set<string>>();
-  for (const r of refs) if (!fresh(`${r.repo}#${r.n}`)) (want.get(r.repo) ?? want.set(r.repo, new Set()).get(r.repo)!).add(r.n);
-  const prs: Record<string, Pr> = {};
-  for (const r of refs) if (fresh(`${r.repo}#${r.n}`)) prs[`${r.repo}#${r.n}`] = cache[`${r.repo}#${r.n}`];
-  let skipped: string | null = null;
+  let cache: Record<string, any> = {};
+  try { const c = JSON.parse(readFileSync(file, 'utf8')); if (c && typeof c === 'object' && !Array.isArray(c)) cache = c; } catch {}
+  const age = (e: any) => (e && typeof e === 'object' && typeof e.at === 'number' && e.at <= Date.now() ? Date.now() - e.at : Infinity);
+  const isPr = (e: any) => typeof e?.state === 'string' && typeof e?.head === 'string' && SHA.test(e.head);
+  const prs: Record<string, Pr> = {}, skipped: string[] = [], want = new Map<string, Set<string>>();
+  for (const { repo, n } of refs) {
+    const k = `${repo}#${n}`;
+    if (isPr(cache[k]) && age(cache[k]) < ttl(k)) prs[k] = cache[k];
+    else (want.get(repo) ?? want.set(repo, new Set()).get(repo)!).add(n);
+  }
   for (const [repo, ns] of want) {
-    const [owner, name] = repo.split('/');
-    const list = [...ns];
-    for (let i = 0; i < list.length && !skipped; i += 50) {
+    const failed = cache[`!${repo}`];
+    if (typeof failed?.error === 'string' && age(failed) < 60_000) { skipped.push(`${repo}: ${failed.error}`); continue; }
+    const [owner, name] = repo.split('/'), list = [...ns];
+    for (let i = 0; i < list.length; i += 50) {
       const fields = list.slice(i, i + 50).map((n) => `p${n}: pullRequest(number: ${n}) { state headRefOid mergeable }`).join(' ');
       const args = ['api', 'graphql', '-f', `query=query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${fields} } }`];
       // CB_GH: a node script standing in for gh (tests)
@@ -55,13 +60,18 @@ function github(refs: { repo: string; n: string }[]): { prs: Record<string, Pr>;
       // gh exits 1 when one PR number doesn't exist but still prints the others: trust the JSON, not the exit code
       let data: any;
       try { data = JSON.parse(r.stdout).data?.repository; } catch {}
-      if (!data) { skipped = r.error ? `gh not runnable (${r.error.message})` : `gh failed (${cut(r.stderr.trim().split('\n')[0] || `exit ${r.status}`, 120)})`; break; }
+      if (!data || typeof data !== 'object') {
+        const error = r.error ? `gh not runnable (${r.error.message})` : `gh failed (${cut(r.stderr.trim().split('\n')[0] || `exit ${r.status}`, 120)})`;
+        cache[`!${repo}`] = { error, at: Date.now() };
+        skipped.push(`${repo}: ${error}`);
+        break;
+      }
       for (const [k, v] of Object.entries<any>(data)) {
-        if (!v) continue;
         // mergeable is often UNKNOWN (GitHub computes it lazily): it reads as not conflicting; gh pr merge says if it is
-        const key = `${repo}#${k.slice(1)}`;
-        prs[key] = { state: v.state, head: v.headRefOid, mergeable: v.mergeable };
-        cache[key] = { ...prs[key], at: Date.now() };
+        const pr = { state: v?.state, head: String(v?.headRefOid ?? '').toLowerCase(), mergeable: v?.mergeable };
+        if (!isPr(pr)) continue;
+        prs[`${repo}#${k.slice(1)}`] = pr;
+        cache[`${repo}#${k.slice(1)}`] = { ...pr, at: Date.now() };
       }
     }
   }
@@ -73,74 +83,83 @@ export async function tick(project: string, actor: string) {
   const b: any = await callFn('tick', { project, actor });
   const items: Item[] = [];
   const add = (section: string, who: string, text: string, cmd: string | null, detail?: string) => items.push({ section, who, text, cmd, ...(detail ? { detail } : {}) });
+  const P = q(project);
 
   for (const a of b.answered) {
     const mine = a.who === actor;
     add('answers', a.who, `Q${a.id} answered ${ago(a.answered_at)} ago, ${a.who} acts`,
-      mine ? `cb delivered ${a.id}` : `cb tell ${a.who} ${q(`Q${a.id}: ${cut(a.answer, 300)}`)} && cb delivered ${a.id} ${a.who}`,
+      mine ? `cb delivered ${a.id}` : `cb tell ${q(a.who)} ${q(`Q${a.id}: ${cut(a.answer, 300)}`)} && cb delivered ${a.id} ${q(a.who)}`,
       `asked: ${cut(a.body)}${mine ? ` · answer: ${cut(a.answer, 300)}` : ''}`);
   }
   for (const x of b.my_questions)
     add('questions', x.for, `Q${x.id} open ${ago(x.created_at)}, ${x.for}: ${cut(x.body)}${x.no_options ? ' ⚠ no options' : ''}`,
       x.no_options ? `cb withdraw ${x.id}` : null, x.no_options ? 'then ask again with -o "Label (Recommended)=why" -o ...' : undefined);
 
-  // GitHub: one lookup for every PR the board mentions
   const prs = b.prs.map((t: any) => ({ ...t, ref: prRef(t.pr, project) }));
-  const refs = prs.filter((t: any) => t.ref).map((t: any) => t.ref);
-  const gh = refs.length ? github(refs) : { prs: {}, skipped: null };
-  const stateOf = (t: any) => (t.ref ? gh.prs[`${t.ref.repo}#${t.ref.n}`] : undefined);
   const prKey = (t: any) => (t.ref ? `${t.ref.repo}#${t.ref.n}` : `?${t.pr}`);
-  const flag = (t: any) => (t.ref ? ` -R ${t.ref.repo}` : '');
+  const link = (t: any) => `--link ${q(`pr=${t.pr}`)}`;
+  const R = (t: any) => `-R ${q(t.ref.repo)}`;
 
-  // Ready to merge: per PR, the latest finished review decides; skipped while another review of it is open.
+  // Ready to merge (board side): per PR, the latest finished review decides; skipped while another review of it is open.
   const byPr = new Map<string, any[]>();
-  for (const t of prs.filter((t: any) => t.review)) (byPr.get(prKey(t)) ?? byPr.set(prKey(t), []).get(prKey(t))!).push(t);
-  for (const reviews of byPr.values()) {
-    if (reviews.some((t: any) => !['done', 'cancelled'].includes(t.status))) continue;
+  for (const t of prs.filter((t: any) => t.review && t.ref)) (byPr.get(prKey(t)) ?? byPr.set(prKey(t), []).get(prKey(t))!).push(t);
+  const ready = [...byPr.values()].flatMap((reviews) => {
+    if (reviews.some((t: any) => !['done', 'cancelled'].includes(t.status))) return [];
     const last = reviews.filter((t: any) => t.status === 'done').sort((x: any, y: any) => +new Date(y.done_at) - +new Date(x.done_at))[0];
-    const pr = last && stateOf(last);
-    if (!last?.go || !last.commit || pr?.state !== 'OPEN') continue;
-    const n = last.ref.n, c = String(last.commit).toLowerCase(), head = pr.head.toLowerCase();
+    return last?.go && last.commit ? [last] : [];
+  });
+
+  // GitHub: one lookup for every PR the board mentions; a PR about to be merged is re-checked if over a minute old
+  const refs = prs.filter((t: any) => t.ref).map((t: any) => t.ref);
+  const soon = new Set(ready.map(prKey));
+  const gh = refs.length ? github(refs, (k) => (soon.has(k) ? 60_000 : 5 * 60_000)) : { prs: {} as Record<string, Pr>, skipped: [] };
+  const stateOf = (t: any) => (t.ref ? gh.prs[prKey(t)] : undefined);
+
+  for (const last of ready) {
+    const pr = stateOf(last);
+    if (pr?.state !== 'OPEN') continue;
+    const n = last.ref.n, c = String(last.commit).toLowerCase();
     const author = prs.filter((t: any) => !t.review && prKey(t) === prKey(last) && t.assignee).pop()?.assignee;
     if (pr.mergeable === 'CONFLICTING')
       add('ready', author ?? actor, `#${n} GO@${last.commit} CONFLICTING`,
-        author ? `cb tell ${author} ${q(`#${n} conflicts with its base: rebase it, then ask for a delta review`)}`
-          : `cb add ${project} ${q(`Rebase #${n} (conflicts with its base)`)} -s next --link pr=${last.pr}`);
-    else if (head.startsWith(c) || c.startsWith(head))
-      add('ready', actor, `#${n} GO@${last.commit} = head (review #${last.id})`, `gh pr merge ${n}${flag(last)}`);
+        author ? `cb tell ${q(author)} ${q(`#${n} conflicts with its base: rebase it, then ask for a delta review`)}`
+          : `cb add ${P} ${q(`Rebase #${n} (conflicts with its base)`)} -s next ${link(last)}`);
+    else if (/^[0-9a-f]{7,40}$/.test(c) && pr.head.startsWith(c))
+      // --match-head-commit: gh refuses if the head moved after this check
+      add('ready', actor, `#${n} GO@${last.commit} = head (review #${last.id})`, `gh pr merge ${n} ${R(last)} --match-head-commit ${pr.head}`);
     else
-      add('ready', actor, `#${n} GO@${last.commit}, HEAD MOVED to ${head.slice(0, 10)}`,
-        `cb add ${project} ${q(`Delta review #${n} ${last.commit}..${head.slice(0, 10)}`)} -s next -l review --link pr=${last.pr}`);
+      add('ready', actor, `#${n} GO@${last.commit}, HEAD MOVED to ${pr.head.slice(0, 10)}`,
+        `cb add ${P} ${q(`Delta review #${n} ${last.commit}..${pr.head.slice(0, 10)}`)} -s next -l review ${link(last)}`);
   }
 
   for (const t of b.silent)
     add('stuck', t.assignee, `#${t.id} ${t.assignee} silent ${ago(t.last_at)} (in progress)`,
-      `cb tell ${t.assignee} ${q(`#${t.id} ${cut(t.title, 60)}: still on it? cb log, or cb move it`)}`);
+      `cb tell ${q(t.assignee)} ${q(`#${t.id} ${cut(t.title, 60)}: still on it? cb log, or cb move it`)}`);
   for (const t of b.blocked) {
     const onQ = t.question && t.question_status === 'open';
     const reason = t.question ? `on Q${t.question} (${t.question_status}${onQ ? `, ${t.question_for}` : ''}): ${cut(t.question_body, 80)}`
       : /→ blocked$/.test(t.note ?? '') || !t.note ? 'no reason given' : cut(t.note, 100);
     add('stuck', onQ ? t.question_for : t.assignee ?? actor, `#${t.id} blocked ${ago(t.since)}, ${t.assignee ?? 'unassigned'}: ${reason}`,
-      onQ ? null : t.assignee ? `cb tell ${t.assignee} ${q(`#${t.id} blocked ${ago(t.since)}: what unblocks it?`)}` : `cb move ${t.id} next`);
+      onQ ? null : t.assignee ? `cb tell ${q(t.assignee)} ${q(`#${t.id} blocked ${ago(t.since)}: what unblocks it?`)}` : `cb move ${t.id} next`);
   }
   for (const t of b.unreviewed)
     add('stuck', actor, `#${t.id} in review, no reviewer task (${t.assignee ?? 'unassigned'})`,
-      `cb add ${project} ${q(`Review #${t.id} (${t.assignee ?? 'unassigned'}): ${cut(t.title, 60)}`)} -s next -l review${t.pr ? ` --link pr=${t.pr}` : ''}`);
+      `cb add ${P} ${q(`Review #${t.id} (${t.assignee ?? 'unassigned'}): ${cut(t.title, 60)}`)} -s next -l review${t.pr ? ` ${link(t)}` : ''}`);
   for (const t of prs.filter((t: any) => !t.review && !t.reviewed && t.status === 'done' && stateOf(t)?.state === 'OPEN'))
     add('stuck', actor, `#${t.id} done, PR #${t.ref.n} open, no reviewer task (${t.assignee ?? 'unassigned'})`,
-      `cb add ${project} ${q(`Review #${t.ref.n} (${t.assignee ?? 'unassigned'}, #${t.id}): ${cut(t.title, 60)}`)} -s next -l review --link pr=${t.pr}`);
+      `cb add ${P} ${q(`Review #${t.ref.n} (${t.assignee ?? 'unassigned'}, #${t.id}): ${cut(t.title, 60)}`)} -s next -l review ${link(t)}`);
   for (const t of b.misheld)
-    add('stuck', actor, `#${t.id} assigned ${t.assignee}, ${t.by} works it`, `cb edit ${t.id} --assignee ${t.by}`);
+    add('stuck', actor, `#${t.id} assigned ${t.assignee}, ${t.by} works it`, `cb edit ${t.id} --assignee ${q(t.by)}`);
 
   // Idle: the first unassigned Next task sharing a tag, else the first unassigned one; each task offered once.
   const free = b.next.filter((t: any) => !t.assignee), workless: string[] = [];
   for (const s of b.idle) {
     const i = Math.max(0, free.findIndex((t: any) => t.labels.some((l: string) => s.tags.includes(l))));
     const t = free.splice(i, 1)[0];
-    if (t) add('idle', s.actor, `${s.actor} idle`, `cb tell ${s.actor} ${q(`take #${t.id} ${cut(t.title, 60)}`)}`);
+    if (t) add('idle', s.actor, `${s.actor} idle`, `cb tell ${q(s.actor)} ${q(`take #${t.id} ${cut(t.title, 60)}`)}`);
     else workless.push(s.actor);
   }
-  if (workless.length) add('idle', actor, `${workless.join(', ')} idle, nothing unassigned in Next`, `cb add ${project} '<title>' -s next`);
+  if (workless.length) add('idle', actor, `${workless.join(', ')} idle, nothing unassigned in Next`, `cb add ${P} '<title>' -s next`);
 
   for (const t of prs) {
     const pr = stateOf(t);
@@ -148,23 +167,28 @@ export async function tick(project: string, actor: string) {
     const n = t.ref.n, open = !['done', 'cancelled'].includes(t.status);
     if (open && pr.state === 'MERGED') add('github', actor, `#${t.id} ${t.status} but PR #${n} merged`, `cb done ${t.id} ${q(`PR #${n} merged`)}`);
     else if (open && pr.state === 'CLOSED') add('github', actor, `#${t.id} ${t.status} but PR #${n} closed unmerged`, `cb move ${t.id} cancelled ${q(`PR #${n} closed unmerged`)}`);
-    else if (t.status === 'cancelled' && pr.state === 'OPEN') add('github', actor, `#${t.id} cancelled but PR #${n} open`, `gh pr close ${n}${flag(t)}`);
+    else if (t.status === 'cancelled' && pr.state === 'OPEN') add('github', actor, `#${t.id} cancelled but PR #${n} open`, `gh pr close ${n} ${R(t)}`);
     else if (t.status === 'done' && !t.review && pr.state === 'CLOSED') add('github', actor, `#${t.id} done but PR #${n} closed unmerged`, `cb move ${t.id} next ${q(`PR #${n} closed unmerged`)}`);
   }
 
-  for (const l of b.locks.filter((l: any) => l.holder && (l.queue.length || mins(l.held_at) > 60)))
-    add('locks', l.holder, `lock ${l.name}: ${l.holder} holds it ${ago(l.held_at)}${l.queue.length ? `, queue ${l.queue.join(', ')}` : ''}`,
-      `cb tell ${l.holder} ${q(l.queue.length ? `release lock ${l.name} when done: ${l.queue.length} waiting` : `still need lock ${l.name}? cb lock release ${l.name}`)}`);
+  // Locks: someone waiting, held over an hour, or a holder silent 30 minutes (no relay, no event: likely dead → --force)
+  for (const l of b.locks) {
+    const silent = mins(l.holder_seen) > 30;
+    if (!l.holder || !(l.queue.length || mins(l.held_at) > 60 || silent)) continue;
+    add('locks', silent ? actor : l.holder,
+      `lock ${l.name}: ${l.holder} holds it ${ago(l.held_at)}${l.queue.length ? `, queue ${l.queue.join(', ')}` : ''}${silent ? `, holder silent ${ago(l.holder_seen)}` : ''}`,
+      silent ? `cb lock release ${q(l.name)} --force`
+        : `cb tell ${q(l.holder)} ${q(l.queue.length ? `release lock ${l.name} when done: ${l.queue.length} waiting` : `still need lock ${l.name}? cb lock release ${l.name}`)}`);
+  }
   for (const h of b.huddles)
     add('huddles', actor, `huddle #${h.id} ${q(cut(h.topic, 60))} quiet ${ago(h.last_at)}`, `cb huddle close ${h.id} '<outcome>'`);
 
-  const order = SECTIONS.map(([k]) => k);
-  items.sort((x, y) => order.indexOf(x.section) - order.indexOf(y.section));
-  const skip = gh.skipped ? `GitHub checks skipped: ${gh.skipped}` : '';
   const out = SECTIONS.flatMap(([k, title]) => {
     const rows = items.filter((i) => i.section === k);
     return rows.length ? [title, ...rows.flatMap((i) => [`  ${i.text}${i.cmd ? ` → ${i.cmd}` : ''}`, ...(i.detail ? [`    ${i.detail}`] : [])])] : [];
   });
-  if (skip) out.push(skip);
+  for (const s of gh.skipped) out.push(`GitHub checks skipped for ${s}`);
+  const order = SECTIONS.map(([k]) => k);
+  items.sort((x, y) => order.indexOf(x.section) - order.indexOf(y.section));
   return { out: out.join('\n'), json: { project, actor, items, github: { checked: refs.length, skipped: gh.skipped } } };
 }

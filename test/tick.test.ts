@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { freshDb, TEST_URL } from './helpers.ts';
@@ -12,12 +12,14 @@ async function db() { const s = await freshDb(); clients.push(s); return s; }
 
 const dir = mkdtempSync(join(tmpdir(), 'cb-tick-'));
 let n = 0;
-/** A node script standing in for gh: answers every graphql query with these PRs (by number), or fails. */
-function fakeGh(prs: Record<string, any> | null) {
+/** A node script standing in for gh: answers every graphql query with these PRs (by number), or fails
+ *  (always with prs = null, or only for the repo named `fail`). */
+function fakeGh(prs: Record<string, any> | null, fail?: string) {
   const f = join(dir, `gh${++n}.mjs`);
   writeFileSync(f, prs
     ? `const prs = ${JSON.stringify(prs)};
        const q = process.argv.find((a) => a.startsWith('query='));
+       if (${JSON.stringify(fail ?? null)} && q.includes('name: "' + ${JSON.stringify(fail ?? null)} + '"')) { process.stderr.write('GraphQL: Could not resolve to a Repository\\n'); process.exit(1); }
        const repo = {}; for (const [, n] of q.matchAll(/p(\\d+): *pullRequest/g)) repo['p' + n] = prs[n] ?? null;
        process.stdout.write(JSON.stringify({ data: { repository: repo } }));`
     : `process.stderr.write('To get started with GitHub CLI, please run:  gh auth login\\n'); process.exit(4);`);
@@ -55,7 +57,7 @@ test('tick: answers not acted on name who acts, with one command', async () => {
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /^ANSWERS NOT ACTED ON/);
   // addressed to W3's pane: W3 acts; the answer travels in a single-quoted arg (no shell expansion)
-  assert.match(r.out, /Q1 answered \S+ ago, W3@macbook acts → cb tell W3@macbook 'Q1: Use the it’s-fine DB' && cb delivered 1 W3@macbook/);
+  assert.match(r.out, /Q1 answered \S+ ago, W3@macbook acts → cb tell W3@macbook 'Q1: Use the it''s-fine DB' && cb delivered 1 W3@macbook/);
   assert.match(r.out, /asked: Which DB\?/);
   // the orchestrator's own question: it acts, then marks it delivered
   assert.match(r.out, /Q2 answered \S+ ago, orch@test acts → cb delivered 2\n\s+asked: Ship it\? · answer: Yes/);
@@ -129,6 +131,7 @@ test('tick: quiet huddles and held locks', async () => {
   await ago(sql, sql`(data ->> 'huddle')::int = 1`, '25 minutes');
   await sql`select cb.lock_take('db', 'W8@m')`;
   await sql`select cb.lock_take('db', 'W3@m')`;
+  await sql`select cb.log('demo', 'running DB suites', null, '{}', 'W8@m')`; // the holder is alive
   const r = cb(['tick', 'demo']);
   assert.match(r.out, /HUDDLES\n\s+huddle #1 'Hijri dates' quiet 25m → cb huddle close 1 '<outcome>'/);
   assert.doesNotMatch(r.out, /fresh talk/);
@@ -154,6 +157,26 @@ test('locks: take queues, release hands over and tells the next holder', async (
   r = cb(['lock', 'release', 'db'], { CB_ACTOR: 'W3@m' });
   assert.equal(r.out, 'released lock db; it is free');
   assert.equal(cb(['lock', 'queue']).out, 'no locks held');
+});
+
+test('locks: --force releases a dead holder\'s lock (any session, logged); tick offers it for a silent holder', async () => {
+  const sql = await db();
+  await sql`select cb.ensure_project('demo')`;
+  await sql`select cb.lock_take('db', 'W8@m')`;
+  await sql`select cb.lock_take('db', 'W3@m')`;
+  await sql`select cb.log('demo', 'starting suites', null, '{}', 'W8@m')`;
+  await ago(sql, sql`actor = 'W8@m'`, '45 minutes');
+  await sql`update cb.locks set held_at = now() - interval '50 minutes' where held_at is not null`;
+  let r = cb(['tick', 'demo']);
+  assert.match(r.out, /LOCKS\n\s+lock db: W8@m holds it \S+, queue W3@m, holder silent 45m → cb lock release db --force$/m);
+  r = cb(['lock', 'release', 'db', '--force'], { CB_ACTOR: 'orch@test' });
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, 'released lock db; W3@m holds it now');
+  const ev = await sql`select actor, kind, summary, data from cb.events where kind in ('note', 'message') and actor = 'orch@test' order by id`;
+  assert.ok(ev.some((e: any) => e.kind === 'note' && /force-released lock db from W8@m/.test(e.summary)), JSON.stringify(ev));
+  assert.ok(ev.some((e: any) => e.kind === 'message' && e.data.to === 'W8@m' && /force-released/.test(e.summary)));
+  assert.ok(ev.some((e: any) => e.kind === 'message' && e.data.to === 'W3@m' && /lock db is yours/.test(e.summary)));
+  assert.match(cb(['lock', 'release', 'nope', '--force']).err, /lock nope is not held/);
 });
 
 async function seedReviews(sql: any) {
@@ -196,21 +219,22 @@ test('tick: ready to merge compares the PR head with the reviewed commit; board 
   const r = cb(['tick', 'demo'], { ...fakeGh(PRS), GITHUB_REPO_DEMO: 'acme/app' });
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /READY TO MERGE/);
-  assert.match(r.out, /#10 GO@aaa1111 = head \(review #2\) → gh pr merge 10 -R acme\/app/);
+  // the merge only goes through if the head is still the reviewed commit
+  assert.match(r.out, /#10 GO@aaa1111 = head \(review #2\) → gh pr merge 10 -R acme\/app --match-head-commit aaa11110{33}$/m);
   assert.match(r.out, /#11 GO@bbb2222, HEAD MOVED to fff9999000 → cb add demo 'Delta review #11 bbb2222\.\.fff9999000' -s next -l review --link pr=https:\/\/github\.com\/acme\/app\/pull\/11/);
   assert.match(r.out, /#12 GO@ccc3333 CONFLICTING → cb tell W4@m '#12 conflicts with its base: rebase it, then ask for a delta review'/);
   assert.doesNotMatch(r.out, /#13 GO/);
   assert.match(r.out, /BOARD VS GITHUB\n\s+#8 in_progress but PR #14 merged → cb done 8 'PR #14 merged'/);
   // the bare "#15" link resolves through GITHUB_REPO_DEMO
-  assert.match(r.out, /#9 done, PR #15 open, no reviewer task \(W2@m\) → cb add demo 'Review #15 \(W2@m, #9\): fix E' -s next -l review --link pr=#15/);
+  assert.match(r.out, /#9 done, PR #15 open, no reviewer task \(W2@m\) → cb add demo 'Review #15 \(W2@m, #9\): fix E' -s next -l review --link 'pr=#15'/);
   assert.doesNotMatch(r.out, /skipped/);
   // the order is the urgency order
   assert.ok(r.out.indexOf('READY TO MERGE') < r.out.indexOf('STUCK') && r.out.indexOf('STUCK') < r.out.indexOf('BOARD VS GITHUB'));
 
   const j = JSON.parse(cb(['tick', 'demo', '--json'], { ...fakeGh(PRS), GITHUB_REPO_DEMO: 'acme/app' }).out);
   const merge = j.items.find((i: any) => i.section === 'ready');
-  assert.equal(merge.cmd, 'gh pr merge 10 -R acme/app');
-  assert.equal(j.github.skipped, null);
+  assert.equal(merge.cmd, `gh pr merge 10 -R acme/app --match-head-commit aaa1111${'0'.repeat(33)}`);
+  assert.deepEqual(j.github.skipped, []);
 });
 
 test('tick: GitHub results are cached for 5 minutes', async () => {
@@ -233,5 +257,94 @@ test('tick: without gh, the board sections still print, with one line saying why
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /#10 W1@m silent 1h/);
   assert.doesNotMatch(r.out, /READY TO MERGE/);
-  assert.match(r.out, /^GitHub checks skipped: gh failed \(To get started with GitHub CLI, please run: gh auth login\)$/m);
+  assert.match(r.out, /^GitHub checks skipped for acme\/app: gh failed \(To get started with GitHub CLI, please run: gh auth login\)$/m);
+});
+
+test('tick: one failing repo skips only that repo, and its failure is cached for a minute', async () => {
+  const sql = await db();
+  await seedReviews(sql);
+  await sql`select cb.task_add(project => 'demo', title => 'other repo', status => 'in_progress', assignee => 'W6@m', links => ${sql.json({ pr: 'https://github.com/acme/bad/pull/14' })}, actor => 'W6@m')`;
+  const gh = fakeGh(PRS, 'bad');
+  let r = cb(['tick', 'demo'], { ...gh, GITHUB_REPO_DEMO: 'acme/app' });
+  assert.match(r.out, /#10 GO@aaa1111 = head/);
+  assert.match(r.out, /^GitHub checks skipped for acme\/bad: gh failed \(GraphQL: Could not resolve to a Repository\)$/m);
+  assert.doesNotMatch(r.out, /skipped for acme\/app/);
+  // within the minute the broken repo isn't asked again: its cached failure answers
+  writeFileSync(gh.CB_GH, `process.stderr.write('called again\\n'); process.exit(9)`);
+  r = cb(['tick', 'demo'], { ...gh, GITHUB_REPO_DEMO: 'acme/app' });
+  assert.match(r.out, /^GitHub checks skipped for acme\/bad: gh failed \(GraphQL: Could not resolve to a Repository\)$/m);
+  assert.doesNotMatch(r.out, /called again/);
+});
+
+test('tick: a ready-to-merge PR is re-checked if its cached state is over a minute old; others keep the 5-minute cache', async () => {
+  const sql = await db();
+  await seedReviews(sql);
+  const gh = fakeGh({ ...PRS, 10: { ...PRS[10], headRefOid: 'abcdef1' + '0'.repeat(33) }, 14: { ...PRS[14], state: 'OPEN' } });
+  const old = Date.now() - 2 * 60_000;
+  writeFileSync(gh.CB_GH_CACHE, JSON.stringify({
+    'acme/app#10': { state: 'OPEN', head: 'aaa1111' + '0'.repeat(33), mergeable: 'MERGEABLE', at: old },
+    'acme/app#14': { state: 'MERGED', head: '1'.repeat(40), mergeable: 'UNKNOWN', at: old },
+  }));
+  const r = cb(['tick', 'demo'], { ...gh, GITHUB_REPO_DEMO: 'acme/app' });
+  assert.match(r.out, /#10 GO@aaa1111, HEAD MOVED to abcdef1000/); // a stale "= head" would have merged an unreviewed commit
+  assert.match(r.out, /#8 in_progress but PR #14 merged/); // 2 minutes old: still from the cache
+});
+
+test('tick: a short or non-hex reviewed commit never matches the head; a garbage cache is ignored', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'Review #20', status => 'in_progress', labels => '["review"]', assignee => 'W3@m', actor => 'W3@m')`;
+  await sql`select cb.task_done('1', 'GO', ${sql.json({ pr: URL + '20', commit: 'aa' })}, 'W3@m')`;
+  await sql`select cb.task_add(project => 'demo', title => 'Review #21', status => 'in_progress', labels => '["review"]', assignee => 'W3@m', actor => 'W3@m')`;
+  await sql`select cb.task_done('2', 'GO', ${sql.json({ pr: URL + '21', commit: 'zzzzzzz' })}, 'W3@m')`;
+  for (const garbage of ['null', '[]', '"x"', '{"acme/app#20": 5}', '{"acme/app#20": {"at": 9e15}}']) {
+    const gh = fakeGh({ 20: { state: 'OPEN', headRefOid: 'aa' + '0'.repeat(38), mergeable: 'MERGEABLE' },
+      21: { state: 'OPEN', headRefOid: 'zzzzzzz' + '0'.repeat(33), mergeable: 'MERGEABLE' } });
+    writeFileSync(gh.CB_GH_CACHE, garbage);
+    const r = cb(['tick', 'demo'], gh);
+    assert.equal(r.code, 0, `${garbage}: ${r.err}`);
+    assert.doesNotMatch(r.out, /gh pr merge/, garbage);
+    assert.match(r.out, /#20 GO@aa, HEAD MOVED/, garbage);
+  }
+});
+
+test('q quotes for bash and PowerShell: safe words bare, the rest single-quoted with every quote doubled', async () => {
+  const { q } = await import('../cli/tick.ts');
+  assert.equal(q('W3@macbook'), 'W3@macbook');
+  assert.equal(q('pr=https://github.com/acme/app/pull/1'), 'pr=https://github.com/acme/app/pull/1');
+  assert.equal(q("it's"), "'it''s'");
+  assert.equal(q('’; calc; ’'), "'''; calc; '''");
+  assert.equal(q('‘a‚b‛'), "'''a''b'''");
+  assert.equal(q('#12'), "'#12'"); // a bare # starts a comment
+  assert.equal(q('-x'), "'-x'");
+  assert.equal(q('$(id)'), "'$(id)'");
+});
+
+test('tick: hostile titles, actors and PR links print as inert commands in bash and PowerShell', async () => {
+  const sql = await db();
+  const evil = "x’; touch PWN1; ’ $(touch PWN2) `touch PWN3` it's";
+  await sql`select cb.task_add(project => 'demo', title => ${evil}, status => 'review', assignee => 'W$(touch PWN4)@m',
+    links => ${sql.json({ pr: 'https://github.com/ac;me/a$(touch PWN5)/pull/17' })}, actor => 'W$(touch PWN4)@m')`;
+  await sql`select cb.task_add(project => 'demo', title => ${evil}, status => 'in_progress', assignee => 'W1’;touch PWN6;’@m', actor => 'W1’;touch PWN6;’@m')`;
+  await sql`select cb.task_add(project => 'demo', title => 'held', status => 'in_progress', assignee => 'A’@m', actor => 'orch@test')`;
+  await sql`select cb.log('demo', 'mine now', '3', '{}', ${"B`touch PWN7`@m"})`;
+  await sql`select cb.ask(project => 'demo', body => 'q?', actor => 'W$(touch PWN8)@m')`;
+  await sql`select cb.answer('1', ${evil})`;
+  await ago(sql, sql`actor like 'W1%'`, '2 hours');
+  const r = cb(['tick', 'demo'], fakeGh({ 17: { state: 'OPEN', headRefOid: '3'.repeat(40), mergeable: 'MERGEABLE' } }));
+  assert.equal(r.code, 0, r.err);
+  const cmds = r.out.split('\n').filter((l) => l.includes(' → ')).map((l) => l.slice(l.indexOf(' → ') + 3));
+  assert.ok(cmds.length >= 4, r.out);
+  assert.doesNotMatch(r.out, /skipped for ac;me/); // an invalid repo is never handed to gh
+  const shells: [string, string[], string][] = [
+    ['bash', ['-c'], `cb() { printf '<%s>' "$@"; echo; }; gh() { cb "$@"; }; ${cmds.join('\n')}`],
+    ['pwsh', ['-NoProfile', '-Command'], `function cb { '<' + ($args -join '><') + '>' }; function gh { cb @args }; ${cmds.join('\n')}`],
+  ];
+  for (const [sh, flags, script] of shells) {
+    const cwd = mkdtempSync(join(dir, `${sh}-`));
+    const run = spawnSync(sh, [...flags, script], { cwd, encoding: 'utf8' });
+    if (run.error) continue; // shell not installed here
+    assert.equal(run.status, 0, `${sh}: ${run.stderr}`);
+    assert.deepEqual(readdirSync(cwd), [], `${sh} ran something:\n${cmds.join('\n')}`);
+    assert.match(run.stdout, /\$\(touch PWN4\)/, sh); // arrives as text
+  }
 });
