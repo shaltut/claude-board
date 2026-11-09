@@ -162,3 +162,14 @@ test('a guest link sets a cookie; the guest sees and answers only what is assign
   const after = await (await remote('/api/me', { cookie: token })).json();
   assert.deepEqual(after.tasks[0].my_notes.map((n: any) => n.summary), ['signed']);
 });
+
+test('a web page on another site cannot drive the board through the browser (CSRF)', async () => {
+  await db();
+  const post = (origin?: string) => app.request('http://localhost:4747/api/rpc/task_add', {
+    method: 'POST', body: JSON.stringify({ project: 'demo', title: 'x' }),
+    headers: { 'content-type': 'application/json', host: 'localhost:4747', ...(origin ? { origin } : {}) },
+  });
+  assert.equal((await post('https://evil.example')).status, 403);
+  assert.equal((await post('http://localhost:4747')).status, 200);
+  assert.equal((await post()).status, 200); // scripts and curl send no Origin
+});

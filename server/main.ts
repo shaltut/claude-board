@@ -37,6 +37,12 @@ app.use('*', async (c, next) => {
 });
 
 app.use('/api/*', async (c, next) => {
+  // CSRF: a browser always sends Origin on a cross-site POST; a page elsewhere must not drive the board.
+  const origin = c.req.header('origin');
+  if (c.req.method !== 'GET' && origin) {
+    const host = (() => { try { return new URL(origin).host } catch { return '' } })();
+    if (host !== c.req.header('host') && host !== c.req.header('x-forwarded-host')) return c.json({ ok: false, error: 'cross-site request refused' }, 403);
+  }
   const local = isLocal(c);
   if (c.req.path === '/api/whoami') {
     if (local) return c.json({ role: 'local' });
