@@ -18,7 +18,9 @@ type GuestTask = Task & { my_notes: { summary: string; at: string }[] }
  *  Tower with the engineering taken out: one column, no callsigns or task numbers, the same lamp. */
 export function Guest({ user }: { user: User }) {
   const { data, isLoading } = useQuery({ queryKey: ['me'], queryFn: () => get<{ questions: Question[]; tasks: GuestTask[] }>('/api/me') })
-  const open = data?.questions.filter((q) => q.status === 'open') ?? []
+  // Work-holding questions first, then oldest first: the order Ahmed's Today uses.
+  const open = (data?.questions.filter((q) => q.status === 'open') ?? [])
+    .sort((a, b) => Number(b.blocking) - Number(a.blocking) || +new Date(a.created_at) - +new Date(b.created_at))
   const done = data?.questions.filter((q) => q.status !== 'open') ?? []
   const tasks = data?.tasks ?? []
   useTabLamp(open.length)

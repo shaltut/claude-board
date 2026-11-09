@@ -67,6 +67,17 @@ At 16px it is a bold C and a dot. The mark is live: the lamp is amber while anyt
 Ahmed and green when nothing does, in the header and in the browser tab (with the count in the title).
 First drafts (three stacked strips with a lamp) read as a hamburger icon at 16px and were dropped.
 
+## Guests and task types (merged from main: #165, #182)
+- **The lamp follows the viewer.** Amber means "waiting on whoever is looking". On Ahmed's Today a
+  question handed to Omar shows a dark, hollow lamp under "Waiting on others"; on Omar's page the
+  same question is amber, and his tab carries the count.
+- **Guest page: Tower without the engineering.** One 42rem column. No callsigns, task numbers or
+  P-codes: the project, the time, "work is paused until you answer", and "Needed: today" in words.
+  Questions that hold work come first. Tasks handed to the guest are strips with their own notes.
+- **Task types.** A bug is the one type that earns colour: a red bug glyph beside the priority,
+  where the eye scans. Other types are a quiet word ahead of the tags. The plain type `task` shows
+  nothing. Clicking a type filters Board and Backlog ("Only bugs").
+
 ## Self-review: what was generic, what changed
 - ui-ux-pro-max proposed slate `#0F172A` + run-green + JetBrains/IBM Plex (the "dark dev tool"
   default, trait #2 in the frontend-design list). Kept the dark-first instinct; moved the base to

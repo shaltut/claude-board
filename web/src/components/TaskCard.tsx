@@ -24,12 +24,18 @@ export const TaskCard = forwardRef<HTMLDivElement, Props>(function TaskCard({ t,
       <div className="flex items-center gap-2">
         <TaskId id={t.id} />
         <PriorityPicker t={t} />
-        <TypeChip type={t.type} />
+        {t.type === 'bug' && <TypeChip type={t.type} />}
         {showProject && <ProjectChip slug={t.project} />}
         <span className="ml-auto shrink-0 text-[11px] text-muted-foreground tabular-nums">{ago(t.updated_at)}</span>
       </div>
       <p className={cn('mt-1 text-sm leading-snug font-medium text-pretty', t.status === 'done' && 'text-muted-foreground')}>{t.title}</p>
-      {t.labels.length > 0 && <div className="mt-2 flex flex-wrap gap-1">{t.labels.map((g) => <TagChip key={g} tag={g} />)}</div>}
+      {/* A bug's marker sits by the priority, where the eye scans; other types are a quiet word ahead of the tags. */}
+      {(t.labels.length > 0 || (t.type && t.type !== 'task' && t.type !== 'bug')) && (
+        <div className="mt-2 flex flex-wrap items-center gap-1">
+          {t.type !== 'bug' && <TypeChip type={t.type} className="mx-0 mr-1 px-0" />}
+          {t.labels.map((g) => <TagChip key={g} tag={g} />)}
+        </div>
+      )}
       {(t.assignee || holding || l.pr || l.commit || l.branch) && (
         <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           {t.assignee && <ActorChip actor={t.assignee} />}
