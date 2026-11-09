@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { callFn } from '../server/rpc.ts';
 import { dotenv } from '../server/db.ts';
+import { backWhy, reaskHint } from './help.ts';
 
 export const dur = (m: number) => (m === Infinity ? 'never' : m < 60 ? `${Math.round(m)}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`);
 const mins = (t: any) => (t ? (Date.now() - +new Date(t)) / 60000 : Infinity);
@@ -96,7 +97,9 @@ export async function tick(project: string, actor: string) {
       `asked: ${cut(a.body)}${mine ? ` · answer: ${cut(a.answer, 300)}` : ''}`);
   }
   for (const x of b.my_questions)
-    add('questions', x.for, `Q${x.id} open ${ago(x.created_at)}, ${x.for}: ${cut(x.body)}${x.no_options ? ' ⚠ no options' : ''}`,
+    if (x.status === 'sent_back') { const s = x.sent_back; // #616: it waits on me now
+      add('questions', actor, `Q${x.id} sent back ${ago(s.at)}, ${s.by}: ${cut(backWhy(s.reason, s.note), 300)}`, reaskHint(x.id), `asked: ${cut(x.body)}`);
+    } else add('questions', x.for, `Q${x.id} open ${ago(x.created_at)}, ${x.for}: ${cut(x.body)}${x.no_options ? ' ⚠ no options' : ''}`,
       x.no_options ? `cb withdraw ${x.id}` : null, x.no_options ? 'then ask again with -o "Label (Recommended)=why" -o ...' : undefined);
 
   const prs = b.prs.map((t: any) => ({ ...t, ref: prRef(t.pr, project) }));
@@ -152,11 +155,11 @@ export async function tick(project: string, actor: string) {
     add('stuck', t.assignee, `#${t.id} ${t.assignee} silent ${ago(t.last_at)} (in progress)`,
       `cb tell ${q(t.assignee)} ${q(`#${t.id} ${cut(t.title, 60)}: still on it? cb log, or cb move it`)}`);
   for (const t of b.blocked) {
-    const onQ = t.question && t.question_status === 'open';
-    const reason = t.question ? `on Q${t.question} (${t.question_status}${onQ ? `, ${t.question_for}` : ''}): ${cut(t.question_body, 80)}`
+    const onQ = t.question && t.question_status === 'open', back = t.question && t.question_status === 'sent_back';
+    const reason = t.question ? `on Q${t.question} (${back ? 'sent back, waiting for the rewrite' : t.question_status}${onQ ? `, ${t.question_for}` : ''}): ${cut(t.question_body, 80)}`
       : /→ blocked$/.test(t.note ?? '') || !t.note ? 'no reason given' : cut(t.note, 100);
     add('stuck', onQ ? t.question_for : t.assignee ?? actor, `#${t.id} blocked ${ago(t.since)}, ${t.assignee ?? 'unassigned'}: ${reason}`,
-      onQ ? null : t.assignee ? `cb tell ${q(t.assignee)} ${q(`#${t.id} blocked ${ago(t.since)}: what unblocks it?`)}` : `cb move ${t.id} next`);
+      onQ || back ? null : t.assignee ? `cb tell ${q(t.assignee)} ${q(`#${t.id} blocked ${ago(t.since)}: what unblocks it?`)}` : `cb move ${t.id} next`);
   }
   for (const t of b.unreviewed)
     add('stuck', actor, `#${t.id} in review, no reviewer task (${t.assignee ?? 'unassigned'})`,

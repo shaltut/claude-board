@@ -100,6 +100,19 @@ test('tick: stuck work (silent holder, long block, review with no reviewer, some
   assert.doesNotMatch(r.out, /#3 W9@m silent/);
 });
 
+test('tick: a task held on a sent-back question waits for the rewrite, not "what unblocks it?"; its asker is told to rewrite (#616)', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'held', status => 'in_progress', assignee => 'orch@test', actor => 'orch@test')`;
+  await sql`select cb.ask(project => 'demo', body => 'Port it?', options => '["Yes","No"]', blocking => true, task_id => '1', actor => 'orch@test')`;
+  await sql`select cb.send_back('1', 'simplify', 'one decision', 'ahmed')`;
+  await ago(sql, sql`task_id = 1`, '2 hours');
+  const r = cb(['tick', 'demo']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /#1 blocked 2h, orch@test: on Q1 \(sent back, waiting for the rewrite\): Port it\?$/m);
+  assert.doesNotMatch(r.out, /what unblocks it/);
+  assert.match(r.out, /Q1 sent back \S+, ahmed: simplify it — one decision → cb reask Q1 "<new question>" \[-o \.\.\.\] \[-c \.\.\.\]/);
+});
+
 test('tick: idle live sessions get the unassigned Next task matching their tags', async () => {
   const sql = await db();
   await sql`select cb.ensure_project('demo')`;

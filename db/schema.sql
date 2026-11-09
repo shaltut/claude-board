@@ -878,14 +878,14 @@ begin
   end if;
 
   perform set_config('cb.note', 'waiting again: Q' || pid || ' now answered ' || left(par.answer, 100), true);
-  for c in update cb.questions q set status = 'dormant'
+  for c in update cb.questions q set status = 'dormant', sent_back = null
             where q.parent_id = pid and q.status in ('open', 'sent_back') and q.if_answer is not null and q.if_answer <> all(picked)
             returning q.id, q.hold_before loop
     h := c.hold_before;
     continue when h is null;
     -- put the task back as it was before this follow-up took it; a question that held it then and has since been
     -- delivered or withdrawn no longer holds it (released as its delivery would have)
-    live := (select x.id from cb.questions x where x.id = (h ->> 'blocked_on')::bigint and x.status in ('open', 'answered'));
+    live := (select x.id from cb.questions x where x.id = (h ->> 'blocked_on')::bigint and x.status in ('open', 'answered', 'sent_back'));
     perform set_config('cb.note', 'Q' || c.id || ' waits again: back as before it asked', true);
     update cb.tasks x set blocked_on = live,
            status = case when live is not null then 'blocked'
@@ -937,12 +937,21 @@ end $$;
 -- required) | simplify | reask (the options are wrong). It leaves the waiting lists until the asker rewrites it with
 -- cb.reask; the inbox and cb pending carry it to the asker as they carry answers, cb.answer_delivered marks it told.
 -- A blocking question keeps its task held throughout: only an answer's delivery or a withdrawal releases it.
+-- Ahmed's dashboard only: the server runs a guest's send-back there too, once it has checked the question is theirs.
+-- The note reaches a session: one line, at most 500 characters, no secrets or personal data (cb._sensitive).
 create function cb.send_back(id text, reason text, note text default null, actor text default 'ahmed')
 returns void language plpgsql as $$
 #variable_conflict use_variable
 declare qid bigint := cb.norm_id(regexp_replace(trim(coalesce(id, '')), '^[qQ]', '')); a text := cb.set_actor(actor);
-        r text := lower(trim(coalesce(reason, ''))); n text := nullif(trim(note), ''); cur text;
+        r text := lower(trim(coalesce(reason, '')));
+        n text := nullif(trim(regexp_replace(coalesce(note, ''), '[\s\u0085\u2028\u2029]+', ' ', 'g')), ''); cur text; hit text;
 begin
+  perform cb.dashboard_only('Today');
+  if length(n) > 500 then raise exception 'the note is at most 500 characters (this one is %)', length(n); end if;
+  hit := cb._sensitive(n);
+  if hit is not null then
+    raise exception 'that looks like %; the note goes to a session: say where the value lives, not the value', hit;
+  end if;
   if r not in ('details', 'clarify', 'simplify', 'reask') then
     raise exception '"%" is not a reason: details, clarify, simplify or reask', trim(coalesce(reason, ''));
   end if;
@@ -1021,7 +1030,9 @@ begin
 end $$;
 
 -- Orchestrator: answer handed to the session. Idempotent. Unblocks the task.
-create function cb.answer_delivered(id text, delivered_to text default null, actor text default null)
+-- sent_back_at (#616): the relay delivers that send-back only (its sent_back.at); a question rewritten (or sent back
+-- again) since is left as it is, quietly.
+create function cb.answer_delivered(id text, delivered_to text default null, actor text default null, sent_back_at text default null)
 returns void language plpgsql as $$
 #variable_conflict use_variable
 declare qid bigint := cb.norm_id(id); cur text; ans text;
@@ -1032,9 +1043,10 @@ begin
   if cur = 'delivered' then return; end if;
   if cur = 'sent_back' then  -- the asker was told (#616); the question waits for its rewrite and keeps holding its task
     update cb.questions q set sent_back = q.sent_back || jsonb_build_object('delivered_at', now(), 'delivered_to', delivered_to)
-     where q.id = qid and q.sent_back ->> 'delivered_at' is null;
+     where q.id = qid and q.sent_back ->> 'delivered_at' is null and (sent_back_at is null or q.sent_back ->> 'at' = sent_back_at);
     return;
   end if;
+  if sent_back_at is not null then return; end if;
   if cur <> 'answered' then raise exception 'question Q% is %, not answered', qid, cur; end if;
   update cb.questions q set status = 'delivered', delivered_at = now(), delivered_to = delivered_to where q.id = qid;
   -- the answer is final now: follow-ups it did not pick are skipped, down the chain
@@ -1170,7 +1182,7 @@ begin
     -- questions sent back to me (#616), until delivered; same addressing as answers
     'sent_back', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'task_id', q.task_id, 'project', q.project, 'body', q.body,
                                                                'reason', q.sent_back ->> 'reason', 'note', q.sent_back ->> 'note',
-                                                               'by', q.sent_back ->> 'by') order by q.id)
+                                                               'by', q.sent_back ->> 'by', 'at', q.sent_back ->> 'at') order by q.id)
                              from cb.questions q
                             where q.status = 'sent_back' and q.sent_back ->> 'delivered_at' is null
                               and ((lower(q.reply_to ->> 'machine') = m and q.reply_to ->> 'pane' = pane)
@@ -1455,10 +1467,10 @@ create function cb._user_hand_back(n text, why text, project text default null) 
 #variable_conflict use_variable
 declare nq int; nt int; nt2 int;
 begin
-  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status in ('open', 'sent_back') and (project is null or q.project = project);
+  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status = 'open' and (project is null or q.project = project);
   get diagnostics nq = row_count;
-  -- follow-ups not asked yet go back too, uncounted: nobody has seen them
-  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status = 'dormant' and (project is null or q.project = project);
+  -- follow-ups not asked yet, and questions sent back for a rewrite, go back too, uncounted: not waiting on anyone now
+  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status in ('dormant', 'sent_back') and (project is null or q.project = project);
   perform set_config('cb.note', 'unassigned and back to Next: ' || why, true);
   update cb.tasks t set assignee = null, status = 'next' where t.assignee = n and t.status = 'in_progress' and (project is null or t.project = project);
   get diagnostics nt = row_count;
@@ -1680,9 +1692,11 @@ begin
       from cb.questions q
       left join cb.sessions s on s.machine = lower(q.reply_to ->> 'machine') and s.pane = q.reply_to ->> 'pane'
      where q.status = 'answered' and (p is null or q.project = p)), '[]'),
+    -- and the ones sent back to me to rewrite (#616)
     'my_questions', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'body', q.body, 'created_at', q.created_at,
-        'for', coalesce(q.assigned_to, 'ahmed'), 'no_options', coalesce(jsonb_array_length(q.options), 0) = 0) order by q.id)
-      from cb.questions q where q.status = 'open' and q.asked_by = me and (p is null or q.project = p)), '[]'),
+        'for', coalesce(q.assigned_to, 'ahmed'), 'no_options', coalesce(jsonb_array_length(q.options), 0) = 0,
+        'status', q.status, 'sent_back', q.sent_back) order by q.id)
+      from cb.questions q where q.status in ('open', 'sent_back') and q.asked_by = me and (p is null or q.project = p)), '[]'),
     -- in progress, and the holder has written nothing anywhere for 30 minutes (relay heartbeats don't count)
     'silent', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'assignee', t.assignee, 'last_at', l.at) order by l.at nulls first, t.id)
       from cb.tasks t cross join lateral (select max(e.at) as at from cb.events e where e.actor = t.assignee) l
@@ -1978,6 +1992,7 @@ drop function if exists cb._is_dashboard cascade;
 drop function if exists cb.norm_mem cascade;
 drop function if exists cb._mem_scope cascade;
 drop function if exists cb._mem_check cascade;
+drop function if exists cb._sensitive cascade;
 drop function if exists cb._mem_text cascade;
 drop function if exists cb._mem_flagged cascade;
 drop function if exists cb._mem_event cascade;
@@ -2022,7 +2037,7 @@ end $$;
 -- A credential is key=value / key: value / "key": "value" / --key value, where the key may be prefixed (DB_PASSWORD,
 -- PGPASSWORD) and the value looks secret (6+ characters with a digit or symbol): "password: none" and "token: see
 -- the vault" pass. Service logins in addresses (git@github.com, opc@vps2..., postgres://cb@host) are not emails.
-create function cb._mem_check(t text) returns void language plpgsql immutable as $$
+create function cb._sensitive(t text) returns text language plpgsql immutable as $$
 declare u text := regexp_replace(t, '[a-z][a-z0-9+.-]*://[^/\s:@]+@', '://', 'gi');  -- drop passwordless URL logins
         hit text := case
     when t ~ '\m(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,})' then 'an access token'
@@ -2038,6 +2053,12 @@ declare u text := regexp_replace(t, '[a-z][a-z0-9+.-]*://[^/\s:@]+@', '://', 'gi
                   where lower(m[1]) not in ('git', 'cb', 'opc', 'ubuntu', 'root', 'admin', 'postgres', 'ec2-user', 'azureuser', 'debian', 'deploy')) then 'an email address'
     when t ~ '(\+[0-9][0-9 -]{8,}[0-9]|\m05[0-9]{8}\M)' then 'a phone number'
   end;
+begin
+  return hit;
+end $$;
+
+create function cb._mem_check(t text) returns void language plpgsql immutable as $$
+declare hit text := cb._sensitive(t);
 begin
   if hit is not null then
     raise exception 'that looks like %; memory is shared with every session, so record the shape and where it lives (e.g. "the key is in the vault"), not the value', hit;

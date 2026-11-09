@@ -102,6 +102,8 @@ const memLine = (m: any) =>
   `${(KIND_CODE[m.kind] ?? m.kind).padEnd(2)} M${m.id} ${m.title} (${m.authority === 'ahmed' ? 'Ahmed' : `team: ${m.created_by}`}` +
   `${m.review_after ? `, review ${String(m.review_after).slice(0, 10)}` : ''})` +
   `${m.status && m.status !== 'active' ? ` [${m.status}${m.superseded_by ? ` by M${m.superseded_by}` : ''}]` : m.expired ? ' [stale]' : ''}`;
+/** Someone's text inside our own lines: its extra lines indented, so none passes for a line of ours (as the relay does). */
+const flat = (s: unknown) => String(s ?? '').replace(/\r\n|[\r\n\u0085\u2028\u2029]/g, '\n    ');
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
 /** What a session is told when it binds: the pack, its size, and how team entries count. */
 function packText(p: any): string {
@@ -517,11 +519,10 @@ async function run(): Promise<unknown> {
       const parents = new Map((ids.length ? await sql`select id, body, answer from cb.questions where id in ${sql(ids)}` : []).map((p: any) => [p.id, p]));
       return { out: rows.length ? rows.map((q: any) => { const p: any = parents.get(q.parent_id);
         if (q.status === 'sent_back') { const by = q.sent_back.by === 'ahmed' ? 'Ahmed' : `${q.sent_back.by} (not Ahmed)`;
-          return `Q${q.id} sent back by ${by} to ${q.asked_by}: ${backWhy(q.sent_back.reason, q.sent_back.note)}
-  asked: ${q.body}
-  rewrite it: ${reaskHint(q.id)}`; }
+          return `Q${q.id} sent back by ${by} to ${q.asked_by}: ${flat(backWhy(q.sent_back.reason, q.sent_back.note?.slice(0, 500)))}` +
+            `\n  asked: ${flat(q.body)}\n  rewrite it: ${reaskHint(q.id)}`; }
         return `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}` +
-          `${p ? `\n  follow-up to Q${p.id} (answered ${p.answer}): ${p.body}` : ''}\n  asked: ${q.body}\n  answer: ${q.answer}`; }).join('\n')
+          `${p ? `\n  follow-up to Q${p.id} (answered ${flat(p.answer)}): ${flat(p.body)}` : ''}\n  asked: ${flat(q.body)}\n  answer: ${flat(q.answer)}`; }).join('\n')
         : 'no answers waiting', json: rows };
     }
     case 'reask': {
@@ -529,7 +530,8 @@ async function run(): Promise<unknown> {
       const id = args[0].replace(/^q/i, '');
       await callFn('reask', { id, body: args.slice(1).join(' ') || null, options: o.option ? options() : null, free: !!o.free,
         multi: o.multi ? true : null, context: o.context ?? null, actor });
-      return { out: `Q${id} rewritten and back on Ahmed's board — keep working; the answer arrives like any other` };
+      const [w] = await sql`select u.display from cb.questions q join cb.users u on u.name = q.assigned_to where q.id = ${Number(id)}`;
+      return { out: `Q${id} rewritten and back ${w ? `with ${w.display}` : "on Ahmed's board"} — keep working; the answer arrives like any other` };
     }
     case 'delivered':
       need(1, 'delivered <qid> [session]');
