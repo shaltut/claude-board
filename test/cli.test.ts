@@ -175,13 +175,14 @@ test('cb ask needs options (Ahmed answers by clicking); --free allows an open qu
   assert.equal(n, 2);
 });
 
-test('cb user add prints a link; cb ask --to and cb assign hand questions and tasks to a user', async () => {
+test('cb user add adds a person (Ahmed copies the link); cb ask --to and cb assign hand questions and tasks to a user', async () => {
   const sql = await db();
   await sql`select cb.task_add(project => 'demo', title => 'PO sign-off')`;
   const u = cb(['user', 'add', 'omar', 'Omar'], { CB_PUBLIC_URL: 'https://board.example.app' });
   assert.equal(u.code, 0, u.err);
   const [{ token }] = await sql`select token from cb.users where name = 'omar'`;
-  assert.ok(u.out.startsWith(`Omar's link: https://board.example.app/?u=${token}\n`), u.out);
+  assert.equal(u.out, 'added omar (Omar): Ahmed copies their link from the People page');
+  assert.ok(!u.out.includes(token), 'a session never sees the link');
   assert.match(cb(['users']).out, /omar\s+Omar/);
   assert.equal(cb(['ask', 'demo', 'E1 scope?', '-o', 'A=x', '-o', 'B=y', '--to', 'omar']).code, 0);
   assert.equal(cb(['ask', 'demo', 'mine', '-o', 'A=x', '-o', 'B=y']).code, 0);
@@ -196,21 +197,17 @@ test('cb user add prints a link; cb ask --to and cb assign hand questions and ta
   assert.match(cb(['brief', 'demo']).out, /Q1 .*E1 scope\? \(for omar\)/);
 });
 
-test('cb user rotate prints a new link; cb user remove hands his open work back', async () => {
+test("cb user rotate and remove are Ahmed's, on the People page", async () => {
   const sql = await db();
   cb(['user', 'add', 'omar', 'Omar']);
-  const [{ token: old }] = await sql`select token from cb.users where name = 'omar'`;
-  const r = cb(['user', 'rotate', 'omar'], { CB_PUBLIC_URL: 'https://board.example.app' });
-  assert.equal(r.code, 0, r.err);
   const [{ token }] = await sql`select token from cb.users where name = 'omar'`;
-  assert.notEqual(token, old);
-  assert.ok(r.out.startsWith(`Omar's new link: https://board.example.app/?u=${token} (the old one no longer works)
-`), r.out);
-  cb(['ask', 'demo', 'E1 scope?', '-o', 'A=x', '-o', 'B=y', '--to', 'omar']);
-  const rm = cb(['user', 'remove', 'omar']);
-  assert.equal(rm.code, 0, rm.err);
-  assert.match(rm.out, /removed omar: .*1 open questions went back to Ahmed, 0 open tasks/);
-  assert.match(cb(['user', 'remove', 'omar']).err, /unknown user omar/);
+  for (const sub of ['rotate', 'remove']) {
+    const r = cb(['user', sub, 'omar']);
+    assert.equal(r.code, 1, sub);
+    assert.match(r.err, /Ahmed does this on the People page/);
+  }
+  const [u] = await sql`select token from cb.users where name = 'omar'`;
+  assert.equal(u.token, token, 'nothing changed');
   assert.match(cb(['user', 'drop', 'omar']).err, /unknown user command "drop"/);
 });
 

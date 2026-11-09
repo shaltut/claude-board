@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { callFn } from '../server/rpc.ts';
 import { tick, dur } from './tick.ts';
-import { sql, databaseUrl, machine, dotenv } from '../server/db.ts';
+import { sql, databaseUrl, machine } from '../server/db.ts';
 import { help, unknownHelp, COMMANDS } from './help.ts';
 
 const OPTIONS = {
@@ -195,18 +195,14 @@ async function run(): Promise<unknown> {
       return { out: `#${args[0].replace(/^#/, '')} tags: ${now.length ? now.join(', ') : '(none)'}`, json: now };
     }
     case 'user': {
-      need(2, 'user add|rotate|remove <name> ["Display Name"]   e.g. cb user add omar "Omar"');
-      if (args[0] === 'remove') {
-        const r: any = await callFn('user_remove', { name: args[1], actor });
-        return { out: `removed ${args[1]}: their link no longer works; ${r.questions} open questions went back to Ahmed, ${r.tasks} open tasks are unassigned`, json: r };
-      }
-      if (args[0] !== 'add' && args[0] !== 'rotate') throw new Error(`unknown user command "${args[0]}". Run: cb user add|rotate|remove <name>; list people with cb users`);
-      const add = args[0] === 'add';
-      const token: any = await callFn(add ? 'user_add' : 'user_rotate', { name: args[1], actor, ...(add ? { display: args[2] ?? null } : {}) });
-      const [u] = await sql`select name, display from cb.users where token = ${token}`;
-      const base = (process.env.CB_PUBLIC_URL || dotenv('PUBLIC_URL') || 'http://localhost:4747').replace(/\/$/, '');
-      return { out: `${u.display}'s ${add ? '' : 'new '}link: ${base}/?u=${token}${add ? '' : ' (the old one no longer works)'}
-Send it privately: anyone with it can answer ${u.display}'s questions.`, json: { ...u, token } };
+      need(2, 'user add <name> ["Display Name"]   e.g. cb user add omar "Omar"');
+      if (args[0] === 'rotate' || args[0] === 'remove')
+        throw new Error(`Ahmed does this on the People page (key 7 on the board): a new link, or removing someone, is his call`);
+      if (args[0] !== 'add') throw new Error(`unknown user command "${args[0]}". Run: cb user add <name> ["Display Name"]; list people with cb users`);
+      // The link is the guest's login, so a session never gets it (cb.user_add returns it to the dashboard only).
+      await callFn('user_add', { name: args[1], display: args[2] ?? null, actor });
+      const [u] = await sql`select name, display from cb.users where name = ${args[1].trim().toLowerCase()}`;
+      return { out: `added ${u.name} (${u.display}): Ahmed copies their link from the People page`, json: u };
     }
     case 'users': {
       const rows = await sql`select u.name, u.display,

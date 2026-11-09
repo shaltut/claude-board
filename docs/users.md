@@ -6,13 +6,10 @@ board is readable through the tunnel. The link is the whole login, so send it pr
 
 ## Share the board with Omar
 
-1. **Create the user** (on this PC, where the board runs):
-
-   ```
-   cb user add omar "Omar"
-   ```
-
-   It prints Omar's link. Running it again prints the same link.
+1. **Add the person:** People (key 7) → **Add person**, with a display name and a short name
+   (`omar`). It shows Omar's link with a Copy button. A session can add people too
+   (`cb user add omar "Omar"`), but never sees the link: the link is Omar's whole login, so only
+   the People page shows it.
 
 2. **Check the tunnel is up.** The board is shared through a Cloudflare named tunnel,
    `claude-board`, which runs as the `cloudflared` Windows service and forwards its https
@@ -28,10 +25,9 @@ board is readable through the tunnel. The link is the whole login, so send it pr
    PUBLIC_URL=https://<the tunnel's hostname>
    ```
 
-   Or set it for one command only: `$env:CB_PUBLIC_URL = "https://…"` (PowerShell).
    The hostname is fixed, so this is a one-time step, and the board picks it up without a restart
-   (it reads `.env` on each request). Then run `cb user add omar` again, or open
-   People (key 7) and **Copy link**, to get the link with the tunnel's URL.
+   (it reads `.env` on each request). Then **Copy link** on People gives the link with the
+   tunnel's URL.
 
 4. **Send Omar the link** in a direct message, not in a group chat. Opening it signs his browser
    in for 90 days.
@@ -60,13 +56,15 @@ Stop the tunnel: `Stop-Service cloudflared` from an admin shell (`Start-Service 
 it back). Nothing is reachable from outside while it's stopped, but anyone who has a link gets in
 again once the tunnel is up.
 
-- **A link leaked:** People (key 7) → **New link**, or `cb user rotate omar`. The old link stops
-  working at once, also in a browser already signed in with it. Send the new one.
-- **Done with someone:** People → **Remove**, or `cb user remove omar`. Their link stops working,
-  their open questions come back to you, and their open tasks become unassigned (status kept, so
-  work held on one of those questions stays held). Answers and notes they left stay under their name.
+- **A link leaked:** People (key 7) → **New link**. The old link stops working at once, also in a
+  browser already signed in with it. Send the new one.
+- **Done with someone:** People → **Remove**. Their link stops working, their open questions come
+  back to you, and their open tasks become unassigned: status kept, so work held on one of those
+  questions stays held, except a task in progress goes back to Next, since nobody is working it.
+  Answers and notes they left stay under their name.
 
-The People page also adds people and copies anyone's link again later.
+New links and removals are Ahmed's: only the dashboard can make them (`cb user rotate` and
+`cb user remove` say so). Adding, new links and removals each leave a line in History.
 
 ## Don'ts
 

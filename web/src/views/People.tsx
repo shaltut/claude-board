@@ -22,9 +22,10 @@ const usePeople = () => useQuery({ queryKey: ['people'], queryFn: () => get<{ pu
 const linkOf = (base: string, token: string) => `${base}/?u=${token}`
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
+/** false when the clipboard refused: the caller then shows the whole link so it can be copied by hand. */
 async function copy(link: string, who: string) {
-  try { await navigator.clipboard.writeText(link); toast.success(`Copied ${who}'s link`) }
-  catch { toast.error('Could not copy', { description: 'Select the link and copy it by hand.' }) }
+  try { await navigator.clipboard.writeText(link); toast.success(`Copied ${who}'s link`); return true }
+  catch { toast.error('Could not copy', { description: 'Select the link and copy it by hand.' }); return false }
 }
 
 export function People(_: { route: Route }) {
@@ -91,18 +92,22 @@ function LinkBox({ link, who }: { link: string; who: string }) {
 function PersonCard({ p, base }: { p: Person; base: string }) {
   const qc = useQueryClient()
   const [confirm, setConfirm] = useState<'rotate' | 'remove' | null>(null)
-  const [fresh, setFresh] = useState(false) // just rotated: show the whole new link
+  // The whole link, shown after a new link is made or when the clipboard refused a copy.
+  const [shown, setShown] = useState<{ link: string; why: 'new' | 'copy' } | null>(null)
   const [busy, setBusy] = useState(false)
   const link = linkOf(base, p.token)
   const holding = p.questions.filter((q) => q.blocking).length
+  const working = p.tasks.filter((t) => t.status === 'in_progress').length
 
   async function act(kind: 'rotate' | 'remove') {
     setBusy(true)
     try {
       if (kind === 'rotate') {
-        await rpc('user_rotate', { name: p.name })
+        // the token the rotate returned, not the list's: that one is the old, dead link until the refetch lands
+        const token = await rpc<string>('user_rotate', { name: p.name })
+        await qc.invalidateQueries()
+        setShown({ link: linkOf(base, token), why: 'new' })
         toast.success(`New link for ${p.display}`, { description: 'The old one no longer works. Send this one privately.' })
-        setFresh(true)
       } else {
         const r = await rpc<{ questions: number; tasks: number }>('user_remove', { name: p.name })
         toast.success(`Removed ${p.display}`, { description: `${plural(r.questions, 'question')} came back to you, ${plural(r.tasks, 'task')} unassigned.` })
@@ -167,7 +172,7 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
                 ? <>{p.display}'s current link stops working, also in a browser already signed in with it. You'll need to send the new one.</>
                 : <>Remove {p.display}? Their link stops working.{' '}
                   {p.questions.length > 0 && <>Their {plural(p.questions.length, 'open question')} come{p.questions.length === 1 && 's'} back to you{holding > 0 && ', and work held on them stays held'}. </>}
-                  {p.tasks.length > 0 && <>Their {plural(p.tasks.length, 'open task')} become{p.tasks.length === 1 && 's'} unassigned. </>}
+                  {p.tasks.length > 0 && <>Their {plural(p.tasks.length, 'open task')} become{p.tasks.length === 1 && 's'} unassigned{working > 0 && ` (${working} in progress go${working === 1 ? 'es' : ''} back to Next)`}. </>}
                   Answers and notes they left stay.</>}
             </p>
             <div className="mt-2.5 flex flex-wrap gap-2">
@@ -177,18 +182,18 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
               <Button size="sm" variant="ghost" autoFocus onClick={() => setConfirm(null)}>Cancel</Button>
             </div>
           </div>
-        ) : fresh ? (
+        ) : shown ? (
           <div className="grid gap-2">
-            <p className="text-sm">New link for {p.display}. Send it privately:</p>
-            <LinkBox link={link} who={p.display} />
-            <Button size="sm" variant="ghost" className="justify-self-start" onClick={() => setFresh(false)}>Done</Button>
+            <p className="text-sm">{shown.why === 'new' ? `New link for ${p.display}. Send it privately:` : `Copying didn't work. Select ${p.display}'s link and copy it:`}</p>
+            <LinkBox link={shown.link} who={p.display} />
+            <Button size="sm" variant="ghost" className="justify-self-start" onClick={() => setShown(null)}>Done</Button>
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
             <code className="mr-auto min-w-0 basis-full truncate font-mono text-xs text-muted-foreground sm:basis-auto" title="The link is a secret: Copy it, don't show it">
               …/?u=••••{p.token.slice(-4)}
             </code>
-            <Button size="sm" variant="secondary" onClick={() => copy(link, p.display)}><Copy /> Copy link</Button>
+            <Button size="sm" variant="secondary" onClick={async () => { if (!(await copy(link, p.display))) setShown({ link, why: 'copy' }) }}><Copy /> Copy link</Button>
             <Button size="sm" variant="ghost" onClick={() => setConfirm('rotate')}><KeyRound /> New link</Button>
             <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive" onClick={() => setConfirm('remove')}><UserX /> Remove</Button>
           </div>

@@ -77,7 +77,7 @@ create table if not exists cb.events (
   data        jsonb not null default '{}'
 );
 alter table cb.events drop constraint if exists events_kind_check;
-alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle'));
+alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user'));
 
 alter table cb.questions add column if not exists multi boolean not null default false;
 
@@ -120,6 +120,7 @@ create index if not exists questions_status on cb.questions (status);
 
 drop function if exists cb.set_actor cascade;
 drop function if exists cb.not_ahmed cascade;
+drop function if exists cb.dashboard_only cascade;
 drop function if exists cb.ahmed_like cascade;
 drop function if exists cb.norm_status cascade;
 drop function if exists cb.norm_priority cascade;
@@ -176,6 +177,15 @@ create function cb.not_ahmed(a text) returns void language plpgsql as $$
 begin
   if cb.ahmed_like(a) and current_setting('application_name') <> 'cb-web' then
     raise exception 'only Ahmed''s dashboard can act as ahmed: sessions use their own name';
+  end if;
+end $$;
+
+-- Things only Ahmed does, from his dashboard, whatever name the caller gives (or none): guest links.
+-- ponytail: the same deterrent as not_ahmed (PGAPPNAME=cb-web gets past it), not auth.
+create function cb.dashboard_only() returns void language plpgsql as $$
+begin
+  if current_setting('application_name') <> 'cb-web' then
+    raise exception 'only Ahmed can do this, on the People page of the dashboard';
   end if;
 end $$;
 
@@ -990,45 +1000,63 @@ end $$;
 -- People who answer through a guest link (Omar, Iman). The link carries the token.
 create function cb.user_add(name text, display text default null, actor text default null) returns text language plpgsql as $$
 #variable_conflict use_variable
-declare n text := lower(trim(name)); t text;
+declare a text := cb.set_actor(actor); n text := lower(trim(name)); t text; was text; now_d text;
 begin
-  perform cb.set_actor(actor);
   if n !~ '^[a-z][a-z0-9_-]*$' then raise exception 'user name: lowercase letters, digits, - or _ (e.g. omar)'; end if;
   if n = 'ahmed' then raise exception 'ahmed is the board owner, not a guest user: pick another name'; end if;
+  select u.display into was from cb.users u where u.name = n;
   insert into cb.users (name, display) values (n, coalesce(nullif(trim(display), ''), initcap(n)))
   on conflict on constraint users_pkey do update set display = coalesce(nullif(trim(user_add.display), ''), cb.users.display)
-  returning cb.users.token into t;
-  return t;
+  returning cb.users.token, cb.users.display into t, now_d;
+  if was is null or was <> now_d then
+    insert into cb.events (actor, kind, summary, data)
+    values (a, 'user', case when was is null then 'added ' || now_d || ' (' || n || ')' else 'renamed ' || was || ' to ' || now_d || ' (' || n || ')' end,
+            jsonb_build_object('user', n, 'action', case when was is null then 'add' else 'rename' end));
+  end if;
+  -- The token is the guest's whole login: only Ahmed's dashboard gets it back. A session adds people, Ahmed sends the link.
+  return case when current_setting('application_name') = 'cb-web' then t end;
 end $$;
 
 -- A new link for a user. The old one stops working at once, in signed-in browsers too (the cookie holds the token).
 create function cb.user_rotate(name text, actor text default null) returns text language plpgsql as $$
 #variable_conflict use_variable
-declare t text;
+declare a text; n text := lower(trim(name)); t text; d text;
 begin
-  perform cb.set_actor(actor);
-  update cb.users u set token = gen_random_uuid()::text where u.name = lower(trim(name)) returning u.token into t;
+  perform cb.dashboard_only();
+  a := cb.set_actor(actor);
+  update cb.users u set token = gen_random_uuid()::text where u.name = n returning u.token, u.display into t, d;
   if t is null then raise exception 'unknown user %: see cb users', name; end if;
+  insert into cb.events (actor, kind, summary, data)
+  values (a, 'user', 'new link for ' || d || ' (' || n || '): the old one no longer works', jsonb_build_object('user', n, 'action', 'rotate'));
   return t;
 end $$;
 
 -- Remove a user: their link stops working, their open questions go back to Ahmed, their open tasks become
--- unassigned (status kept, so a task held on one of those questions stays held). Answers and notes they
--- left stay under their name. Returns how many questions and tasks were handed back.
+-- unassigned (status kept, so a task held on one of those questions stays held; in progress goes back to Next,
+-- since nobody is working it). Answers and notes they left stay under their name. Returns the counts.
 create function cb.user_remove(name text, actor text default null) returns jsonb language plpgsql as $$
 #variable_conflict use_variable
-declare n text := lower(trim(name)); d text; nq int; nt int;
+declare a text; n text := lower(trim(name)); d text; nq int; nt int; nt2 int;
 begin
-  perform cb.set_actor(actor);
+  perform cb.dashboard_only();
+  a := cb.set_actor(actor);
   select u.display into d from cb.users u where u.name = n for update;
   if d is null then raise exception 'unknown user %: see cb users', name; end if;
   update cb.questions q set assigned_to = null where q.assigned_to = n and q.status = 'open';
   get diagnostics nq = row_count;
+  perform set_config('cb.note', 'unassigned and back to Next: ' || d || ' was removed', true);
+  update cb.tasks t set assignee = null, status = 'next' where t.assignee = n and t.status = 'in_progress';
+  get diagnostics nt = row_count;
   perform set_config('cb.note', 'unassigned: ' || d || ' was removed', true);
   update cb.tasks t set assignee = null where t.assignee = n and t.status not in ('done', 'cancelled');
-  get diagnostics nt = row_count;
+  get diagnostics nt2 = row_count;
+  nt := nt + nt2;
   perform set_config('cb.note', '', true);
   delete from cb.users u where u.name = n; -- the FK clears assigned_to on their closed questions too
+  insert into cb.events (actor, kind, summary, data)
+  values (a, 'user', 'removed ' || d || ' (' || n || '): ' || nq || ' open question' || case when nq = 1 then '' else 's' end
+            || ' back to Ahmed, ' || nt || ' open task' || case when nt = 1 then '' else 's' end || ' unassigned',
+          jsonb_build_object('user', n, 'action', 'remove', 'questions', nq, 'tasks', nt));
   return jsonb_build_object('questions', nq, 'tasks', nt);
 end $$;
 

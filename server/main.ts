@@ -106,10 +106,13 @@ app.get('/api/today', async (c) => {
 });
 app.get('/api/last-seen', async (c) => c.json(await q.lastSeen()));
 app.get('/api/users', async (c) => c.json(await sql`select name, display from cb.users order by name`));
-// Tokens: reachable only from this PC (the guest block above refuses every other path). The link base is the CLI's.
-app.get('/api/people', async (c) => c.json({
-  public_url: (process.env.CB_PUBLIC_URL || dotenv('PUBLIC_URL') || '').replace(/\/$/, '') || null, people: await q.people(),
-}));
+// Tokens: reachable only from this PC (the guest block above refuses every other path), and only from the
+// dashboard page: a browser's own fetch says Sec-Fetch-Site: same-origin, curl and sessions send nothing.
+// ponytail: a deterrent, not auth (any local process can send the header), like cb.not_ahmed. The link base is the CLI's.
+app.get('/api/people', async (c) => {
+  if (c.req.header('sec-fetch-site') !== 'same-origin') return c.json({ ok: false, error: 'the People page only: open it on the dashboard' }, 403);
+  return c.json({ public_url: (process.env.CB_PUBLIC_URL || dotenv('PUBLIC_URL') || '').replace(/\/$/, '') || null, people: await q.people() });
+});
 app.get('/api/sessions', async (c) => c.json(await q.sessions(opt(c.req.query('project')))));
 app.get('/api/huddles', async (c) => c.json(await q.huddles(opt(c.req.query('project')))));
 app.get('/api/huddles/:id', async (c) => {

@@ -111,8 +111,8 @@ const GROUPS: [string, Record<string, Cmd>][] = [
     assign: { use: 'cb assign <Q12|#34> <user|ahmed>', topic: 'orchestrate',
       does: 'Hand a question or task to a user (a person with a link); "ahmed" takes a question back.',
       eg: 'cb assign Q12 omar' },
-    user: { use: 'cb user add|rotate|remove <name> ["<Display Name>"]', topic: 'orchestrate',
-      does: 'Add a person who answers through a private link; prints the link. Send it privately. rotate: a new link, the old one stops working. remove: their open questions go back to Ahmed, their open tasks are unassigned.',
+    user: { use: 'cb user add <name> ["<Display Name>"]', topic: 'orchestrate',
+      does: 'Add a person who answers through a private link. Ahmed copies the link from the People page and sends it; a new link and removing someone are his, there too.',
       eg: 'cb user add omar "Omar"' },
     users: { use: 'cb users', topic: 'orchestrate',
       does: 'People with links, with their open questions and tasks.',
@@ -345,7 +345,7 @@ You own
   priorities          P0 rare; re-rate with cb edit <id> --priority P1
   the queue order     never reorder Next yourself; propose an order with cb ask
   tags                short lowercase work streams (ocr, tawuniya, sc64); reuse before inventing; cb tag <id> ocr; cb brief --tag ocr
-  users               cb user add omar "Omar" prints a private link; cb assign Q12 omar; cb ask ... --to omar
+  users               cb user add omar "Omar" (Ahmed sends the link from People); cb assign Q12 omar; cb ask ... --to omar
 
 Don't
   - touch another project's tasks or workers: they have their own orchestrator
