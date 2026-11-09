@@ -231,7 +231,10 @@ function EpicHeader({ e }: { e: Epic }) {
   useEffect(() => { if (!editGoal) setGoal(e.goal) }, [e.goal, editGoal])
   const save = async (args: Record<string, unknown>, ok: string) => { await act('epic_update', { id: e.id, ...args }, ok); await qc.invalidateQueries() }
   async function close(closed: boolean) {
-    await act('epic_close', { id: e.id, closed }, closed ? `E${e.id} closed` : `E${e.id} reopened`)
+    // every step finished: the epic still counts as done (cb.epics_list), only Ahmed's close is undone
+    const allDone = e.total > 0 && e.finished === e.total
+    await act('epic_close', { id: e.id, closed }, closed ? `E${e.id} closed`
+      : allDone ? `E${e.id} reopened. Every step is finished, so it shows Done until it gets an open step.` : `E${e.id} reopened`)
     await qc.invalidateQueries()
   }
   async function remove() {

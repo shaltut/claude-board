@@ -231,6 +231,9 @@ test('epics over HTTP: the dashboard creates one; lists, epic page and task pane
   assert.equal(page.epic.title, 'Payer gateway');
   assert.deepEqual(page.steps.map((t: any) => [t.id, t.status, t.waits_on]), [[1, 'next', []], [2, 'blocked', [1]]]);
   assert.equal((await app.request('/api/epics/999')).status, 404);
+  const unknown = await app.request('/api/epics?project=nope');
+  assert.equal(unknown.status, 400, 'an unknown project is a bad request, not a server error');
+  assert.match((await unknown.json()).error, /unknown project "nope"/);
   const tasks = await (await app.request('/api/tasks?project=demo')).json();
   assert.deepEqual(tasks.find((t: any) => t.id === 2).waits_on, [1]);
   const panel = await (await app.request('/api/tasks/2')).json();

@@ -178,6 +178,7 @@ test('blockers: a cancelled blocker unblocks; with no assignee the orchestrator 
   const [msg] = await sql`select * from cb.events where kind = 'message' and id > ${start}`;
   assert.equal(msg.data.to, 'orch@pc');
   assert.match(msg.summary, new RegExp(`unblocked: #${t} .*#${a} was cancelled`));
+  assert.match(msg.summary, new RegExp(`cb edit ${t} --assignee <worker>`), 'hands out this task, not the top of the queue');
   const [{ i }] = await sql`select cb.inbox('pc', 'o1', ${start}) as i`;
   assert.equal(i.messages.length, 1);
 });
@@ -270,4 +271,56 @@ test('tick: a task waiting on an open blocker is not stuck; with nothing holding
   assert.deepEqual(await blocked(), [], 'it waits on #a by design');
   await sql`delete from cb.task_blockers`; // a blocker gone without the release (e.g. its row removed by hand)
   assert.deepEqual(await blocked(), [t]);
+});
+
+/** Both transactions open before either commits: `first` runs, `second` starts (it may wait on a lock), then
+ *  `first` commits and `second` finishes. Read committed, as every cb call runs. */
+async function interleave(first: (tx: any) => Promise<unknown>, second: (tx: any) => Promise<unknown>) {
+  const c1 = await session().reserve(), c2 = await session().reserve();
+  try {
+    await c1`begin`; await first(c1);
+    await c2`begin`; const p = second(c2); p.catch(() => {});
+    await new Promise((r) => setTimeout(r, 300)); // let the second reach its statement (and its lock, once there is one)
+    await c1`commit`; await p; await c2`commit`;
+  } finally { c1.release(); c2.release(); }
+}
+
+test('races: two blockers finishing at once still release the task (lost wake-up A)', async () => {
+  const sql = await db();
+  const a = await add(sql, 'a'), b = await add(sql, 'b'), t = await add(sql, 't');
+  await sql`select cb.task_block(${String(t)}, ${String(a)}, 'W1@pc')`;
+  await sql`select cb.task_block(${String(t)}, ${String(b)}, 'W1@pc')`;
+  await interleave((x) => x`select cb.task_done(${String(a)}, 'ok', '{}', 'W1@pc')`,
+                   (x) => x`select cb.task_done(${String(b)}, 'ok', '{}', 'W2@pc')`);
+  assert.equal((await task(sql, t)).status, 'next');
+});
+
+test('races: the answer delivered while the last blocker finishes still releases the task (B)', async () => {
+  const sql = await db();
+  const a = await add(sql, 'a'), t = await add(sql, 't', { status: 'in_progress', assignee: 'W2@pc' });
+  await sql`select cb.task_block(${String(t)}, ${String(a)}, 'W1@pc')`;
+  const q = Number((await sql`select cb.ask(project => 'demo', body => 'which?', blocking => true, task_id => ${String(t)}, actor => 'W2@pc') as q`)[0].q);
+  await sql`select cb.answer(${String(q)}, 'this one')`;
+  await interleave((x) => x`select cb.answer_delivered(${String(q)}, 'W2@pc', 'orch@pc')`,
+                   (x) => x`select cb.task_done(${String(a)}, 'ok', '{}', 'W1@pc')`);
+  const x = await task(sql, t);
+  assert.deepEqual([x.status, x.blocked_on], ['next', null]);
+});
+
+test('races: blocking on a task that is being finished never leaves the task held by a done blocker (D)', async () => {
+  const sql = await db();
+  const a = await add(sql, 'a'), t = await add(sql, 't');
+  await interleave((x) => x`select cb.task_done(${String(a)}, 'ok', '{}', 'W1@pc')`,
+                   (x) => x`select cb.task_block(${String(t)}, ${String(a)}, 'W2@pc')`);
+  assert.equal((await task(sql, t)).status, 'next');
+});
+
+test('races: an edit that does not name the epic leaves a concurrent epic change alone', async () => {
+  const web = await db();
+  const e = Number((await web`select cb.ensure_project('demo'), cb.epic_create('demo', 'Gateway', '', 'ahmed') as id`)[0].id);
+  const t = await add(web, 't');
+  await interleave((x) => x`select cb.task_update(${String(t)}, ${x.json({ epic: 'E' + e })}, 'W1@pc')`,
+                   (x) => x`select cb.task_update(${String(t)}, ${x.json({ title: 'renamed' })}, 'W2@pc')`);
+  const x = await task(web, t);
+  assert.deepEqual([x.title, Number(x.epic_id)], ['renamed', e]);
 });

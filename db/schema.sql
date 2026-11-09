@@ -554,7 +554,7 @@ begin
                                        else 'moved from epic E' || cur.epic_id || ' to E' || ep end, true);
   end if;
   update cb.tasks t set
-    epic_id   = ep,
+    epic_id   = case when fields ? 'epic' then ep else t.epic_id end,
     epic_rank = case when fields ? 'epic_rank' then (fields ->> 'epic_rank')::double precision else t.epic_rank end,
     type     = case when fields ? 'type' then cb.norm_type(fields ->> 'type') else t.type end,
     title    = case when fields ? 'title' then fields ->> 'title' else t.title end,
@@ -739,6 +739,10 @@ begin
   perform cb.set_actor(actor);
   update cb.questions q set status = 'withdrawn' where q.id = qid and q.status in ('open', 'answered');
   if not found then raise exception 'question Q% not found or already delivered/withdrawn', qid; end if;
+  -- the blockers lock (see cb.tasks_unblock) before deciding: a blocker finishing at the same moment either has
+  -- committed (the statements below see it) or waits for this transaction and then sees blocked_on cleared
+  perform pg_advisory_xact_lock(hashtext('cb.blockers:' || x.project))
+     from (select distinct t.project from cb.tasks t where t.blocked_on = qid order by 1) x;
   -- still waiting on a task (see cb.task_blockers): the question no longer holds it, the blocker does
   perform set_config('cb.note', 'Q' || qid || ' withdrawn; still waits on its blocking tasks', true);
   update cb.tasks t set blocked_on = null where t.blocked_on = qid and t.status = 'blocked' and cardinality(cb._waits_on(t.id)) > 0;
@@ -769,6 +773,10 @@ begin
   if cur = 'delivered' then return; end if;
   if cur <> 'answered' then raise exception 'question Q% is %, not answered', qid, cur; end if;
   update cb.questions q set status = 'delivered', delivered_at = now(), delivered_to = delivered_to where q.id = qid;
+  -- the blockers lock (see cb.tasks_unblock) before deciding: a blocker finishing at the same moment either has
+  -- committed (the statements below see it) or waits for this transaction and then sees blocked_on cleared
+  perform pg_advisory_xact_lock(hashtext('cb.blockers:' || x.project))
+     from (select distinct t.project from cb.tasks t where t.blocked_on = qid order by 1) x;
   -- still waiting on a task (see cb.task_blockers): the question no longer holds it, the blocker does
   perform set_config('cb.note', 'Q' || qid || ' answered; still waits on its blocking tasks', true);
   update cb.tasks t set blocked_on = null where t.blocked_on = qid and t.status = 'blocked' and cardinality(cb._waits_on(t.id)) > 0;
@@ -1556,10 +1564,15 @@ create or replace trigger task_blockers_check before insert or update on cb.task
 -- task waits on blocker. An open blocker moves the task to Blocked (one event: moved, or a note if it already was).
 create function cb.task_block(task text, blocker text, actor text default null) returns void language plpgsql as $$
 #variable_conflict use_variable
-declare a text := cb.set_actor(actor); tid bigint := cb.norm_id(task); bid bigint := cb.norm_id(blocker); ts text; bs text;
+declare a text := cb.set_actor(actor); tid bigint := cb.norm_id(task); bid bigint := cb.norm_id(blocker); tp text; ts text; bs text;
 begin
-  select t.status into ts from cb.tasks t where t.id = tid;
+  select t.project into tp from cb.tasks t where t.id = tid;
   if not found then raise exception 'task #% not found', tid; end if;
+  -- the blockers lock before reading the blocker: one finishing right now has either committed (we read done) or
+  -- waits for us in cb.tasks_unblock and then releases the task. No `for share` on the blocker: done holds its row
+  -- while it waits for this lock, so that would deadlock the common "block on a task being finished" case.
+  perform pg_advisory_xact_lock(hashtext('cb.blockers:' || tp));
+  select t.status into ts from cb.tasks t where t.id = tid;
   select t.status into bs from cb.tasks t where t.id = bid;
   if not found then raise exception 'task #% not found', bid; end if;
   if ts in ('done', 'cancelled') then raise exception '#% is %: a finished task waits on nothing', tid, ts; end if;
@@ -1577,6 +1590,7 @@ create function cb.task_unblock(task text, blocker text, actor text default null
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); tid bigint := cb.norm_id(task); bid bigint := cb.norm_id(blocker); free boolean;
 begin
+  perform pg_advisory_xact_lock(hashtext('cb.blockers:' || t.project)) from cb.tasks t where t.id = tid; -- see cb.tasks_unblock
   delete from cb.task_blockers b where b.task = tid and b.blocker = bid;
   if not found then raise exception '#% is not blocked by #%', tid, bid; end if;
   select t.status = 'blocked' and t.blocked_on is null and cardinality(cb._waits_on(t.id)) = 0 into free from cb.tasks t where t.id = tid;
@@ -1596,6 +1610,12 @@ declare note text := current_setting('cb.note', true); data text := current_sett
         a text := coalesce(nullif(current_setting('cb.actor', true), ''), 'unknown');
         why text := '#' || new.id || case when new.status = 'done' then ' is done' else ' was cancelled' end;
 begin
+  -- Every release decision (here, task_unblock, answer_delivered, withdraw) and task_block take this per-project lock
+  -- first, then decide in a later statement, which reads committed data as of after the lock. Without it two blockers
+  -- finishing at once each see the other still open and neither releases the task. Taken on every done/cancel, not
+  -- only when this task blocks something: a link added concurrently isn't visible until its writer commits.
+  -- ponytail: one lock per project, held to commit; per-task locks if done/cancel ever contends.
+  perform pg_advisory_xact_lock(hashtext('cb.blockers:' || new.project));
   perform set_config('cb.note', 'unblocked: ' || why, true);
   perform set_config('cb.data', jsonb_build_object('blocker', new.id)::text, true); -- not the blocker's links
   with freed as (
@@ -1605,7 +1625,7 @@ begin
     returning t.id, t.title, t.project, t.assignee)
   insert into cb.events (actor, project, kind, summary, data)
   select a, f.project, 'message',
-         format('unblocked: #%s "%s" is in Next with no assignee (%s). Hand it out: cb next %s --as <worker>', f.id, left(f.title, 80), why, f.project),
+         format('unblocked: #%s "%s" is in Next with no assignee (%s). Hand it out: cb edit %s --assignee <worker>', f.id, left(f.title, 80), why, f.id),
          jsonb_build_object('to', s.actor, 'task', f.id)
     from freed f
     join (select distinct s2.actor, s2.project from cb.sessions s2

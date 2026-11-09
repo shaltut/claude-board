@@ -13,6 +13,10 @@ const ROOT = join(import.meta.dirname, '..');
 const DIST = join(ROOT, 'web', 'dist');
 
 export const app = new Hono();
+// A read the database refuses (an unknown ?project= raises in cb.read_project) is a bad request, not a crash.
+app.onError((e: any, c) => e?.name === 'PostgresError'
+  ? c.json({ ok: false, error: e.message }, 400)
+  : (console.error(e), c.json({ ok: false, error: 'server error' }, 500)));
 const opt = (v?: string) => (v ? v : undefined);
 
 // Guests (Omar, Iman) reach the board through a tunnel. Default-deny: a request that isn't plainly
