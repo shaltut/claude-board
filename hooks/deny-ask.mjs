@@ -8,10 +8,11 @@ Ask on Claude Board instead, then KEEP WORKING on something else:
 
   cb ask <project> "<question>" -o "<Label>=<why / tradeoff>" -o "<Label (Recommended)>=<why>" [-c "<context, markdown>"] [--multi]
 
-- Give the same options and explanations you would have put in AskUserQuestion.
+- Give the same options and explanations you would have put in AskUserQuestion. Options are required;
+  --free (no options) only for a fact: a URL, a name, a number.
 - Add --blocking -t <task id> only if that task truly cannot continue; it parks the task in Blocked.
-- Ahmed answers on the board (http://localhost:4747). The orchestrator delivers the answer to you,
-  or check yourself with \`cb pending\`.
+- Ahmed answers on the board (http://localhost:4747). The answer arrives in this session by itself
+  (cb relay); without a relay, check with \`cb pending\`. More: cb help ask
 - If no task can continue at all, say so in one line and stop. Don't wait on a prompt.`;
 
 process.stdout.write(JSON.stringify({

@@ -79,12 +79,12 @@ export function Board({ route }: { route: Route }) {
   )
 
   const columns = useMemo(() => {
-    const rows = data.filter((t) => !route.tag || t.labels.includes(route.tag)).map((t) => (optimistic && t.id === optimistic.id ? { ...t, status: optimistic.status, rank: optimistic.rank } : t))
+    const rows = data.filter((t) => (!route.tag || t.labels.includes(route.tag)) && (!route.type || t.type === route.type)).map((t) => (optimistic && t.id === optimistic.id ? { ...t, status: optimistic.status, rank: optimistic.rank } : t))
     const by = Object.fromEntries(COLUMNS.map((s) => [s, [] as Task[]])) as Record<Status, Task[]>
     for (const t of rows) by[t.status]?.push(t)
     for (const s of COLUMNS) by[s].sort((a, b) => (s === 'done' ? +new Date(b.done_at ?? 0) - +new Date(a.done_at ?? 0) : byQueue(a, b)))
     return by
-  }, [data, optimistic, route.tag])
+  }, [data, optimistic, route.tag, route.type])
 
   const onStart = (e: DragStartEvent) => setActive(data.find((t) => t.id === e.active.id) ?? null)
 

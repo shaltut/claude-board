@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { Bug } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { splitActor, STATUS } from '@/lib/format'
 import { rpc, type Status, type Task } from '@/lib/api'
@@ -130,6 +131,26 @@ export function PriorityPicker({ t, className }: { t: Pick<Task, 'id' | 'priorit
 
 export function TaskId({ id, className }: { id: number; className?: string }) {
   return <span className={cn('callsign text-[13px] text-muted-foreground', className)}>#{id}</span>
+}
+
+/** Task type, shown only when not the default 'task'. A bug is the one type that earns colour (red, like
+ *  blocked); the rest are a quiet word. Click filters Board and Backlog to that type; it doesn't open the card. */
+export function TypeChip({ type, active, className }: { type: Task['type']; active?: boolean; className?: string }) {
+  if (!type || (type === 'task' && !active)) return null
+  const bug = type === 'bug'
+  return (
+    <button type="button" title={active ? `Showing only ${type}s` : `Show only ${type}s`} aria-pressed={active}
+      aria-label={active ? `${type}s` : type}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => { e.stopPropagation(); go({ type }) }}
+      className={cn('inline-flex h-5 items-center gap-1 rounded-[4px] text-[11.5px] leading-none transition-colors',
+        bug ? 'text-st-blocked hover:text-foreground' : 'text-muted-foreground hover:text-foreground',
+        active ? 'px-1.5 text-foreground ring-1 ring-foreground/40' : '-mx-0.5 px-0.5', className)}
+      style={active ? { background: bug ? 'color-mix(in oklab, var(--st-blocked) 16%, transparent)' : 'var(--raised)' } : undefined}>
+      {bug && <Bug className={cn('size-3.5', active && 'text-st-blocked')} aria-hidden />}
+      {(active || !bug) && <span>{active ? `${type}s` : type}</span>}
+    </button>
+  )
 }
 
 /** A tag (work stream). Click filters Board and Backlog to it; it doesn't open the card. */

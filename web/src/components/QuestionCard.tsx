@@ -52,32 +52,38 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendTyped() }
   }
   const holding = q.blocking && !cleared
+  // The amber lamp means "waiting on whoever is looking": Ahmed for his own, the guest on their page.
+  // A question handed to someone else shows on Ahmed's Today as a dark lamp.
+  const lit = guest || !q.assigned_to
 
   return (
     <article data-cleared={cleared || undefined}
       onAnimationEnd={(e) => { if (cleared && e.target === e.currentTarget) onCleared?.(q.id) }}
       className={cn('relative grid grid-cols-[1.75rem_minmax(0,1fr)] rounded-lg border bg-card py-4 pr-4 transition-[border-color,box-shadow] duration-300 sm:grid-cols-[2.5rem_minmax(0,1fr)] sm:py-5 sm:pr-5',
-        holding && 'shadow-[inset_3px_0_0_var(--lamp)]',
+        holding && lit && 'shadow-[inset_3px_0_0_var(--lamp)]',
         cleared && 'clearing shadow-[inset_3px_0_0_var(--clear)]')}
       aria-labelledby={`q${q.id}-body`}>
       <div className="flex justify-center pt-[7px]">
         {cleared
           ? <span className="size-2.5 rounded-full bg-clear shadow-[0_0_0_3px_color-mix(in_oklab,var(--clear)_22%,transparent),0_0_12px_var(--clear)]" title="Answered" />
-          : <span className={cn('lamp size-2.5', holding && 'lamp-breathe')} title={q.blocking ? 'Holding work until you answer' : 'Waiting on you'} />}
+          : lit
+            ? <span className={cn('lamp size-2.5', holding && 'lamp-breathe')} title={q.blocking ? 'Holding work until you answer' : 'Waiting on you'} />
+            : <span className="size-2.5 rounded-full border-2 border-muted-foreground/60" title="Waiting on someone else" />}
       </div>
 
       <div className="min-w-0">
         <header className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <ActorChip actor={q.asked_by} />
+          {/* A guest doesn't know session callsigns or task numbers: they see the project, the time, and whether work waits. */}
+          {!guest && <ActorChip actor={q.asked_by} />}
           <ProjectChip slug={q.project} />
           <span className="tabular-nums">{ago(q.created_at)}</span>
-          {q.task_id && (
+          {q.task_id && !guest && (
             <button onClick={() => go({ task: q.task_id! })} title={`Open task #${q.task_id}`}
-              className={cn('-mx-1 inline-flex items-baseline gap-1 rounded px-1 hover:bg-raised hover:text-foreground', holding && 'font-medium text-lamp hover:text-lamp')}>
+              className={cn('-mx-1 inline-flex items-baseline gap-1 rounded px-1 hover:bg-raised hover:text-foreground', holding && lit && 'font-medium text-lamp hover:text-lamp')}>
               {holding ? 'holding' : 'on'} <TaskId id={q.task_id} className="text-current" />
             </button>
           )}
-          {holding && !q.task_id && <span className="font-medium text-lamp">holding work</span>}
+          {holding && (guest || !q.task_id) && <span className={cn('font-medium', lit && 'text-lamp')}>{guest ? 'work is paused until you answer' : 'holding work'}</span>}
           <span className="callsign ml-auto text-[12px] text-muted-foreground">Q{q.id}</span>
           {!guest && <AssignPicker q={q} />}
         </header>
@@ -143,6 +149,7 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
 export function AnsweredRow({ q, editing, onEdit }: { q: Question; editing: boolean; onEdit: (on: boolean) => void }) {
   const qc = useQueryClient()
   const [text, setText] = useState(q.answer ?? '')
+  const { data: users = [] } = useUsers()
   async function save() {
     try {
       await rpc('answer', { id: q.id, answer: text })
@@ -171,8 +178,13 @@ export function AnsweredRow({ q, editing, onEdit }: { q: Question; editing: bool
           </div>
         ) : (
           <p className="mt-1 flex items-start gap-1.5 text-sm">
-            <CornerDownRight className="mt-0.5 size-3.5 shrink-0 text-clear" aria-label="Your answer" />
-            <span className="min-w-0">{q.answer}</span>
+            <CornerDownRight className="mt-0.5 size-3.5 shrink-0 text-clear" aria-label="Answer" />
+            <span className="min-w-0">
+              {q.answer}
+              {q.answered_by && q.answered_by !== 'ahmed' && (
+                <span className="ml-2 text-xs text-muted-foreground">{users.find((u) => u.name === q.answered_by)?.display ?? q.answered_by} answered</span>
+              )}
+            </span>
           </p>
         )}
       </div>

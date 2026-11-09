@@ -83,7 +83,10 @@ export async function me(user: string) {
   const [questions, tasks] = await Promise.all([
     sql`select * from cb.questions where assigned_to = ${user}
           and (status = 'open' or answered_at > now() - interval '7 days') order by status = 'open' desc, id desc`,
-    sql`select * from cb.tasks where assignee = ${user} and status not in ('done', 'cancelled') order by priority, rank, id`,
+    // only the guest's own notes come back: session notes on the same task can hold anything
+    sql`select t.*, coalesce((select jsonb_agg(jsonb_build_object('summary', e.summary, 'at', e.at) order by e.at)
+          from cb.events e where e.task_id = t.id and e.kind = 'note' and e.actor = ${user}), '[]') as my_notes
+        from cb.tasks t where t.assignee = ${user} and t.status not in ('done', 'cancelled') order by t.priority, t.rank, t.id`,
   ]);
   return { questions, tasks };
 }

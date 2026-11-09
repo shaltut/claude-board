@@ -37,6 +37,12 @@ app.use('*', async (c, next) => {
 });
 
 app.use('/api/*', async (c, next) => {
+  // CSRF: a browser always sends Origin on a cross-site POST; a page elsewhere must not drive the board.
+  const origin = c.req.header('origin');
+  if (c.req.method !== 'GET' && origin) {
+    const host = (() => { try { return new URL(origin).host } catch { return '' } })();
+    if (host !== c.req.header('host') && host !== c.req.header('x-forwarded-host')) return c.json({ ok: false, error: 'cross-site request refused' }, 403);
+  }
   const local = isLocal(c);
   if (c.req.path === '/api/whoami') {
     if (local) return c.json({ role: 'local' });
@@ -50,8 +56,9 @@ app.use('/api/*', async (c, next) => {
   if (c.req.path === '/api/me') return c.json(await q.me(u.name));
   const fn = c.req.method === 'POST' && /^\/api\/rpc\/(answer|log)$/.exec(c.req.path)?.[1];
   if (!fn) return c.json({ ok: false, error: 'not available to guests' }, 403);
-  const args = await c.req.json().catch(() => ({}));
+  const args = (await c.req.json().catch(() => null)) ?? {};
   const id = Number(String(fn === 'answer' ? args.id : args.task_id ?? '').replace(/^[#q]/i, ''));
+  if (!Number.isSafeInteger(id)) return c.json({ ok: false, error: 'not a valid id' }, 400);
   const [mine] = fn === 'answer'
     ? await sql`select project from cb.questions where id = ${id} and assigned_to = ${u.name}`
     : await sql`select project from cb.tasks where id = ${id} and assignee = ${u.name}`;

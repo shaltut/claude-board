@@ -156,4 +156,28 @@ test('a guest link sets a cookie; the guest sees and answers only what is assign
   assert.deepEqual({ ...q }, { status: 'answered', answer: 'A', answered_by: 'omar' }, 'actor is the guest, whatever the body says');
   const [e] = await sql`select actor from cb.events where kind = 'note'`;
   assert.equal(e.actor, 'omar');
+
+  // his note shows back on his task (so it doesn't vanish), but session notes on it stay private
+  await sql`select cb.log(project => 'ihop', summary => 'internal session chatter', task_id => '1', actor => 'W2@macbook')`;
+  const after = await (await remote('/api/me', { cookie: token })).json();
+  assert.deepEqual(after.tasks[0].my_notes.map((n: any) => n.summary), ['signed']);
+});
+
+test('a web page on another site cannot drive the board through the browser (CSRF)', async () => {
+  await db();
+  const post = (origin?: string) => app.request('http://localhost:4747/api/rpc/task_add', {
+    method: 'POST', body: JSON.stringify({ project: 'demo', title: 'x' }),
+    headers: { 'content-type': 'application/json', host: 'localhost:4747', ...(origin ? { origin } : {}) },
+  });
+  assert.equal((await post('https://evil.example')).status, 403);
+  assert.equal((await post('http://localhost:4747')).status, 200);
+  assert.equal((await post()).status, 200); // scripts and curl send no Origin
+});
+
+test('a guest sending garbage gets a clean 400, not a server error', async () => {
+  const sql = await db();
+  const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
+  const post = (body: string) => remote('/api/rpc/answer', { method: 'POST', cookie: token, body, headers: { 'content-type': 'application/json' } });
+  assert.equal((await post('null')).status, 400);
+  assert.equal((await post(JSON.stringify({ id: 'abc', answer: 'x' }))).status, 400);
 });

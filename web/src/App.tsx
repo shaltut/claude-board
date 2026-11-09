@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { get, type User } from '@/lib/api'
+import { get, type Task, type User } from '@/lib/api'
 import { Guest } from '@/views/Guest'
 import { useLive } from '@/lib/live'
 import { go, useRoute, VIEWS } from '@/lib/route'
@@ -14,7 +14,7 @@ import { Backlog } from '@/views/Backlog'
 import { History } from '@/views/History'
 import { Sessions } from '@/views/Sessions'
 import { Huddles } from '@/views/Huddles'
-import { TagChip } from '@/components/Chips'
+import { TagChip, TypeChip } from '@/components/Chips'
 import { Mark } from '@/components/Mark'
 
 const typing = (e: KeyboardEvent) => {
@@ -73,11 +73,12 @@ export default function App() {
       </button>
       <TopBar route={route} live={live} onSearch={() => setMenu(true)} />
       <main id="main" tabIndex={-1} className="outline-none mx-auto max-w-[1600px] px-4 pt-6 pb-16 sm:px-6 lg:pt-8">
-        {route.tag && (route.view === 'board' || route.view === 'backlog') && (
-          <div className="mb-4 flex items-center gap-2 text-sm" role="status">
-            <span className="text-muted-foreground">Only tasks tagged</span>
-            <TagChip tag={route.tag} active />
-            <button onClick={() => go({ tag: undefined })} className="rounded-md px-1.5 py-0.5 text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
+        {(route.tag || route.type) && (route.view === 'board' || route.view === 'backlog') && (
+          <div className="mb-4 flex flex-wrap items-center gap-2 text-sm" role="status">
+            <span className="text-muted-foreground">Only</span>
+            {route.type && <TypeChip type={route.type as Task['type']} active />}
+            {route.tag && <><span className="text-muted-foreground">{route.type ? 'tagged' : 'tasks tagged'}</span><TagChip tag={route.tag} active /></>}
+            <button onClick={() => go({ tag: undefined, type: undefined })} className="rounded-md px-1.5 py-0.5 text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
               Show all
             </button>
           </div>

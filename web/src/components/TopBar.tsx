@@ -17,7 +17,6 @@ const TABS: { view: View; label: string; key: string }[] = [
 ]
 
 export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' | 'reconnecting'; onSearch: () => void }) {
-  const { theme, toggle } = useTheme()
   const { data: all = [] } = useQuestions(route.project, 'open')
   const open = all.filter((q) => !q.assigned_to) // questions handed to Omar/Iman aren't waiting on Ahmed
   useTabLamp(open.length)
@@ -60,10 +59,7 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
             <span className={cn('size-1.5 rounded-full', live === 'live' ? 'bg-clear shadow-[0_0_8px_var(--clear)]' : 'animate-pulse bg-st-blocked')} />
             <span className="hidden md:inline">{live === 'live' ? 'Live' : 'Reconnecting…'}</span>
           </span>
-          <button onClick={toggle} className="grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-raised hover:text-foreground"
-            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>
-            {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
-          </button>
+          <ThemeToggle />
           <button onClick={onSearch} aria-label="Jump to a task, project or view"
             className="flex h-8 items-center gap-2 rounded-md border bg-card px-2 text-sm text-muted-foreground transition-colors hover:border-input hover:text-foreground sm:px-2.5">
             <Search className="size-3.5" /> <span className="hidden lg:inline">Jump to…</span> <Kbd className="hidden sm:inline-flex">Ctrl&nbsp;K</Kbd>
@@ -71,5 +67,17 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
         </div>
       </div>
     </header>
+  )
+}
+
+export { Mark }
+
+export function ThemeToggle() {
+  const { theme, toggle } = useTheme()
+  return (
+    <button onClick={toggle} className="grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-raised hover:text-foreground"
+      aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>
+      {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
+    </button>
   )
 }

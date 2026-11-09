@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Search } from 'lucide-react'
-import { get, qs, rpc, useQuestions, type CbEvent, type Question } from '@/lib/api'
+import { get, qs, rpc, useQuestions, useUsers, type CbEvent, type Question } from '@/lib/api'
 import { ago, clock, day } from '@/lib/format'
 import { go, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
@@ -60,6 +60,7 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
   const { data: allOpen = [], isLoading } = useQuestions(route.project, 'open')
   const open = allOpen.filter((q) => !q.assigned_to)
   const others = allOpen.filter((q) => q.assigned_to)
+  const { data: users = [] } = useUsers()
   const { data: answered = [] } = useQuestions(route.project, 'answered')
   const clearing = useClearing(open)
   // Strips already there on arrival sit still; only questions asked while you watch slide in.
@@ -116,7 +117,8 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
           <details className="group mt-6">
             <summary className="cursor-pointer list-none text-sm text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
               <span className="mr-1 inline-block transition-transform group-open:rotate-90">›</span>
-              Waiting on others: {[...new Set(others.map((q) => q.assigned_to))].map((u) => `${u} (${others.filter((q) => q.assigned_to === u).length})`).join(', ')}
+              Waiting on others: {[...new Set(others.map((q) => q.assigned_to!))].map((u) =>
+                `${users.find((x) => x.name === u)?.display ?? u} (${others.filter((q) => q.assigned_to === u).length})`).join(', ')}
             </summary>
             <div className="mt-3 grid gap-3">{others.map((q) => <QuestionCard key={q.id} q={q} />)}</div>
           </details>

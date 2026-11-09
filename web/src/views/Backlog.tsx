@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ActorChip, PriorityPicker, ProjectChip, TagChip, TaskId } from '@/components/Chips'
+import { ActorChip, PriorityPicker, ProjectChip, TagChip, TaskId, TypeChip } from '@/components/Chips'
 import { moveTask } from './Board'
 
 function Row({ t, showProject, place, selected, onSelect }: { t: Task; showProject: boolean; place?: number; selected?: boolean; onSelect?: (on: boolean) => void }) {
@@ -31,6 +31,7 @@ function Row({ t, showProject, place, selected, onSelect }: { t: Task; showProje
       {onSelect && <Checkbox checked={selected} onCheckedChange={(v) => onSelect(!!v)} aria-label={`Select #${t.id}`} />}
       <TaskId id={t.id} className="w-9 shrink-0" />
       <PriorityPicker t={t} className="shrink-0" />
+      <TypeChip type={t.type} className="shrink-0" />
       <a href={`#/backlog?t=${t.id}`} onClick={(e) => { e.preventDefault(); go({ task: t.id }) }}
         className="min-w-0 flex-1 truncate text-sm font-medium hover:underline hover:underline-offset-4">{t.title}</a>
       <span className="hidden shrink-0 items-center gap-1 md:flex">{t.labels.slice(0, 3).map((g) => <TagChip key={g} tag={g} />)}</span>
@@ -57,9 +58,9 @@ export function Backlog({ route }: { route: Route }) {
   const qc = useQueryClient()
   const { data: nextAll = [] } = useTasks(route.project, 'next')
   const { data: backlogAll = [] } = useTasks(route.project, 'backlog')
-  const tagged = (ts: Task[]) => (route.tag ? ts.filter((t) => t.labels.includes(route.tag!)) : ts)
-  const next = useMemo(() => tagged(nextAll), [nextAll, route.tag])
-  const backlog = useMemo(() => tagged(backlogAll), [backlogAll, route.tag])
+  const tagged = (ts: Task[]) => ts.filter((t) => (!route.tag || t.labels.includes(route.tag)) && (!route.type || t.type === route.type))
+  const next = useMemo(() => tagged(nextAll), [nextAll, route.tag, route.type])
+  const backlog = useMemo(() => tagged(backlogAll), [backlogAll, route.tag, route.type])
   const { data: projects = [] } = useProjects()
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [title, setTitle] = useState('')
