@@ -8,6 +8,14 @@ export interface Task {
   id: number; project: string; title: string; body: string; status: Status; priority: 'P0' | 'P1' | 'P2' | 'P3'; type: (typeof TASK_TYPES)[number]
   rank: number; assignee: string | null; labels: string[]; links: Record<string, string | string[]>
   blocked_on: number | null; created_by: string; created_at: string; updated_at: string; done_at: string | null
+  epic_id: number | null; epic_rank: number
+  waits_on?: number[] // open blockers (not done or cancelled): "waits on #12"
+}
+/** A task as the panel lists its blockers and what it blocks. */
+export type TaskRef = Pick<Task, 'id' | 'title' | 'status' | 'assignee'>
+export interface Epic {
+  id: number; project: string; title: string; goal: string; created_by: string; created_at: string; closed_at: string | null
+  closed: boolean; status: 'open' | 'done'; total: number; done: number; cancelled: number; finished: number
 }
 export interface QOption { label: string; description: string | null }
 export interface Question {
@@ -23,7 +31,7 @@ export const onProject = (users: User[], project: string, holder?: string | null
   users.filter((u) => u.projects?.includes(project) || u.name === holder)
 export interface CbEvent {
   id: number; at: string; actor: string; project: string | null; task_id: number | null; question_id: number | null
-  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle' | 'user'
+  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle' | 'user' | 'epic'
   summary: string; data: Record<string, any>
 }
 
@@ -60,6 +68,10 @@ export const useQuestions = (project?: string, status?: string) =>
 export const useTask = (id: number | null) =>
   useQuery({
     queryKey: ['task', id], enabled: id != null,
-    queryFn: () => get<{ task: Task; events: CbEvent[]; questions: Question[] }>(`/api/tasks/${id}`),
+    queryFn: () => get<{ task: Task; events: CbEvent[]; questions: Question[]; blockers: TaskRef[]; blocks: TaskRef[]; epic: { id: number; title: string } | null }>(`/api/tasks/${id}`),
   })
+export const useEpics = (project?: string) =>
+  useQuery({ queryKey: ['epics', project], queryFn: () => get<Epic[]>(`/api/epics${qs({ project })}`) })
+export const useEpic = (id: number) =>
+  useQuery({ queryKey: ['epic', id], queryFn: () => get<{ epic: Epic; steps: Task[] }>(`/api/epics/${id}`) })
 export { qs }

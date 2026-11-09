@@ -3,7 +3,7 @@ import { GitCommitHorizontal, GitPullRequest, GitBranch } from 'lucide-react'
 import { useQuestions, type Task } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { ActorChip, PriorityPicker, ProjectChip, TagChip, TaskId, TypeChip } from './Chips'
+import { ActorChip, EpicChip, PriorityPicker, ProjectChip, TagChip, TaskId, TypeChip, WaitsOn } from './Chips'
 
 type Props = { t: Task; showProject?: boolean; dragging?: boolean; overlay?: boolean } & React.HTMLAttributes<HTMLDivElement>
 
@@ -13,6 +13,7 @@ export const TaskCard = forwardRef<HTMLDivElement, Props>(function TaskCard({ t,
   const l = t.links ?? {}
   const { data: open = [] } = useQuestions(undefined, 'open')
   const holding = t.status === 'blocked' && t.blocked_on != null && open.some((q) => q.id === t.blocked_on && !q.assigned_to)
+  const waits = t.status === 'done' || t.status === 'cancelled' ? [] : t.waits_on ?? []
   const edge = holding ? 'before:bg-lamp' : t.priority === 'P0' && t.status !== 'done' ? 'before:bg-st-blocked' : 'before:bg-transparent'
   return (
     <div ref={ref} {...rest}
@@ -30,16 +31,18 @@ export const TaskCard = forwardRef<HTMLDivElement, Props>(function TaskCard({ t,
       </div>
       <p className={cn('mt-1 text-sm leading-snug font-medium text-pretty', t.status === 'done' && 'text-muted-foreground')}>{t.title}</p>
       {/* A bug's marker sits by the priority, where the eye scans; other types are a quiet word ahead of the tags. */}
-      {(t.labels.length > 0 || (t.type && t.type !== 'task' && t.type !== 'bug')) && (
+      {(t.labels.length > 0 || t.epic_id != null || (t.type && t.type !== 'task' && t.type !== 'bug')) && (
         <div className="mt-2 flex flex-wrap items-center gap-1">
+          {t.epic_id != null && <EpicChip id={t.epic_id} className="mr-1" />}
           {t.type !== 'bug' && <TypeChip type={t.type} className="mx-0 mr-1 px-0" />}
           {t.labels.map((g) => <TagChip key={g} tag={g} />)}
         </div>
       )}
-      {(t.assignee || holding || l.pr || l.commit || l.branch) && (
+      {(t.assignee || holding || waits.length > 0 || l.pr || l.commit || l.branch) && (
         <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           {t.assignee && <ActorChip actor={t.assignee} />}
           {holding && <span className="flex items-center gap-1.5 font-medium text-lamp"><span className="lamp size-1.5" />holding on Q{t.blocked_on}</span>}
+          <WaitsOn ids={waits} />
           <span className="ml-auto flex items-center gap-2">
             {l.pr && <span className="inline-flex items-center gap-0.5 font-mono text-[11px]" title={`Pull request ${l.pr}`}><GitPullRequest className="size-3.5" />{String(l.pr)}</span>}
             {l.commit && <GitCommitHorizontal className="size-3.5" aria-label={`commit ${l.commit}`} />}

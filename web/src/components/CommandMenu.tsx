@@ -1,6 +1,6 @@
-import { CalendarClock, Columns3, History, ListOrdered, Plus, Layers, Radio, MessagesSquare, Users } from 'lucide-react'
+import { CalendarClock, Columns3, History, ListOrdered, Plus, Layers, Radio, MessagesSquare, Milestone, Users } from 'lucide-react'
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from '@/components/ui/command'
-import { useProjects, useTasks } from '@/lib/api'
+import { useEpics, useProjects, useTasks } from '@/lib/api'
 import { go, type View } from '@/lib/route'
 import { ProjectDot, StatusDot, TaskId } from './Chips'
 
@@ -12,11 +12,13 @@ const VIEWS: { view: View; label: string; icon: typeof History }[] = [
   { view: 'huddles', label: 'Huddles', icon: MessagesSquare },
   { view: 'history', label: 'History', icon: History },
   { view: 'people', label: 'People', icon: Users },
+  { view: 'epics', label: 'Epics', icon: Milestone },
 ]
 
 export function CommandMenu({ open, onOpenChange, onNewTask }: { open: boolean; onOpenChange: (o: boolean) => void; onNewTask: () => void }) {
   const { data: projects = [] } = useProjects()
   const { data: tasks = [] } = useTasks()
+  const { data: epics = [] } = useEpics()
   const run = (fn: () => void) => { onOpenChange(false); fn() }
 
   return (
@@ -38,6 +40,18 @@ export function CommandMenu({ open, onOpenChange, onNewTask }: { open: boolean; 
               </CommandItem>
             ))}
           </CommandGroup>
+          {epics.length > 0 && (
+            <CommandGroup heading="Epics">
+              {epics.map((e) => (
+                <CommandItem key={e.id} value={`epic E${e.id} ${e.title} ${e.project}`} onSelect={() => run(() => go({ view: 'epics', epic: e.id, task: undefined }))}>
+                  <Milestone />
+                  <span className="callsign w-9 shrink-0 text-[13px] text-muted-foreground">E{e.id}</span>
+                  <span className="min-w-0 flex-1 truncate">{e.title}</span>
+                  <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground tabular-nums">{e.finished} of {e.total}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          )}
           <CommandGroup heading="Projects">
             <CommandItem value="all projects" onSelect={() => run(() => go({ project: undefined }))}><Layers /> All projects</CommandItem>
             {projects.map((p) => (
@@ -48,7 +62,7 @@ export function CommandMenu({ open, onOpenChange, onNewTask }: { open: boolean; 
           </CommandGroup>
           <CommandGroup heading="Go to">
             {VIEWS.map(({ view, label, icon: Icon }, i) => (
-              <CommandItem key={view} value={`go ${label}`} onSelect={() => run(() => go({ view, task: undefined, actor: undefined, huddle: undefined }))}>
+              <CommandItem key={view} value={`go ${label}`} onSelect={() => run(() => go({ view, task: undefined, actor: undefined, huddle: undefined, epic: undefined }))}>
                 <Icon /> {label}<CommandShortcut>{i + 1}</CommandShortcut>
               </CommandItem>
             ))}

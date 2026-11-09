@@ -8,6 +8,7 @@ if (!db.endsWith('_demo')) throw new Error(`refusing to seed ${db}: only *_demo 
 
 await sql`truncate cb.events, cb.questions, cb.tasks, cb.sessions restart identity cascade`;
 await sql`delete from cb.huddles`.catch(() => {});
+await sql`truncate cb.epics restart identity cascade`.catch(() => {});
 await sql`delete from cb.projects`;
 
 const W1 = 'W1@macbook', W2 = 'W2@macbook', W3 = 'W3@macbook', R1 = 'R1@macbook', OR = 'orch@shaltoot', V = 'fetch@vps2';
@@ -16,6 +17,7 @@ const add = (project: string, title: string, o: Record<string, unknown> = {}) =>
   callFn('task_add', { project, title, actor: OR, ...o }) as Promise<number>;
 
 await callFn('user_add', { name: 'omar', display: 'Omar' }).catch(() => {});
+await sql`select cb.ensure_project(${portal}), cb.user_project_add('omar', ${portal}, 'ahmed')`; // people get work only on their projects (#315)
 
 const T: Record<string, number> = {};
 const specs: [string, string, string, Record<string, unknown>][] = [
@@ -146,6 +148,26 @@ const h2 = await callFn('huddle_open', { topic: 'GPU sizing for nightly scoring'
 await callFn('huddle_say', { id: String(h2), message: 'Two L4s finish the nightly batch in 3h10m with room to spare.', actor: V });
 await callFn('huddle_say', { id: String(h2), message: 'Go with two. Revisit when the provider count doubles.', actor: OR });
 await callFn('huddle_close', { id: String(h2), summary: 'Two L4s; revisit at double the provider count.', actor: OR });
+
+// Epics (Ahmed's, so through the dashboard) with ordered steps, and blockers between steps.
+const epic = async (project: string, title: string, goal: string, steps: string[]) => {
+  const e = Number(await asAhmed('epic_create', { project, title, goal }));
+  for (const k of steps) await callFn('task_update', { id: String(T[k]), fields: { epic: `E${e}` }, actor: OR });
+  return e;
+};
+T.codes = await add(core, 'Map payer gateway error codes to retryable / final', { status: 'next', priority: 'P2', labels: ['payer-gw'] });
+await done('codes', 'table of 41 codes; 503, 504 and 429 retry, the rest are final', { pr: '#1178' }, W2);
+await epic(core, 'Payer gateway hardening', 'Claims keep flowing through payer outages: retries with jitter, contract tests in CI, cached eligibility. Done when a 30-minute 503 storm loses no claim.',
+  ['codes', 'batch', 'contract', 'retry', 'eligibility', 'ratelimit']);
+await mv('ratelimit', 'cancelled', 'the status endpoint moved behind the API gateway, which rate-limits it', OR);
+await callFn('task_move', { id: String(T.contract), status: 'in_progress', actor: W3 });
+await callFn('task_update', { id: String(T.contract), fields: { assignee: W3 }, actor: OR });
+await callFn('task_block', { task: String(T.retry), blocker: String(T.contract), actor: OR });
+await callFn('task_block', { task: String(T.eligibility), blocker: String(T.retry), actor: OR });
+await epic(ml, 'Per-provider score thresholds', 'Small clinics stop drowning in flags: thresholds calibrated per volume band, with a weekly drift alert.',
+  ['codemap', 'thresh', 'tokenizer', 'report', 'drift']);
+await callFn('task_block', { task: String(T.report), blocker: String(T.thresh), actor: OR });
+await epic(portal, 'Date handling on the reviewer screen', 'Every date a reviewer sees is the claim\'s own day, in their timezone.', ['tz']);
 
 // Sessions: some with a live relay (last_seen far ahead so the dots stay lit for screenshots).
 for (const [actor, pane, project] of [[W1, 'w1', core], [W2, 'w2', core], [W3, 'w3', board], [R1, 'r1', portal], [V, 'v1', ml], [OR, 'orch', core]] as const)

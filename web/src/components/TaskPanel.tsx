@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { onProject, rpc, useTask, useUsers, type Status } from '@/lib/api'
+import { X } from 'lucide-react'
+import { onProject, rpc, useTask, useTasks, useUsers, type Status, type Task, type TaskRef } from '@/lib/api'
 import { ago, STATUS } from '@/lib/format'
 import { go } from '@/lib/route'
 import { cn } from '@/lib/utils'
@@ -10,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { ActorChip, Priority, PRIORITIES, ProjectChip, StatusDot, TagChip, TaskId } from './Chips'
+import { ActorChip, EpicChip, Priority, PRIORITIES, ProjectChip, StatusDot, TagChip, TaskId } from './Chips'
 import { EventRow } from './Timeline'
 import { Md } from './Md'
 
@@ -54,6 +55,7 @@ function PanelBody({ data }: { data: NonNullable<ReturnType<typeof useTask>['dat
       <SheetHeader className="gap-3 border-b p-5 pr-12">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <TaskId id={t.id} className="text-[14px] text-foreground" /><ProjectChip slug={t.project} />
+          {t.epic_id != null && <EpicChip id={t.epic_id} />}
           <span>created by <ActorChip actor={t.created_by} /> {ago(t.created_at)}</span>
         </div>
         <SheetTitle className="sr-only">{t.title}</SheetTitle>
@@ -136,6 +138,8 @@ function PanelBody({ data }: { data: NonNullable<ReturnType<typeof useTask>['dat
         )}
       </section>
 
+      <Blockers t={t} blockers={data.blockers} blocks={data.blocks} />
+
       {data.questions.length > 0 && (
         <section className="border-b p-5">
           <h3 className="mb-3 text-sm font-semibold">Questions</h3>
@@ -159,6 +163,74 @@ function PanelBody({ data }: { data: NonNullable<ReturnType<typeof useTask>['dat
         <ol>{data.events.map((e) => <EventRow key={e.id} e={e} />)}</ol>
       </section>
     </div>
+  )
+}
+
+const finished = (s: Status) => s === 'done' || s === 'cancelled'
+
+/** "Blocked by": the tasks this one waits on (add with the picker, remove with x), and what it holds up in turn. */
+function Blockers({ t, blockers, blocks }: { t: Task; blockers: TaskRef[]; blocks: TaskRef[] }) {
+  const qc = useQueryClient()
+  const [pick, setPick] = useState('')
+  async function call(fn: 'task_block' | 'task_unblock', blocker: number, ok: string) {
+    try { await rpc(fn, { task: t.id, blocker }); toast(ok); await qc.invalidateQueries() }
+    catch (e: any) { toast.error(e.message) }
+  }
+  const { data: tasks = [] } = useTasks(t.project)
+  const taken = new Set([t.id, ...blockers.map((b) => b.id)])
+  const options = tasks.filter((x) => !taken.has(x.id) && !finished(x.status)).sort((a, b) => b.id - a.id)
+  const open = blockers.filter((b) => !finished(b.status)).length
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault()
+    const id = Number(/#?(\d+)/.exec(pick)?.[1])
+    if (!id) return
+    await call('task_block', id, `#${t.id} now waits on #${id}`)
+    setPick('')
+  }
+
+  return (
+    <section className="border-b p-5" aria-labelledby="blocked-by">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <h3 id="blocked-by" className="text-sm font-semibold">Blocked by</h3>
+        <span className="text-xs text-muted-foreground">
+          {blockers.length === 0 ? 'Nothing: it can start any time' : open ? `Waits on ${open} open ${open === 1 ? 'task' : 'tasks'}` : 'All finished: free to go'}
+        </span>
+      </div>
+      {blockers.length > 0 && <ul className="mb-2 overflow-hidden rounded-md border">{blockers.map((b) => (
+        <RefRow key={b.id} r={b} action={
+          <button onClick={() => call('task_unblock', b.id, `#${t.id} no longer waits on #${b.id}`)}
+            className="grid size-7 shrink-0 place-items-center rounded text-muted-foreground hover:bg-raised hover:text-foreground" aria-label={`Remove blocker #${b.id}`} title="Remove blocker">
+            <X className="size-3.5" />
+          </button>} />
+      ))}</ul>}
+      {!finished(t.status) && (
+        <form onSubmit={add} className="flex gap-2">
+          <datalist id="cb-blockers">{options.map((x) => <option key={x.id} value={`#${x.id}`}>{x.title}</option>)}</datalist>
+          <Input value={pick} onChange={(e) => setPick(e.target.value)} list="cb-blockers" placeholder="Add a blocker: #id…" aria-label="Add a blocker by task number" className="h-8" spellCheck={false} />
+          <Button type="submit" size="sm" variant="outline" disabled={!/\d/.test(pick)}>Add</Button>
+        </form>
+      )}
+      {blocks.length > 0 && (
+        <>
+          <h4 className="mt-4 mb-2 text-xs text-muted-foreground"><span className="font-semibold text-foreground">Blocks</span> {blocks.length === 1 ? "1 task waits on this one" : `${blocks.length} tasks wait on this one`}</h4>
+          <ul className="overflow-hidden rounded-md border">{blocks.map((b) => <RefRow key={b.id} r={b} />)}</ul>
+        </>
+      )}
+    </section>
+  )
+}
+
+function RefRow({ r, action }: { r: TaskRef; action?: React.ReactNode }) {
+  return (
+    <li className="flex min-h-9 items-center gap-2 border-b bg-card px-2 py-1 text-sm last:border-b-0">
+      <StatusDot status={r.status} />
+      <TaskId id={r.id} className="w-9 shrink-0" />
+      <a href={`#/board?t=${r.id}`} onClick={(e) => { e.preventDefault(); go({ task: r.id }) }}
+        className={cn('min-w-0 flex-1 truncate hover:underline hover:underline-offset-4', r.status === 'cancelled' && 'text-muted-foreground line-through')}>{r.title}</a>
+      <span className="shrink-0 text-xs text-muted-foreground">{STATUS[r.status].label}</span>
+      {action}
+    </li>
   )
 }
 

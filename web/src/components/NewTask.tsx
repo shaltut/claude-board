@@ -13,8 +13,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 
 /** `initial` and `links` apply on mount: give the dialog a `key` per draft (e.g. a huddle line). */
-export function NewTask({ open, onOpenChange, project, initial, links, onCreated }: {
-  open: boolean; onOpenChange: (o: boolean) => void; project?: string
+export function NewTask({ open, onOpenChange, project, initial, links, onCreated, epic }: {
+  open: boolean; onOpenChange: (o: boolean) => void; project?: string; epic?: { id: number; title: string }
   initial?: { title?: string; body?: string }; links?: Record<string, string>; onCreated?: (id: number) => void
 }) {
   const qc = useQueryClient()
@@ -29,7 +29,7 @@ export function NewTask({ open, onOpenChange, project, initial, links, onCreated
   async function create(e: React.FormEvent) {
     e.preventDefault()
     try {
-      const id = await rpc<number>('task_add', { project: proj, title, body, status, priority, type, ...(links && { links }) })
+      const id = await rpc<number>('task_add', { project: proj, title, body, status, priority, type, ...(links && { links }), ...(epic && { epic: `E${epic.id}` }) })
       toast.success(`Created #${id}`, { action: { label: 'Open', onClick: () => go({ task: id }) } })
       setTitle(''); setBody('')
       onOpenChange(false)
@@ -43,12 +43,15 @@ export function NewTask({ open, onOpenChange, project, initial, links, onCreated
       <DialogContent className="sm:max-w-lg">
         <form onSubmit={create} className="grid gap-4">
           <DialogHeader>
-            <DialogTitle>New task</DialogTitle>
-            <DialogDescription>Tasks in Next are what sessions take with <code className="font-mono">cb next</code>.</DialogDescription>
+            <DialogTitle>{epic ? `New step in E${epic.id}` : 'New task'}</DialogTitle>
+            <DialogDescription>
+              {epic && <>It joins <span className="font-medium text-foreground">{epic.title}</span> as its last step. </>}
+              Tasks in Next are what sessions take with <code className="font-mono">cb next</code>.
+            </DialogDescription>
           </DialogHeader>
           <Input autoFocus required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs doing…" aria-label="Title" />
           <div className="grid grid-cols-2 gap-2">
-            <Input required list="cb-projects" value={proj} onChange={(e) => setProj(e.target.value)} placeholder="project…" spellCheck={false} aria-label="Project" />
+            <Input required list="cb-projects" value={proj} onChange={(e) => setProj(e.target.value)} placeholder="project…" spellCheck={false} aria-label="Project" readOnly={!!epic} />
             <datalist id="cb-projects">{projects.map((p) => <option key={p.slug} value={p.slug} />)}</datalist>
             <Select value={type} onValueChange={(v) => setType(v as Task['type'])}>
               <SelectTrigger className="w-full" aria-label="Type"><SelectValue /></SelectTrigger>

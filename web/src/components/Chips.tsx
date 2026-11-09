@@ -1,9 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Bug } from 'lucide-react'
+import { Bug, Milestone } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { splitActor, STATUS } from '@/lib/format'
-import { rpc, type Status, type Task } from '@/lib/api'
+import { rpc, useEpics, type Status, type Task } from '@/lib/api'
 import { go } from '@/lib/route'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 
@@ -151,6 +151,37 @@ export function TypeChip({ type, active, className }: { type: Task['type']; acti
       {bug && <Bug className={cn('size-3.5', active && 'text-st-blocked')} aria-hidden />}
       {(active || !bug) && <span>{active ? `${type}s` : type}</span>}
     </button>
+  )
+}
+
+/** The epic a task is a step of: E3 and its title. Click opens the epic; it doesn't open the card. */
+export function EpicChip({ id, className }: { id: number; className?: string }) {
+  const { data: epics = [] } = useEpics()
+  const e = epics.find((x) => x.id === id)
+  return (
+    <button type="button" title={e ? `Step of E${id}: ${e.title}` : `Step of epic E${id}`} aria-label={`Open epic E${id}${e ? `, ${e.title}` : ''}`}
+      onPointerDown={(ev) => ev.stopPropagation()}
+      onClick={(ev) => { ev.stopPropagation(); go({ view: 'epics', epic: id, task: undefined }) }}
+      className={cn('inline-flex h-5 max-w-[13rem] min-w-0 items-center gap-1 rounded-[4px] bg-raised px-1.5 text-[11.5px] leading-none text-muted-foreground transition-colors hover:text-foreground', className)}>
+      <Milestone className="size-3 shrink-0" aria-hidden />
+      <span className="callsign shrink-0 text-[12px] text-foreground/85">E{id}</span>
+      {e && <span className="truncate">{e.title}</span>}
+    </button>
+  )
+}
+
+/** "waits on #12": the open tasks this one is blocked by. Each number opens that task. */
+export function WaitsOn({ ids, className }: { ids: number[]; className?: string }) {
+  if (!ids.length) return null
+  return (
+    <span className={cn('inline-flex items-center gap-1 text-xs text-foreground/80', className)}>
+      <StatusDot status="blocked" className="size-3" />
+      <span>waits on</span>
+      {ids.map((id) => (
+        <button key={id} type="button" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); go({ task: id }) }}
+          className="callsign rounded px-0.5 text-[13px] text-foreground hover:bg-raised hover:underline" aria-label={`Open blocker #${id}`}>#{id}</button>
+      ))}
+    </span>
   )
 }
 

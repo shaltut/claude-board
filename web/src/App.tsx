@@ -17,6 +17,7 @@ import { History } from '@/views/History'
 import { Sessions } from '@/views/Sessions'
 import { Huddles } from '@/views/Huddles'
 import { People } from '@/views/People'
+import { Epics } from '@/views/Epics'
 import { TagChip, TypeChip } from '@/components/Chips'
 
 
@@ -50,7 +51,7 @@ export default function App() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setMenu((m) => !m); return }
       if (shortcutsOff(e.target as Element | null) || e.ctrlKey || e.metaKey || e.altKey) return
       const i = Number(e.key) - 1
-      if (i >= 0 && i < VIEWS.length) go({ view: VIEWS[i], task: undefined, actor: undefined, huddle: undefined })
+      if (i >= 0 && i < VIEWS.length) go({ view: VIEWS[i], task: undefined, actor: undefined, huddle: undefined, epic: undefined })
       else if (e.key === 'c') { e.preventDefault(); setNewTask(true) }
       else if (e.key === '/') { e.preventDefault(); setMenu(true) }
     }
@@ -58,7 +59,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  const View = { today: Today, questions: Today, board: Board, backlog: Backlog, sessions: Sessions, huddles: Huddles, history: History, people: People }[route.view]
+  const View = { today: Today, questions: Today, board: Board, backlog: Backlog, sessions: Sessions, huddles: Huddles, history: History, people: People, epics: Epics }[route.view]
 
   return (
     <div className="min-h-dvh">

@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ActorChip, PriorityPicker, ProjectChip, TagChip, TaskId, TypeChip } from '@/components/Chips'
+import { ActorChip, EpicChip, PriorityPicker, ProjectChip, TagChip, TaskId, TypeChip, WaitsOn } from '@/components/Chips'
 import { moveTask } from './Board'
 
 function Row({ t, showProject, place, selected, onSelect }: { t: Task; showProject: boolean; place?: number; selected?: boolean; onSelect?: (on: boolean) => void }) {
@@ -34,6 +34,8 @@ function Row({ t, showProject, place, selected, onSelect }: { t: Task; showProje
       <TypeChip type={t.type} className="shrink-0" />
       <a href={`#/backlog?t=${t.id}`} onClick={(e) => { e.preventDefault(); go({ task: t.id }) }}
         className="min-w-0 flex-1 truncate text-sm font-medium hover:underline hover:underline-offset-4">{t.title}</a>
+      {t.waits_on?.length ? <WaitsOn ids={t.waits_on} className="hidden shrink-0 sm:inline-flex" /> : null}
+      {t.epic_id != null && <EpicChip id={t.epic_id} className="hidden max-w-[10rem] shrink-0 md:inline-flex" />}
       <span className="hidden shrink-0 items-center gap-1 md:flex">{t.labels.slice(0, 3).map((g) => <TagChip key={g} tag={g} />)}</span>
       <span className="hidden shrink-0 items-center gap-3 text-xs text-muted-foreground sm:flex">
         {showProject && <span className="w-28 overflow-hidden"><ProjectChip slug={t.project} /></span>}
