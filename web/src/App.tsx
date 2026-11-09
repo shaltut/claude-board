@@ -14,6 +14,8 @@ import { Backlog } from '@/views/Backlog'
 import { History } from '@/views/History'
 import { Sessions } from '@/views/Sessions'
 import { Huddles } from '@/views/Huddles'
+import { TagChip } from '@/components/Chips'
+import { Mark } from '@/components/Mark'
 
 const typing = (e: KeyboardEvent) => {
   const el = e.target as HTMLElement
@@ -29,8 +31,9 @@ export function Gate() {
   if (data.role === 'local') return <App />
   if (data.role === 'guest') return <GuestLive user={data.user} />
   return (
-    <main className="mx-auto max-w-md px-4 py-20 text-center">
-      <h1 className="text-lg font-semibold">Claude Board</h1>
+    <main className="mx-auto grid max-w-md justify-items-center px-4 py-20 text-center">
+      <Mark className="size-10" />
+      <h1 className="mt-4 text-lg font-semibold">Claude Board</h1>
       <p className="mt-2 text-sm text-muted-foreground">Open the personal link Ahmed sent you to see your questions.</p>
     </main>
   )
@@ -65,13 +68,13 @@ export default function App() {
   return (
     <div className="min-h-dvh">
       <TopBar route={route} live={live} onSearch={() => setMenu(true)} />
-      <main className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
+      <main id="main" className="mx-auto max-w-[1600px] px-4 pt-6 pb-16 sm:px-6 lg:pt-8">
         {route.tag && (route.view === 'board' || route.view === 'backlog') && (
-          <div className="mb-4 flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Showing</span>
-            <span className="rounded-full border px-2 py-0.5 font-medium">#{route.tag}</span>
-            <button onClick={() => go({ tag: undefined })} className="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
-              Show all tags
+          <div className="mb-4 flex items-center gap-2 text-sm" role="status">
+            <span className="text-muted-foreground">Only tasks tagged</span>
+            <TagChip tag={route.tag} active />
+            <button onClick={() => go({ tag: undefined })} className="rounded-md px-1.5 py-0.5 text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
+              Show all
             </button>
           </div>
         )}

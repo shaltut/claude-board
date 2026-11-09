@@ -14,7 +14,7 @@ export function ProjectSwitcher({ project }: { project?: string }) {
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger className="inline-flex h-8 min-w-44 items-center gap-2 rounded-md border bg-card px-2.5 text-sm font-medium hover:bg-accent">
+      <PopoverTrigger className="inline-flex h-8 max-w-56 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-sm font-medium transition-colors hover:bg-raised aria-expanded:bg-raised sm:flex-none lg:min-w-40">
         {current ? <ProjectDot slug={current.slug} /> : <Layers className="size-3.5 text-muted-foreground" />}
         <span className="truncate">{current?.name ?? 'All projects'}</span>
         <ChevronsUpDown className="ml-auto size-3.5 text-muted-foreground" />
@@ -34,8 +34,9 @@ export function ProjectSwitcher({ project }: { project?: string }) {
                   <ProjectDot slug={p.slug} />
                   <span className="truncate">{p.name}</span>
                   <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-                    {p.question_count > 0 && <span className="font-medium text-dawn">{p.question_count}?</span>}
-                    {p.open_count}
+                    {p.question_count > 0 && <span className="flex items-center gap-1 font-semibold text-lamp tabular-nums" title={`${p.question_count} waiting on you`}><span className="lamp size-1.5" />{p.question_count}</span>}
+                    <span className="tabular-nums" title={`${p.open_count} open tasks`}>
+                    {p.open_count}</span>
                     {project === p.slug && <Check className="size-3.5 text-foreground" />}
                   </span>
                 </CommandItem>
