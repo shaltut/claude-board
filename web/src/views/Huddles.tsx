@@ -95,7 +95,7 @@ export function Huddles({ route }: { route: Route }) {
 /** A callsign tile: the session's short name on a tint of its own hue. Ahmed's is the lamp: his voice in the room. */
 function Tile({ actor, className }: { actor: string; className?: string }) {
   if (actor === 'ahmed') return (
-    <span aria-hidden className={cn('callsign grid size-7 shrink-0 place-items-center rounded-md bg-lamp-glow text-[12px] text-[#14201f]',
+    <span aria-hidden className={cn('callsign grid size-7 shrink-0 place-items-center rounded-md bg-(--lamp-glow) text-[12px] text-[#14201f]',
       'shadow-[inset_0_0_0_1px_rgb(0_0_0/0.12),0_0_12px_color-mix(in_oklab,var(--lamp-glow)_45%,transparent)]', className)}>Ah</span>
   )
   const { who } = splitActor(actor)
@@ -248,10 +248,13 @@ function ThreadView({ id }: { id: number }) {
           const prev = h.lines[i - 1]
           const cont = prev?.action === 'say' && prev.actor === l.actor
           const me = l.actor === 'ahmed'
+          const next = h.lines[i + 1]
+          const contNext = next?.action === 'say' && next.actor === l.actor
           return (
             <li key={l.id} data-from={me ? 'ahmed' : 'session'}
               className={cn('group relative grid grid-cols-[1.75rem_minmax(0,1fr)] gap-x-3 rounded-md px-1 py-1', !cont && 'mt-2',
-                me ? 'bg-lamp-soft py-2 pr-2 pl-2 shadow-[inset_3px_0_0_var(--lamp)]' : 'hover:bg-raised/40')}>
+                me ? 'bg-lamp-soft py-2 pr-2 pl-2 shadow-[inset_3px_0_0_var(--lamp)]' : 'hover:bg-raised/40',
+                me && cont && '-mt-0.5 rounded-t-none pt-0.5', me && contNext && 'rounded-b-none pb-1')}>
               {cont ? <span /> : <Tile actor={l.actor} />}
               <div className="min-w-0">
                 {!cont && (
