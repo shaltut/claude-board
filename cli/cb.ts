@@ -19,7 +19,7 @@ const HELP = `cb — Claude Board (http://localhost:4747)
   cb move <id> <status> ["note"]             status: backlog next in_progress blocked review done cancelled
   cb done <id> "summary" [--pr x] [--commit x] [--branch x] [--link k=v]
   cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x]
-  cb log <project> "what happened" [-t id]
+  cb log <project|task id> "what happened" [-t id]   (cb log 130 "..." logs on task #130)
   cb ask <project> "question" -o "Label (Recommended)=why" -o "Label=tradeoff"... [--multi] [-c "context"] [--blocking -t id] [--free: no options]
   cb tell <session> "<msg>"                  message one session; it arrives in that session by itself
   cb huddle open "<topic>" <session>... [-t id]   discussion group with other sessions (same project)
@@ -298,7 +298,14 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       return { out: `#${args[0].replace('#', '')} updated` };
     }
     case 'log':
-      need(2, 'log <project> "summary"');
+      need(2, 'log <project|task id> "summary"');
+      // `cb log 130 "..."` means task #130 (sessions kept typing it), not a project named "130"
+      if (/^#?\d+$/.test(args[0]) && !o.task) {
+        const [t] = await sql`select project from cb.tasks where id = ${Number(args[0].replace('#', ''))}`;
+        if (!t) throw new Error(`no task #${args[0].replace('#', '')}`);
+        o.task = args[0].replace('#', '');
+        args[0] = t.project;
+      }
       await guard(o.task);
       await callFn('log', { project: args[0], summary: args.slice(1).join(' '), task_id: o.task ?? null, actor });
       return { out: 'logged' };
