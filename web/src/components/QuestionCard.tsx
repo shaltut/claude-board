@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronRight, CornerDownLeft } from 'lucide-react'
+import { Check, ChevronRight, CornerDownLeft, CornerDownRight, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { rpc, useUsers, type Question } from '@/lib/api'
@@ -12,20 +12,28 @@ import { Kbd } from '@/components/ui/kbd'
 import { ActorChip, ProjectChip, TaskId } from './Chips'
 import { Md } from './Md'
 
-/** An open question from Claude, answerable in place. Draft text lives here, keyed by question id,
- *  so live refetches never wipe what Ahmed is typing. */
-export function QuestionCard({ q, onAnswered, guest }: { q: Question; onAnswered?: (id: number) => void; guest?: boolean }) {
+const RECOMMENDED = /\s*\(recommended\)\s*$/i
+
+/** An open question from Claude, answerable in place: one click on an option sends it.
+ *  Draft text lives here, keyed by question id, so live refetches never wipe what Ahmed is typing.
+ *  On success the lamp turns green and the strip leaves; onCleared fires once it has gone. */
+export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
+  q: Question; onAnswered?: (id: number) => void; onClearing?: (q: Question) => void; onCleared?: (id: number) => void; guest?: boolean
+}) {
   const qc = useQueryClient()
   const [text, setText] = useState('')
   const [picked, setPicked] = useState<string[]>([])
   const [showContext, setShowContext] = useState(false)
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [cleared, setCleared] = useState(false)
 
-  async function send(answer: string) {
-    if (!answer.trim()) return
-    setBusy(true)
+  async function send(answer: string, via = '__text') {
+    if (!answer.trim() || busy) return
+    setBusy(via)
     try {
       await rpc('answer', { id: q.id, answer })
+      onClearing?.(q)
+      setCleared(true)
       toast.success(`Answered Q${q.id}`, {
         description: answer.length > 80 ? answer.slice(0, 80) + '…' : answer,
         action: onAnswered ? { label: 'Change', onClick: () => onAnswered(q.id) } : undefined,
@@ -34,81 +42,98 @@ export function QuestionCard({ q, onAnswered, guest }: { q: Question; onAnswered
     } catch (e: any) {
       toast.error(`Could not answer Q${q.id}`, { description: e.message })
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
   const withNote = (base: string) => (text.trim() ? `${base} — ${text.trim()}` : base)
+  const sendTyped = () => send(q.multi && picked.length ? withNote(picked.join('; ')) : text)
   const onKey = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault()
-      send(q.multi && picked.length ? withNote(picked.join('; ')) : text)
-    }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendTyped() }
   }
+  const holding = q.blocking && !cleared
 
   return (
-    <article className={cn('rounded-lg border bg-card p-4 sm:p-5',
-      q.blocking && 'border-dawn/50 bg-[color-mix(in_oklab,var(--dawn)_7%,var(--card))]')}
+    <article data-cleared={cleared || undefined}
+      onAnimationEnd={(e) => { if (cleared && e.target === e.currentTarget) onCleared?.(q.id) }}
+      className={cn('relative grid grid-cols-[1.75rem_minmax(0,1fr)] rounded-lg border bg-card py-4 pr-4 transition-[border-color,box-shadow] duration-300 sm:grid-cols-[2.5rem_minmax(0,1fr)] sm:py-5 sm:pr-5',
+        holding && 'shadow-[inset_3px_0_0_var(--lamp)]',
+        cleared && 'clearing shadow-[inset_3px_0_0_var(--clear)]')}
       aria-labelledby={`q${q.id}-body`}>
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        <span className="font-mono text-dawn">Q{q.id}</span>
-        <ProjectChip slug={q.project} />
-        <ActorChip actor={q.asked_by} />
-        <span>{ago(q.created_at)}</span>
-        {q.task_id && (
-          <button onClick={() => go({ task: q.task_id! })} className="hover:text-foreground">
-            on <TaskId id={q.task_id} />
-          </button>
+      <div className="flex justify-center pt-[7px]">
+        {cleared
+          ? <span className="size-2.5 rounded-full bg-clear shadow-[0_0_0_3px_color-mix(in_oklab,var(--clear)_22%,transparent),0_0_12px_var(--clear)]" title="Answered" />
+          : <span className={cn('lamp size-2.5', holding && 'lamp-breathe')} title={q.blocking ? 'Holding work until you answer' : 'Waiting on you'} />}
+      </div>
+
+      <div className="min-w-0">
+        <header className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <ActorChip actor={q.asked_by} />
+          <ProjectChip slug={q.project} />
+          <span className="tabular-nums">{ago(q.created_at)}</span>
+          {q.task_id && (
+            <button onClick={() => go({ task: q.task_id! })} title={`Open task #${q.task_id}`}
+              className={cn('-mx-1 inline-flex items-baseline gap-1 rounded px-1 hover:bg-raised hover:text-foreground', holding && 'font-medium text-lamp hover:text-lamp')}>
+              {holding ? 'holding' : 'on'} <TaskId id={q.task_id} className="text-current" />
+            </button>
+          )}
+          {holding && !q.task_id && <span className="font-medium text-lamp">holding work</span>}
+          <span className="callsign ml-auto text-[12px] text-muted-foreground/80">Q{q.id}</span>
+          {!guest && <AssignPicker q={q} />}
+        </header>
+
+        <p id={`q${q.id}-body`} className="mt-2.5 max-w-[68ch] text-base leading-normal text-pretty">{q.body}</p>
+
+        {q.context && (
+          <div className="mt-2">
+            <button onClick={() => setShowContext((s) => !s)} aria-expanded={showContext}
+              className="-ml-1 flex items-center gap-1 rounded px-1 py-0.5 text-xs text-muted-foreground hover:text-foreground">
+              <ChevronRight className={cn('size-3.5 transition-transform duration-150', showContext && 'rotate-90')} /> Context
+            </button>
+            {showContext && <Md className="mt-1 max-w-[68ch] border-l-2 pl-3 text-muted-foreground">{q.context}</Md>}
+          </div>
         )}
-        {q.blocking && <span className="ml-auto rounded bg-dawn px-1.5 py-px font-medium text-background">Blocking a task</span>}
-        {!guest && <AssignPicker q={q} />}
-      </header>
 
-      <p id={`q${q.id}-body`} className="mt-3 text-[15px] leading-relaxed text-pretty">{q.body}</p>
+        {q.options && q.options.length > 0 && (
+          <div className="mt-4 grid gap-1.5" role={q.multi ? 'group' : undefined} aria-label={q.multi ? 'Pick any' : undefined}>
+            {q.multi && <p className="mb-0.5 text-xs text-muted-foreground">Pick any that apply, then send.</p>}
+            {q.options.map((o) => {
+              const label = o.label.replace(RECOMMENDED, '')
+              const rec = RECOMMENDED.test(o.label)
+              const on = picked.includes(o.label) || busy === o.label
+              return (
+                <button key={o.label} disabled={!!busy || cleared} aria-pressed={q.multi ? on : undefined}
+                  onClick={() => q.multi ? setPicked((p) => on ? p.filter((x) => x !== o.label) : [...p, o.label]) : send(withNote(label), o.label)}
+                  className={cn('group/opt flex min-h-11 items-start gap-3 rounded-md border bg-background/50 px-3 py-2.5 text-left transition-[border-color,background-color] duration-150',
+                    'hover:border-foreground/35 hover:bg-background disabled:cursor-default',
+                    on && 'border-foreground bg-background')}>
+                  <span className={cn('mt-0.5 grid size-4 shrink-0 place-items-center border border-foreground/30 transition-colors group-hover/opt:border-foreground/70',
+                    q.multi ? 'rounded-[4px]' : 'rounded-full', on && 'border-foreground bg-foreground text-background')}>
+                    {on && (busy === o.label ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" strokeWidth={3} />)}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-baseline gap-2">
+                      <span className="text-sm font-medium">{label}</span>
+                      {rec && <span className="ml-auto shrink-0 rounded-[3px] bg-raised px-1.5 py-px text-[11px] font-medium text-muted-foreground">Recommended</span>}
+                    </span>
+                    {o.description && <span className="mt-0.5 block text-[13px] leading-snug text-muted-foreground">{o.description}</span>}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
 
-      {q.context && (
-        <div className="mt-2">
-          <button onClick={() => setShowContext((s) => !s)} aria-expanded={showContext}
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-            <ChevronRight className={cn('size-3.5 transition-transform', showContext && 'rotate-90')} /> Context
-          </button>
-          {showContext && <Md className="mt-1 border-l-2 pl-3 text-muted-foreground">{q.context}</Md>}
+        <div className="mt-3 flex items-end gap-2">
+          <Textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} rows={1} disabled={cleared}
+            placeholder={q.options?.length ? (q.multi ? 'Add a note (optional)…' : 'Or write your own answer; a note here rides along with the option you click…') : 'Write your answer…'}
+            className="min-h-9 resize-y bg-background/50 text-sm" aria-label={`Answer to Q${q.id}`} />
+          <Button disabled={!!busy || cleared || (q.multi ? !picked.length && !text.trim() : !text.trim())}
+            onClick={sendTyped} className="h-9 shrink-0 gap-1.5" title="Send (Ctrl+Enter)">
+            {busy === '__text' && <Loader2 className="size-3.5 animate-spin" />}
+            Send <Kbd className="hidden bg-transparent text-current opacity-70 sm:inline-flex"><CornerDownLeft className="size-3" /></Kbd>
+          </Button>
         </div>
-      )}
-
-      {q.options && q.options.length > 0 && (
-        <div className="mt-4 grid gap-2" role={q.multi ? 'group' : undefined} aria-label={q.multi ? 'Pick any' : undefined}>
-          {q.multi && <p className="text-xs text-muted-foreground">Pick any that apply, then send.</p>}
-          {q.options.map((o) => {
-            const on = picked.includes(o.label)
-            return (
-              <button key={o.label} disabled={busy}
-                onClick={() => q.multi ? setPicked((p) => on ? p.filter((x) => x !== o.label) : [...p, o.label]) : send(withNote(o.label.replace(/\s*\(recommended\)\s*$/i, '')))}
-                className={cn('group flex items-start gap-3 rounded-md border bg-background/60 px-3 py-2.5 text-left transition-colors hover:border-dawn/70 hover:bg-background',
-                  on && 'border-dawn bg-background')}>
-                <span className={cn('mt-0.5 grid size-4 shrink-0 place-items-center border text-dawn',
-                  q.multi ? 'rounded-[4px]' : 'rounded-full', on && 'border-dawn bg-dawn text-background')}>
-                  {on && <Check className="size-3" />}
-                </span>
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium">{o.label}</span>
-                  {o.description && <span className="block text-[13px] text-muted-foreground">{o.description}</span>}
-                </span>
-              </button>
-            )
-          })}
-        </div>
-      )}
-
-      <div className="mt-3 flex items-end gap-2">
-        <Textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} rows={1}
-          placeholder={q.options?.length ? (q.multi ? 'Add a note (optional)' : 'Or write your own answer; clicking an option adds this as a note') : 'Write your answer'}
-          className="min-h-9 resize-y bg-background/60 text-sm" aria-label={`Answer to Q${q.id}`} />
-        <Button disabled={busy || (q.multi ? !picked.length && !text.trim() : !text.trim())}
-          onClick={() => send(q.multi && picked.length ? withNote(picked.join('; ')) : text)}
-          className="shrink-0 gap-1.5" title="Send (Ctrl+Enter)">
-          Send <Kbd className="hidden bg-transparent text-current sm:inline-flex"><CornerDownLeft className="size-3" /></Kbd>
-        </Button>
       </div>
     </article>
   )
@@ -127,27 +152,30 @@ export function AnsweredRow({ q, editing, onEdit }: { q: Question; editing: bool
     } catch (e: any) { toast.error(e.message) }
   }
   return (
-    <li className="py-3">
-      <div className="flex items-baseline gap-2 text-sm">
-        <span className="font-mono text-xs text-muted-foreground">Q{q.id}</span>
-        <span className="min-w-0 flex-1 truncate text-muted-foreground">{q.body}</span>
-        {!editing && <button onClick={() => onEdit(true)} className="text-xs text-muted-foreground hover:text-foreground">Change</button>}
-      </div>
-      {editing ? (
-        <div className="mt-2 flex gap-2">
-          <Textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} rows={2} className="text-sm"
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save(); if (e.key === 'Escape') onEdit(false) }} />
-          <div className="flex flex-col gap-1">
-            <Button size="sm" onClick={save}>Save</Button>
-            <Button size="sm" variant="ghost" onClick={() => onEdit(false)}>Cancel</Button>
-          </div>
+    <li className="grid grid-cols-[1.75rem_minmax(0,1fr)] py-3 sm:grid-cols-[2.5rem_minmax(0,1fr)]">
+      <span className="mt-[5px] size-2.5 justify-self-center rounded-full border-2 border-clear" title="Answered, not yet delivered" />
+      <div className="min-w-0">
+        <div className="flex items-baseline gap-2 text-sm">
+          <ActorChip actor={q.asked_by} />
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">{q.body}</span>
+          {!editing && <button onClick={() => onEdit(true)} className="rounded px-1.5 text-xs text-muted-foreground hover:bg-raised hover:text-foreground">Change</button>}
         </div>
-      ) : (
-        <p className="mt-1 pl-7 text-sm">
-          <span className="text-dawn">→</span> {q.answer}
-          <span className="ml-2 text-xs text-muted-foreground">for {q.asked_by}, waiting for the orchestrator</span>
-        </p>
-      )}
+        {editing ? (
+          <div className="mt-2 flex gap-2">
+            <Textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} rows={2} className="text-sm" aria-label={`New answer to Q${q.id}`}
+              onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save(); if (e.key === 'Escape') onEdit(false) }} />
+            <div className="flex flex-col gap-1">
+              <Button size="sm" onClick={save}>Save</Button>
+              <Button size="sm" variant="ghost" onClick={() => onEdit(false)}>Cancel</Button>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-1 flex items-start gap-1.5 text-sm">
+            <CornerDownRight className="mt-0.5 size-3.5 shrink-0 text-clear" aria-label="Your answer" />
+            <span className="min-w-0">{q.answer}</span>
+          </p>
+        )}
+      </div>
     </li>
   )
 }
@@ -167,10 +195,10 @@ function AssignPicker({ q }: { q: Question }) {
     }
   }
   return (
-    <label className={cn('flex items-center gap-1', !q.blocking && 'ml-auto')}>
-      For
+    <label className="flex items-center gap-1">
+      <span>For</span>
       <select value={q.assigned_to ?? ''} onChange={(e) => assign(e.target.value)}
-        className="rounded border bg-transparent px-1 py-0.5 text-xs text-foreground">
+        className="h-6 rounded border bg-card px-1 text-xs text-foreground hover:border-input">
         <option value="">Ahmed</option>
         {users.map((u) => <option key={u.name} value={u.name}>{u.display}</option>)}
       </select>
