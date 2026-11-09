@@ -13,17 +13,34 @@ export function tasks(project?: string, status?: string) {
   const filter = status
     ? sql`status = ${status}`
     : sql`status <> 'cancelled' and (status <> 'done' or done_at > now() - interval '7 days')`;
-  return sql`select * from cb.tasks where ${filter} ${proj(project)} order by status, priority, rank, id`;
+  return sql`select *, cb._waits_on(id) as waits_on from cb.tasks where ${filter} ${proj(project)} order by status, priority, rank, id`;
 }
 
 export async function task(id: number) {
-  const [t] = await sql`select * from cb.tasks where id = ${id}`;
+  const [t] = await sql`select *, cb._waits_on(id) as waits_on from cb.tasks where id = ${id}`;
   if (!t) return null;
-  const [events, questions] = await Promise.all([
+  const [events, questions, blockers, blocks, [epic]] = await Promise.all([
     sql`select * from cb.events where task_id = ${id} order by at desc, id desc`,
     sql`select * from cb.questions where task_id = ${id} order by id desc`,
+    sql`select t.id, t.title, t.status, t.assignee from cb.task_blockers b join cb.tasks t on t.id = b.blocker where b.task = ${id} order by t.id`,
+    sql`select t.id, t.title, t.status, t.assignee from cb.task_blockers b join cb.tasks t on t.id = b.task where b.blocker = ${id} order by t.id`,
+    sql`select id, title from cb.epics where id = ${t.epic_id ?? 0}`,
   ]);
-  return { task: t, events, questions };
+  return { task: t, events, questions, blockers, blocks, epic: epic ?? null };
+}
+
+export async function epics(project?: string) {
+  const [{ l }] = await sql`select cb.epics_list(${project ?? null}) as l`;
+  return l;
+}
+
+/** One epic with its progress, and its steps in Ahmed's order. */
+export async function epic(id: number) {
+  const [{ l }] = await sql`select cb.epics_list(null) as l`;
+  const e = l.find((x: any) => x.id === id);
+  if (!e) return null;
+  const steps = await sql`select *, cb._waits_on(id) as waits_on from cb.tasks where epic_id = ${id} order by epic_rank, id`;
+  return { epic: e, steps };
 }
 
 export function questions(project?: string, status?: string) {

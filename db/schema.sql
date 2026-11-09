@@ -87,7 +87,7 @@ create table if not exists cb.events (
   data        jsonb not null default '{}'
 );
 alter table cb.events drop constraint if exists events_kind_check;
-alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user'));
+alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user','epic'));
 
 alter table cb.questions add column if not exists multi boolean not null default false;
 
@@ -96,6 +96,41 @@ alter table cb.questions add column if not exists multi boolean not null default
 alter table cb.tasks add column if not exists type text not null default 'task';
 alter table cb.tasks drop constraint if exists tasks_type_check;
 alter table cb.tasks add constraint tasks_type_check check (type in ('task','bug','feature','change','chore','research'));
+
+-- Epics (#341): one level of ordered steps (tasks) inside one project. Only Ahmed creates, renames, closes and
+-- deletes them (dashboard_only); sessions add their own tasks. status is Ahmed's close; the status shown
+-- (cb.epics_list) is done when he closed it or every step is done or cancelled. Order (epic_rank) never blocks.
+create table if not exists cb.epics (
+  id         bigint generated always as identity primary key,
+  project    text not null references cb.projects(slug) on update cascade,
+  title      text not null,
+  goal       text not null default '',
+  status     text not null default 'open' check (status in ('open', 'done')),
+  created_by text not null default 'ahmed',
+  created_at timestamptz not null default now(),
+  closed_at  timestamptz
+);
+alter table cb.tasks add column if not exists epic_id bigint references cb.epics(id) on delete set null;
+alter table cb.tasks add column if not exists epic_rank double precision not null default 0;
+create index if not exists tasks_epic on cb.tasks (epic_id, epic_rank) where epic_id is not null;
+
+-- Task-on-task blockers (#341): task waits on blocker. Same project only, no self-links, no cycles (cb.task_blockers_check).
+-- How they combine with a question block (tasks.blocked_on): a task is held while blocked_on is set OR any of its
+-- blockers is open (not done/cancelled). Whichever clears last releases it: a question's answer or withdrawal
+-- clears blocked_on and keeps the task Blocked while a blocker is open; a blocker finishing (or being removed)
+-- releases the task only when no blocker is open and blocked_on is null. The release target differs on purpose:
+-- the question path keeps its old rule (in_progress if assigned, else next); the blocker path always goes to Next
+-- (the assignee keeps it, and is told). Ahmed may still drag a task out of Blocked by hand: the release only
+-- touches tasks whose status is still blocked. A manual Blocked (no question, no blocker) counts as released.
+create table if not exists cb.task_blockers (
+  task       bigint not null references cb.tasks(id) on delete cascade,
+  blocker    bigint not null references cb.tasks(id) on delete cascade,
+  created_by text not null default 'unknown',
+  created_at timestamptz not null default now(),
+  primary key (task, blocker),
+  constraint task_blockers_not_self check (task <> blocker)
+);
+create index if not exists task_blockers_blocker on cb.task_blockers (blocker);
 
 -- Which actor a session (herdr pane on a machine) is: set by `cb iam`, used by the CLI and the relay.
 create table if not exists cb.sessions (
@@ -175,6 +210,18 @@ drop function if exists cb._has_reviewer cascade;
 drop function if exists cb.lock_take cascade;
 drop function if exists cb.lock_release cascade;
 drop function if exists cb.lock_queue cascade;
+drop function if exists cb.norm_epic cascade;
+drop function if exists cb.epic_create cascade;
+drop function if exists cb.epic_update cascade;
+drop function if exists cb.epic_close cascade;
+drop function if exists cb.epic_delete cascade;
+drop function if exists cb._epic_event cascade;
+drop function if exists cb.epics_list cascade;
+drop function if exists cb._waits_on cascade;
+drop function if exists cb.task_blockers_check cascade;
+drop function if exists cb.task_block cascade;
+drop function if exists cb.task_unblock cascade;
+drop function if exists cb.tasks_unblock cascade;
 
 -- Only Ahmed's dashboard (the web server sets application_name 'cb-web' on its writes) may act as
 -- ahmed: the relay tells sessions to act on his lines, so a session must not be able to speak as him.
@@ -190,12 +237,12 @@ begin
   end if;
 end $$;
 
--- Things only Ahmed does, from his dashboard, whatever name the caller gives (or none): guest links.
+-- Things only Ahmed does, from his dashboard, whatever name the caller gives (or none): guest links, epics.
 -- ponytail: the same deterrent as not_ahmed (PGAPPNAME=cb-web gets past it), not auth.
-create function cb.dashboard_only() returns void language plpgsql as $$
+create function cb.dashboard_only(page text default 'People') returns void language plpgsql as $$
 begin
   if current_setting('application_name') <> 'cb-web' then
-    raise exception 'only Ahmed can do this, on the People page of the dashboard';
+    raise exception 'only Ahmed can do this, on the % page of the dashboard', page;
   end if;
 end $$;
 
@@ -304,6 +351,7 @@ begin
     get diagnostics n = row_count;
     update cb.questions q set project = t where q.project = a;
     update cb.events e set project = t where e.project = a;
+    update cb.epics e set project = t where e.project = a; -- epics follow their steps
     update cb.project_aliases pa set slug = t where pa.slug = a;
     -- people on the merged project follow their work (#315 review); the FK cascade would drop them
     insert into cb.user_projects (user_name, project) select up.user_name, t from cb.user_projects up where up.project = a
@@ -344,9 +392,20 @@ begin
   return slug;
 end $$;
 
--- Before-row trigger: rank on entering a status, done_at, blocked_on, updated_at.
+-- Before-row trigger: rank on entering a status, done_at, blocked_on, epic (same project, joins at the end), updated_at.
 create function cb.tasks_before() returns trigger language plpgsql as $$
+declare ep text;
 begin
+  -- only when epic_id itself changes: a project slug rename cascades to both tables and must not trip it
+  if new.epic_id is not null and (tg_op = 'INSERT' or new.epic_id is distinct from old.epic_id) then
+    select e.project into ep from cb.epics e where e.id = new.epic_id;
+    if ep is distinct from new.project then
+      raise exception 'E% is in %, #% in %: an epic holds one project''s tasks', new.epic_id, ep, new.id, new.project;
+    end if;
+    if tg_op = 'INSERT' or new.epic_rank is not distinct from old.epic_rank then
+      select coalesce(max(t.epic_rank) + 1024, 0) into new.epic_rank from cb.tasks t where t.epic_id = new.epic_id and t.id <> new.id;
+    end if;
+  end if;
   if tg_op = 'INSERT' or new.status is distinct from old.status then
     if tg_op = 'INSERT' or new.rank is not distinct from old.rank then
       select case when new.priority = 'P0' then coalesce(min(t.rank) - 1024, 0)
@@ -358,7 +417,7 @@ begin
     if new.status <> 'blocked' then new.blocked_on := null; end if;
   end if;
   if tg_op = 'UPDATE' and new.updated_at is not distinct from old.updated_at
-     and (to_jsonb(new) - 'rank' - 'updated_at' - 'created_at') is distinct from (to_jsonb(old) - 'rank' - 'updated_at' - 'created_at') then
+     and (to_jsonb(new) - 'rank' - 'epic_rank' - 'updated_at' - 'created_at') is distinct from (to_jsonb(old) - 'rank' - 'epic_rank' - 'updated_at' - 'created_at') then
     new.updated_at := now();
   end if;
   return new;
@@ -383,7 +442,7 @@ begin
   changed := array(
     select n.key from jsonb_each(to_jsonb(new)) n
     where n.value is distinct from to_jsonb(old) -> n.key
-      and n.key not in ('rank', 'updated_at', 'status', 'done_at', 'blocked_on', 'created_at', 'created_by', 'id'));
+      and n.key not in ('rank', 'epic_rank', 'updated_at', 'status', 'done_at', 'blocked_on', 'created_at', 'created_by', 'id'));
   -- Who had it before: lets cb.mine show a task taken from you.
   if new.assignee is distinct from old.assignee then
     extra := jsonb_build_object('assignee', jsonb_build_object('from', old.assignee, 'to', new.assignee)) || extra;
@@ -424,10 +483,20 @@ create or replace trigger events_notify after insert on cb.events
   for each statement execute function cb.notify();
 create or replace trigger projects_notify after insert or update or delete on cb.projects
   for each statement execute function cb.notify();
+create or replace trigger epics_notify after insert or update or delete on cb.epics
+  for each statement execute function cb.notify();
+create or replace trigger task_blockers_notify after insert or update or delete on cb.task_blockers
+  for each statement execute function cb.notify();
+
+-- The open blockers a task waits on (not done or cancelled), lowest id first: "waits on #12".
+create function cb._waits_on(tid bigint) returns bigint[] language sql stable as $$
+  select array(select b.blocker from cb.task_blockers b join cb.tasks x on x.id = b.blocker
+                where b.task = $1 and x.status not in ('done', 'cancelled') order by b.blocker)
+$$;
 
 create function cb.task_add(project text, title text, body text default '', status text default 'backlog',
                             priority text default 'P2', labels jsonb default '[]', links jsonb default '{}',
-                            assignee text default null, actor text default null, type text default null)
+                            assignee text default null, actor text default null, type text default null, epic text default null)
 returns bigint language plpgsql as $$
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); p text := cb.ensure_project(project); new_id bigint;
@@ -436,10 +505,10 @@ begin
   if coalesce(trim(title), '') = '' then raise exception 'title is required'; end if;
   -- work added through an alias ("tawuniya") keeps that stream's tags
   l := l || array(select g from cb.project_aliases pa, unnest(pa.tags) g where pa.alias = cb.slug(project) and g <> all(l));
-  insert into cb.tasks (project, title, body, status, priority, labels, links, assignee, created_by, type)
+  insert into cb.tasks (project, title, body, status, priority, labels, links, assignee, created_by, type, epic_id)
   values (p, trim(title), coalesce(body, ''), cb.norm_status(status), cb.norm_priority(priority),
           l, coalesce(links, '{}'),
-          coalesce(assignee, case when cb.norm_status(status) = 'in_progress' then a end), a, cb.norm_type(type))
+          coalesce(assignee, case when cb.norm_status(status) = 'in_progress' then a end), a, cb.norm_type(type), cb.norm_epic(epic))
   returning cb.tasks.id into new_id;
   return new_id;
 end $$;
@@ -459,15 +528,34 @@ end $$;
 create function cb.task_update(id text, fields jsonb, actor text default null)
 returns void language plpgsql as $$
 #variable_conflict use_variable
-declare tid bigint := cb.norm_id(id); bad text;
+declare tid bigint := cb.norm_id(id); bad text; cur cb.tasks; ep bigint;
 begin
   perform cb.set_actor(actor);
   select string_agg(k, ', ') into bad from jsonb_object_keys(coalesce(fields, '{}')) k
-   where k not in ('title','body','priority','assignee','labels','links','project','rank','type');
+   where k not in ('title','body','priority','assignee','labels','links','project','rank','type','epic','epic_rank');
   if bad is not null then
-    raise exception 'unknown field(s) %; allowed: title, body, priority, assignee, labels, links, project, rank, type', bad;
+    raise exception 'unknown field(s) %; allowed: title, body, priority, assignee, labels, links, project, rank, type, epic, epic_rank', bad;
+  end if;
+  select * into cur from cb.tasks t where t.id = tid;
+  if not found then raise exception 'task #% not found', tid; end if;
+  ep := case when fields ? 'epic' then cb.norm_epic(fields ->> 'epic') else cur.epic_id end;
+  -- an epic and its blockers stay in one project: moving the task alone would split them
+  if fields ? 'project' and cb.resolve(fields ->> 'project') <> cur.project then
+    if ep is not null then
+      raise exception '#% is in epic E%: take it out first (cb edit % --epic none)', tid, ep, tid;
+    end if;
+    if exists (select 1 from cb.task_blockers b where b.task = tid or b.blocker = tid) then
+      raise exception '#% has blockers or blocks other tasks in %: cb unblock them first', tid, cur.project;
+    end if;
+  end if;
+  if ep is distinct from cur.epic_id then
+    perform set_config('cb.note', case when ep is null then 'removed from epic E' || cur.epic_id
+                                       when cur.epic_id is null then 'added to epic E' || ep
+                                       else 'moved from epic E' || cur.epic_id || ' to E' || ep end, true);
   end if;
   update cb.tasks t set
+    epic_id   = ep,
+    epic_rank = case when fields ? 'epic_rank' then (fields ->> 'epic_rank')::double precision else t.epic_rank end,
     type     = case when fields ? 'type' then cb.norm_type(fields ->> 'type') else t.type end,
     title    = case when fields ? 'title' then fields ->> 'title' else t.title end,
     body     = case when fields ? 'body' then coalesce(fields ->> 'body', '') else t.body end,
@@ -478,7 +566,7 @@ begin
     project  = case when fields ? 'project' then cb.ensure_project(fields ->> 'project') else t.project end,
     rank     = case when fields ? 'rank' then (fields ->> 'rank')::double precision else t.rank end
   where t.id = tid;
-  if not found then raise exception 'task #% not found', tid; end if;
+  perform set_config('cb.note', '', true);
 end $$;
 
 create function cb.task_done(id text, summary text, links jsonb default '{}', actor text default null)
@@ -651,6 +739,10 @@ begin
   perform cb.set_actor(actor);
   update cb.questions q set status = 'withdrawn' where q.id = qid and q.status in ('open', 'answered');
   if not found then raise exception 'question Q% not found or already delivered/withdrawn', qid; end if;
+  -- still waiting on a task (see cb.task_blockers): the question no longer holds it, the blocker does
+  perform set_config('cb.note', 'Q' || qid || ' withdrawn; still waits on its blocking tasks', true);
+  update cb.tasks t set blocked_on = null where t.blocked_on = qid and t.status = 'blocked' and cardinality(cb._waits_on(t.id)) > 0;
+  perform set_config('cb.note', '', true);
   update cb.tasks t set status = case when t.assignee is null then 'next' else 'in_progress' end
    where t.blocked_on = qid and t.status = 'blocked';
 end $$;
@@ -677,6 +769,9 @@ begin
   if cur = 'delivered' then return; end if;
   if cur <> 'answered' then raise exception 'question Q% is %, not answered', qid, cur; end if;
   update cb.questions q set status = 'delivered', delivered_at = now(), delivered_to = delivered_to where q.id = qid;
+  -- still waiting on a task (see cb.task_blockers): the question no longer holds it, the blocker does
+  perform set_config('cb.note', 'Q' || qid || ' answered; still waits on its blocking tasks', true);
+  update cb.tasks t set blocked_on = null where t.blocked_on = qid and t.status = 'blocked' and cardinality(cb._waits_on(t.id)) > 0;
   perform set_config('cb.note', 'unblocked: Q' || qid || ' answered', true);
   update cb.tasks t set status = case when t.assignee is null then 'next' else 'in_progress' end
    where t.blocked_on = qid and t.status = 'blocked';
@@ -710,7 +805,8 @@ end $$;
 drop function if exists cb._brief_tasks cascade;
 create function cb._brief_tasks(p text, tg text, s text, lim int, ty text default null) returns jsonb language sql stable as $$
   select coalesce(jsonb_agg(x order by x.priority, x.rank), '[]') from (
-    select t.id, t.project, t.title, t.priority, t.assignee, t.updated_at, t.blocked_on, t.rank, t.labels, t.type
+    select t.id, t.project, t.title, t.priority, t.assignee, t.updated_at, t.blocked_on, t.rank, t.labels, t.type,
+           t.epic_id, cb._waits_on(t.id) as waits_on
       from cb.tasks t where t.status = s and (p is null or t.project = p) and (tg is null or tg = any(t.labels))
                         and (ty is null or t.type = ty)
      order by t.priority, t.rank limit lim) x
@@ -1334,3 +1430,190 @@ begin
      where (p is null or t.project = p) and cb._pr_no(t.links) is not null
        and (t.status not in ('done', 'cancelled') or t.updated_at > now() - interval '7 days')), '[]'));
 end $$;
+
+-- ---------------------------------------------------------------- epics and blockers (#341)
+
+-- "E3", "e3", "#3" or "3" → 3; null, '' or "none" → null (out of its epic). An unknown epic is an error.
+create function cb.norm_epic(epic text) returns bigint language plpgsql stable as $$
+#variable_conflict use_variable
+declare v text := lower(trim(coalesce(epic, '')));
+begin
+  if v in ('', 'none', 'null') then return null; end if;
+  v := ltrim(ltrim(v, '#'), 'e');
+  if v !~ '^[0-9]+$' then raise exception 'bad epic "%"; use E3 (or none to take it out)', epic; end if;
+  if not exists (select 1 from cb.epics e where e.id = v::bigint) then raise exception 'no epic E%: cb epics lists them', v; end if;
+  return v::bigint;
+end $$;
+
+-- One audit row per epic change (kind epic, data.action). Sessions are not pushed these: epics are Ahmed's plan.
+create function cb._epic_event(e cb.epics, action text, summary text, a text) returns void language sql as $$
+  insert into cb.events (actor, project, kind, summary, data)
+  values ($4, $1.project, 'epic', $3, jsonb_build_object('epic', $1.id, 'action', $2))
+$$;
+
+create function cb.epic_create(project text, title text, goal text default '', actor text default null) returns bigint language plpgsql as $$
+#variable_conflict use_variable
+declare a text; p text; e cb.epics;
+begin
+  perform cb.dashboard_only('Epics');
+  a := cb.set_actor(actor);
+  p := cb.read_project(project);
+  if p is null then raise exception 'project is required'; end if;
+  if coalesce(trim(title), '') = '' then raise exception 'title is required'; end if;
+  insert into cb.epics (project, title, goal, created_by) values (p, trim(title), coalesce(trim(goal), ''), a) returning * into e;
+  perform cb._epic_event(e, 'create', 'E' || e.id || ' created: ' || e.title, a);
+  return e.id;
+end $$;
+
+-- Rename (title) and/or change the goal; null leaves a field as it is.
+create function cb.epic_update(id text, title text default null, goal text default null, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; was cb.epics; e cb.epics;
+begin
+  perform cb.dashboard_only('Epics');
+  a := cb.set_actor(actor);
+  if title is not null and trim(title) = '' then raise exception 'title is required'; end if;
+  select * into was from cb.epics x where x.id = cb.norm_epic(id);
+  update cb.epics x set title = coalesce(trim(title), x.title), goal = coalesce(trim(goal), x.goal) where x.id = was.id returning * into e;
+  if e.title <> was.title then
+    perform cb._epic_event(e, 'rename', 'E' || e.id || ' renamed: ' || was.title || ' → ' || e.title, a);
+  elsif e.goal <> was.goal then
+    perform cb._epic_event(e, 'goal', 'E' || e.id || ' goal: ' || left(e.goal, 120), a);
+  end if;
+end $$;
+
+-- Close (done) or reopen. Its steps keep their status.
+create function cb.epic_close(id text, closed boolean default true, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; e cb.epics; c boolean := coalesce(closed, true);
+begin
+  perform cb.dashboard_only('Epics');
+  a := cb.set_actor(actor);
+  update cb.epics x set status = case when c then 'done' else 'open' end, closed_at = case when c then now() end
+   where x.id = cb.norm_epic(id) and x.status <> case when c then 'done' else 'open' end returning * into e;
+  if e.id is not null then
+    perform cb._epic_event(e, case when c then 'close' else 'reopen' end, 'E' || e.id || case when c then ' closed: ' else ' reopened: ' end || e.title, a);
+  end if;
+end $$;
+
+-- Delete an epic; its tasks stay, out of any epic (one summary event, not one per task).
+create function cb.epic_delete(id text, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; e cb.epics; n int;
+begin
+  perform cb.dashboard_only('Epics');
+  a := cb.set_actor(actor);
+  select * into e from cb.epics x where x.id = cb.norm_epic(id) for update;
+  perform set_config('cb.quiet', 'on', true);
+  update cb.tasks t set epic_id = null where t.epic_id = e.id;
+  get diagnostics n = row_count;
+  perform set_config('cb.quiet', '', true);
+  delete from cb.epics x where x.id = e.id;
+  perform cb._epic_event(e, 'delete', 'E' || e.id || ' deleted: ' || e.title || ' (' || n || ' tasks kept)', a);
+end $$;
+
+-- Epics with progress, open first. finished = done + cancelled; status done = Ahmed closed it, or every step finished.
+create function cb.epics_list(project text default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb.read_project(project);
+begin
+  return coalesce((select jsonb_agg(to_jsonb(x) order by x.status = 'done', x.id desc) from (
+    select e.id, e.project, e.title, e.goal, e.created_by, e.created_at, e.closed_at, e.status = 'done' as closed,
+           c.total, c.done, c.cancelled, c.done + c.cancelled as finished,
+           case when e.status = 'done' or (c.total > 0 and c.done + c.cancelled = c.total) then 'done' else 'open' end as status
+      from cb.epics e
+      cross join lateral (select count(*)::int as total, (count(*) filter (where t.status = 'done'))::int as done,
+                                 (count(*) filter (where t.status = 'cancelled'))::int as cancelled
+                            from cb.tasks t where t.epic_id = e.id) c
+     where p is null or e.project = p) x), '[]');
+end $$;
+
+-- Same project, no self-link, no cycle (however long), on every insert, whoever writes it.
+create function cb.task_blockers_check() returns trigger language plpgsql as $$
+declare tp text; bp text;
+begin
+  if new.task = new.blocker then raise exception '#% cannot block itself', new.task; end if;
+  select t.project into tp from cb.tasks t where t.id = new.task;
+  if not found then raise exception 'task #% not found', new.task; end if;
+  select t.project into bp from cb.tasks t where t.id = new.blocker;
+  if not found then raise exception 'task #% not found', new.blocker; end if;
+  if tp <> bp then raise exception '#% is in %, #% in %: blockers stay inside one project', new.blocker, bp, new.task, tp; end if;
+  -- one writer per project at a time, so two sessions can't each add half of a cycle
+  perform pg_advisory_xact_lock(hashtext('cb.blockers:' || tp));
+  if exists (with recursive up(id) as (select new.blocker
+                                       union select b.blocker from cb.task_blockers b join up on b.task = up.id)
+             select 1 from up where up.id = new.task) then
+    raise exception 'a cycle: #% already waits on #%, directly or through other tasks', new.blocker, new.task;
+  end if;
+  return new;
+end $$;
+
+create or replace trigger task_blockers_check before insert or update on cb.task_blockers
+  for each row execute function cb.task_blockers_check();
+
+-- task waits on blocker. An open blocker moves the task to Blocked (one event: moved, or a note if it already was).
+create function cb.task_block(task text, blocker text, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); tid bigint := cb.norm_id(task); bid bigint := cb.norm_id(blocker); ts text; bs text;
+begin
+  select t.status into ts from cb.tasks t where t.id = tid;
+  if not found then raise exception 'task #% not found', tid; end if;
+  select t.status into bs from cb.tasks t where t.id = bid;
+  if not found then raise exception 'task #% not found', bid; end if;
+  if ts in ('done', 'cancelled') then raise exception '#% is %: a finished task waits on nothing', tid, ts; end if;
+  insert into cb.task_blockers (task, blocker, created_by) values (tid, bid, a) on conflict do nothing;
+  if not found then return; end if; -- already there
+  perform set_config('cb.note', 'blocked by #' || bid || case when bs in ('done', 'cancelled') then ' (already ' || bs || ')' else '' end, true);
+  perform set_config('cb.data', jsonb_build_object('blocker', bid, 'action', 'block')::text, true);
+  update cb.tasks t set status = case when bs in ('done', 'cancelled') then t.status else 'blocked' end where t.id = tid;
+  perform set_config('cb.note', '', true);
+  perform set_config('cb.data', '', true);
+end $$;
+
+-- Remove a blocker. The last open hold gone (no other open blocker, no blocking question) → Next.
+create function cb.task_unblock(task text, blocker text, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); tid bigint := cb.norm_id(task); bid bigint := cb.norm_id(blocker); free boolean;
+begin
+  delete from cb.task_blockers b where b.task = tid and b.blocker = bid;
+  if not found then raise exception '#% is not blocked by #%', tid, bid; end if;
+  select t.status = 'blocked' and t.blocked_on is null and cardinality(cb._waits_on(t.id)) = 0 into free from cb.tasks t where t.id = tid;
+  perform set_config('cb.note', case when free then 'unblocked: #' || bid || ' removed as a blocker' else 'no longer blocked by #' || bid end, true);
+  perform set_config('cb.data', jsonb_build_object('blocker', bid, 'action', 'unblock')::text, true);
+  update cb.tasks t set status = case when free then 'next' else t.status end where t.id = tid;
+  perform set_config('cb.note', '', true);
+  perform set_config('cb.data', '', true);
+end $$;
+
+-- A blocker finished (done or cancelled): every task it held with nothing else holding it goes to Next. The moved
+-- event ("unblocked: #12 is done") reaches the assignee through the relay's events channel; a task with no assignee
+-- is a message to the project's orchestrators (orch@*, seen in the last day). Named after tasks_history on purpose:
+-- after-row triggers run in name order, so the blocker's own event is written before this changes cb.note.
+create function cb.tasks_unblock() returns trigger language plpgsql as $$
+declare note text := current_setting('cb.note', true); data text := current_setting('cb.data', true);
+        a text := coalesce(nullif(current_setting('cb.actor', true), ''), 'unknown');
+        why text := '#' || new.id || case when new.status = 'done' then ' is done' else ' was cancelled' end;
+begin
+  perform set_config('cb.note', 'unblocked: ' || why, true);
+  perform set_config('cb.data', jsonb_build_object('blocker', new.id)::text, true); -- not the blocker's links
+  with freed as (
+    update cb.tasks t set status = 'next'
+     where t.id in (select b.task from cb.task_blockers b where b.blocker = new.id)
+       and t.status = 'blocked' and t.blocked_on is null and cardinality(cb._waits_on(t.id)) = 0
+    returning t.id, t.title, t.project, t.assignee)
+  insert into cb.events (actor, project, kind, summary, data)
+  select a, f.project, 'message',
+         format('unblocked: #%s "%s" is in Next with no assignee (%s). Hand it out: cb next %s --as <worker>', f.id, left(f.title, 80), why, f.project),
+         jsonb_build_object('to', s.actor, 'task', f.id)
+    from freed f
+    join (select distinct s2.actor, s2.project from cb.sessions s2
+           where (s2.actor like 'orch@%' or s2.actor = 'orch') and s2.last_seen > now() - interval '1 day') s on s.project = f.project
+   where f.assignee is null;
+  perform set_config('cb.note', coalesce(note, ''), true);
+  perform set_config('cb.data', coalesce(data, ''), true);
+  return null;
+end $$;
+
+create or replace trigger tasks_unblock after update of status on cb.tasks
+  for each row when (new.status in ('done', 'cancelled') and old.status not in ('done', 'cancelled'))
+  execute function cb.tasks_unblock();

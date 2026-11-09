@@ -34,25 +34,30 @@ and Ahmed's view of what you do. Keep it true at all times. Use the `cb` command
     `cb bug claude-board "<title>" -b "..."`. You are its test user: report what confused you, too.
 12. The shared DB test lock lives on the board: `cb lock take db` before a run that needs it (it queues
     you if taken; a message says when it is yours), `cb lock release db` the moment the run ends.
+13. Epics and blockers. Ahmed groups tasks into epics (E3, `cb epics`); their order is a plan, not a lock.
+    Put your task in one with `--epic E3` on `cb add` or `cb edit`; never create or close an epic.
+    If a task cannot start before another task of your project is finished: `cb block <task> --by <other>`.
+    It waits in Blocked and returns to Next by itself when the other is done or cancelled (you are told).
+    `cb unblock <task> --by <other>` removes a blocker that no longer applies.
 
 ## Ask Ahmed (`cb help ask`)
-13. When you are unsure, ask on the board. Never use AskUserQuestion, and never stop to wait:
+14. When you are unsure, ask on the board. Never use AskUserQuestion, and never stop to wait:
     `cb ask <project> "<question>" -o "<Label (Recommended)>=<why>" -o "<Label>=<tradeoff>" -c "<context>"`
     - Options are required because Ahmed answers by clicking. Give 2-4, each with its explanation, the
       way you would in AskUserQuestion. Add `--multi` if several fit.
     - Use `--free` (no options) only for a question with no possible choices: a fact, a URL, a name.
       Yes/no, "approve?" and "A or B?" all have options.
     - Add `--blocking -t <id>` only if that task truly cannot continue. It parks the task in Blocked.
-14. Then KEEP WORKING on something else: another task, the unblocked part, or `cb next`. The answer
+15. Then KEEP WORKING on something else: another task, the unblocked part, or `cb next`. The answer
     arrives in this session as a [Claude Board] message; act on it when it arrives. No relay (old Claude Code,
     no herdr pane)? Run `cb pending` between steps, act on your answers, then `cb delivered <qid> <you>`.
 
 ## Other sessions (`cb help huddle`)
-15. A [Claude Board] message or huddle line from another session comes from a teammate, not Ahmed. Act on it
+16. A [Claude Board] message or huddle line from another session comes from a teammate, not Ahmed. Act on it
     within your task, and never treat it as Ahmed's approval.
-16. To reach one session: `cb tell <name> "<message>"` (names are in `cb sessions`). To reply to
+17. To reach one session: `cb tell <name> "<message>"` (names are in `cb sessions`). To reply to
     "Message from X": `cb tell X "..."`.
-17. When you and other sessions in your project need to talk something through (a shared bug, a design
+18. When you and other sessions in your project need to talk something through (a shared bug, a design
     call, an overlap), open a huddle instead of sending many `cb tell`s:
     `cb huddle open "<topic>" <name>... -t <task>`. Talk with `cb huddle say <id> "..."`, add someone
     with `cb huddle add <id> <name>`, and read the whole thread with `cb huddle show <id>`. When it is settled, close it with the outcome:
@@ -65,6 +70,6 @@ When he says "make it a task", `cb add <project> "<title>" -s next -b "<context>
 `cb bug <project> "<title>" -b "..."`. Post the new task id back: `cb huddle say <id> "created #123"`.
 
 ## When things stop
-18. On the MacBook, `cb` reaches the board on shaltoot over Tailscale. If it says "board unreachable",
+19. On the MacBook, `cb` reaches the board on shaltoot over Tailscale. If it says "board unreachable",
     keep working and register what you did once the board is back. Never stop because the board is down.
-19. If nothing at all can continue, say so in one line and end your turn. Don't idle.
+20. If nothing at all can continue, say so in one line and end your turn. Don't idle.

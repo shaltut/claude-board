@@ -145,7 +145,7 @@ const remote = (path: string, init: RequestInit & { cookie?: string } = {}) =>
 
 test('through a tunnel, nothing is readable or writable without a user link', async () => {
   await db();
-  for (const p of ['/api/tasks', '/api/users', '/api/people', '/api/projects', '/api/sessions', '/api/huddles', '/api/events', '/api/today', '/api/questions', '/api/me'])
+  for (const p of ['/api/tasks', '/api/users', '/api/people', '/api/projects', '/api/sessions', '/api/huddles', '/api/events', '/api/today', '/api/questions', '/api/me', '/api/epics'])
     assert.equal((await remote(p)).status, 401, p);
   assert.equal((await remote('/api/rpc/task_add', { method: 'POST', body: '{}' })).status, 401);
   assert.equal((await remote('/api/whoami')).status, 200);
@@ -213,4 +213,29 @@ test('a guest sending garbage gets a clean 400, not a server error', async () =>
   const post = (body: string) => remote('/api/rpc/answer', { method: 'POST', cookie: token, body, headers: { 'content-type': 'application/json' } });
   assert.equal((await post('null')).status, 400);
   assert.equal((await post(JSON.stringify({ id: 'abc', answer: 'x' }))).status, 400);
+});
+
+test('epics over HTTP: the dashboard creates one; lists, epic page and task panel carry progress and blockers', async () => {
+  const sql = await db();
+  await sql`select cb.ensure_project('demo')`;
+  const script = { host: 'localhost:4747' };
+  assert.equal((await rpc('epic_create', { project: 'demo', title: 'Payer gateway', goal: 'g' }, script)).status, 400, 'a session cannot');
+  const res = await rpc('epic_create', { project: 'demo', title: 'Payer gateway', goal: 'g' });
+  assert.equal(res.status, 200);
+  const e = (await res.json()).result;
+  for (const title of ['a', 'b']) await rpc('task_add', { project: 'demo', title, status: 'next', epic: `E${e}` });
+  assert.equal((await rpc('task_block', { task: '2', blocker: '1' })).status, 200);
+  const [epic] = await (await app.request('/api/epics?project=demo')).json();
+  assert.deepEqual([epic.id, epic.total, epic.finished, epic.status], [e, 2, 0, 'open']);
+  const page = await (await app.request(`/api/epics/${e}`)).json();
+  assert.equal(page.epic.title, 'Payer gateway');
+  assert.deepEqual(page.steps.map((t: any) => [t.id, t.status, t.waits_on]), [[1, 'next', []], [2, 'blocked', [1]]]);
+  assert.equal((await app.request('/api/epics/999')).status, 404);
+  const tasks = await (await app.request('/api/tasks?project=demo')).json();
+  assert.deepEqual(tasks.find((t: any) => t.id === 2).waits_on, [1]);
+  const panel = await (await app.request('/api/tasks/2')).json();
+  assert.deepEqual(panel.blockers.map((t: any) => [t.id, t.title]), [[1, 'a']]);
+  assert.deepEqual((await (await app.request('/api/tasks/1')).json()).blocks.map((t: any) => t.id), [2]);
+  assert.equal(panel.epic.title, 'Payer gateway');
+  for (const p of ['/api/epics', `/api/epics/${e}`]) assert.equal((await remote(p)).status, 401, p);
 });

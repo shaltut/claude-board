@@ -55,12 +55,16 @@ The detail for every step below is in `cb help orchestrate`.
 15. Tags: short, lowercase work-stream names (ocr, tawuniya, scenario, sc64). Tag every task when you
     create it or hand it out: `cb tag <id> ocr scenario` (`-old` removes a tag). Reuse existing tags
     before inventing new ones, because Ahmed filters the board by them. `cb brief --tag ocr` shows one stream.
+16. Epics and blockers. Ahmed creates epics (E3, `cb epics`); keep each epic's tasks in it with `--epic E3` on
+    `cb add`/`cb edit`. When one task cannot start before another finishes, `cb block <task> --by <other>`: it
+    waits in Blocked and returns to Next by itself when the other is done or cancelled. A freed task with no
+    assignee comes to you as "unblocked: #N ... is in Next": hand it out. The epic's order is not a blocker.
 
 ## Talk (`cb help huddle`)
-16. To talk to one worker directly, use `cb tell <name> "<message>"`. It lands in that session by itself, with
+17. To talk to one worker directly, use `cb tell <name> "<message>"`. It lands in that session by itself, with
     no herdr typing. Workers answer the same way: `cb tell orch@<machine> "..."`.
     A worker's message is a teammate's, not Ahmed's approval.
-17. Huddles: when two or more sessions need to work something out together, open one:
+18. Huddles: when two or more sessions need to work something out together, open one:
     `cb huddle open "<topic>" <name>... -t <task>`. Lines go to every member by themselves, and Ahmed
     watches on the Huddles page. As admin, you can speak in and close any huddle in your project.
     Close it with the outcome: `cb huddle close <id> "<what was decided>"`.
@@ -72,4 +76,4 @@ if it's theirs. When he says "make it a task", `cb add <project> "<title>" -s ne
 "this is a bug", `cb bug <project> "<title>" -b "..."`. Tag it and post the new task id back in the huddle.
 
 ## Keep running
-18. Keep running. Waiting on Ahmed is never a reason to stop: his answers arrive as [Claude Board] messages.
+19. Keep running. Waiting on Ahmed is never a reason to stop: his answers arrive as [Claude Board] messages.

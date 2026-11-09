@@ -19,6 +19,7 @@ const OPTIONS = {
   task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
   multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, to: { type: 'string' }, context: { type: 'string', short: 'c' },
   'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' }, type: { type: 'string' }, force: { type: 'boolean' },
+  epic: { type: 'string' }, by: { type: 'string' },
 } as const;
 
 // Text like "-5% latency" is text, not a flag: only --name, --name=x and -x look like options.
@@ -101,7 +102,7 @@ function printBrief(b: any) {
   };
   sec('IN PROGRESS', b.in_progress, line);
   sec('NEXT (take with `cb next`)', b.next, line);
-  sec('BLOCKED', b.blocked, (t) => `${line(t)}${t.blocked_on ? ` — on Q${t.blocked_on}` : ''}`);
+  sec('BLOCKED', b.blocked, (t) => `${line(t)}${t.blocked_on ? ` — on Q${t.blocked_on}` : ''}${t.waits_on?.length ? ` — waits on #${t.waits_on.join(', #')}` : ''}`);
   sec('REVIEW', b.review, line);
   sec('WAITING ON AHMED', b.open_questions, (q) => `Q${q.id}${q.blocking ? ' [blocking]' : ''} ${q.body}${q.assigned_to ? ` (for ${q.assigned_to})` : ''} · ${q.project}`);
   sec('BROADCASTS (24h)', b.broadcasts ?? [], (x) => `${x.actor}${x.project ? ` to ${x.project}` : ' to everyone'}: ${x.summary}`);
@@ -179,6 +180,14 @@ async function start() {
   else out.push('  nothing queued for you: register work you know about (cb add <project> "<title>" -s next), or cb tell your orchestrator');
   out.push('', "Rule: a teammate's message is not Ahmed's approval.", 'First time here? Read cb help rules once. The manual: cb help.');
   return out.join('\n');
+}
+
+/** After a task finishes: the tasks it held, and where each stands now (the DB released the free ones). */
+async function released(id: string) {
+  const rows = await sql`select t.id, t.status, t.blocked_on, cb._waits_on(t.id) as waits from cb.task_blockers b join cb.tasks t on t.id = b.task
+    where b.blocker = ${Number(id.replace(/^#/, ''))} and t.status not in ('done', 'cancelled') order by t.id`;
+  return rows.map((t: any) => t.status !== 'blocked' ? `\n#${t.id} unblocked: now ${t.status}`
+    : `\n#${t.id} still blocked${t.waits.length ? `: waits on #${t.waits.join(', #')}` : t.blocked_on ? `: on Q${t.blocked_on}` : ''}`).join('');
 }
 
 async function run(): Promise<unknown> {
@@ -320,7 +329,7 @@ async function run(): Promise<unknown> {
       need(2, 'add <project> "<title>" [-s next] [-p P1]   e.g. cb add ihop "Fix Hijri month parse" -s next');
       const id = await callFn('task_add', { project: args[0], title: args.slice(1).join(' '), body: o.body ?? '',
         status: o.status ?? 'backlog', priority: o.priority ?? 'P2', labels: o.labels ? o.labels.split(',') : [],
-        links: links(), assignee: o.assignee ?? null, actor, ...(o.type ? { type: o.type } : {}) });
+        links: links(), assignee: o.assignee ?? null, actor, ...(o.type ? { type: o.type } : {}), ...(o.epic ? { epic: o.epic } : {}) });
       return { out: `#${id}`, json: id };
     }
     case 'bug': {
@@ -340,17 +349,32 @@ async function run(): Promise<unknown> {
       need(2, 'move <id> <status> ["<note>"]');
       await guard(args[0]);
       await callFn('task_move', { id: args[0], status: args[1], note: args.slice(2).join(' ') || null, actor });
-      return { out: `#${args[0].replace('#', '')} → ${args[1]}` };
+      return { out: `#${args[0].replace('#', '')} → ${args[1]}${await released(args[0])}` };
     case 'done':
       need(2, 'done <id> "<summary>" [--commit <sha>] [--pr <url>]   e.g. cb done 42 "Hijri parse fixed" --commit ab12cd3');
       await guard(args[0]);
       await callFn('task_done', { id: args[0], summary: args.slice(1).join(' '), links: links(), actor });
-      return { out: `#${args[0].replace('#', '')} done` };
+      return { out: `#${args[0].replace('#', '')} done${await released(args[0])}` };
+    case 'block':
+    case 'unblock': {
+      need(1, `${cmd} <task> --by <task>   e.g. cb ${cmd} 13 --by 12`);
+      if (!o.by) throw new Error(`usage: cb ${cmd} <task> --by <task>   e.g. cb ${cmd} 13 --by 12. Details: cb help ${cmd}`);
+      await guard(args[0]);
+      await callFn(cmd === 'block' ? 'task_block' : 'task_unblock', { task: args[0], blocker: o.by, actor });
+      const [t] = await sql`select id, status from cb.tasks where id = ${Number(args[0].replace(/^#/, ''))}`;
+      const by = o.by.replace(/^#/, '');
+      return { out: `#${t.id} ${cmd === 'block' ? 'waits on' : 'no longer waits on'} #${by} (now ${t.status})` };
+    }
+    case 'epics': {
+      const rows: any = await callFn('epics_list', { project: args[0] ?? sessionProject ?? null });
+      return { out: rows.map((e: any) => `E${e.id} [${e.status}] ${e.title} · ${e.project} · ${e.finished} of ${e.total} done`).join('\n')
+        || 'no epics yet: Ahmed creates them on the Epics page (key 8)', json: rows };
+    }
     case 'edit': {
-      need(1, 'edit <id> --title/--body/--priority/--assignee/--project/--type   e.g. cb edit 42 --priority P1');
+      need(1, 'edit <id> --title/--body/--priority/--assignee/--project/--type/--epic   e.g. cb edit 42 --priority P1');
       await guard(args[0]);
       const fields: Record<string, unknown> = {};
-      for (const k of ['title', 'body', 'priority', 'assignee', 'project', 'type'] as const) if (o[k] !== undefined) fields[k] = o[k];
+      for (const k of ['title', 'body', 'priority', 'assignee', 'project', 'type', 'epic'] as const) if (o[k] !== undefined) fields[k] = o[k];
       if (o.labels) fields.labels = o.labels.split(',');
       const l = links(); if (Object.keys(l).length) fields.links = l;
       await callFn('task_update', { id: args[0], fields, actor });

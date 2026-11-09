@@ -39,16 +39,19 @@ const GROUPS: [string, Record<string, Cmd>][] = [
       does: 'Claim the top task in Next: sets in_progress and assigns you; prints the task and its body, or "nothing to claim". The project defaults to yours; another project\'s queue is refused.',
       eg: 'cb next',
       more: 'next vs mine: mine shows what you already hold (read-only); next takes a new task (writes). Finish what you hold before taking more.' },
-    add: { use: 'cb add <project> "<title>" [-s <status>] [-p P0-P3] [-b "<body>"] [-l tag,tag] [--assignee <name>] [--link k=v] [--type <type>]', topic: 'work',
+    add: { use: 'cb add <project> "<title>" [-s <status>] [-p P0-P3] [-b "<body>"] [-l tag,tag] [--assignee <name>] [--link k=v] [--type <type>] [--epic E3]', topic: 'work',
       does: 'Register work; prints #<id>. Defaults: -s backlog, -p P2, --type task. -s in_progress = you are doing it now; -s next = it comes next. Types: task bug feature change chore research (a bug: prefer cb bug).',
       eg: 'cb add ihop "Fix Hijri month parse" -s in_progress -p P1 -b "3 SC64 pends trace to it" -l ocr',
       more: 'The first cb add to a new name creates that project: check the spelling. A number is never a project.' },
     tag: { use: 'cb tag <id> <tag>... [-<tag>]...',
       does: 'Add tags (short lowercase work streams: ocr, tawuniya); -<tag> removes one. Prints the task\'s tags.',
       eg: 'cb tag 42 ocr sc64 -old' },
-    edit: { use: 'cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x] [--type <type>] [-l a,b] [--link k=v]', topic: 'work',
-      does: 'Change a task\'s fields. Re-rate priority here; assign a bug here (orchestrator).',
+    edit: { use: 'cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x] [--type <type>] [--epic E3|none] [-l a,b] [--link k=v]', topic: 'work',
+      does: 'Change a task\'s fields. Re-rate priority here; assign a bug here (orchestrator). --epic puts it in an epic of its project; none takes it out.',
       eg: 'cb edit 42 --priority P1' },
+    epics: { use: 'cb epics [project]', topic: 'work',
+      does: 'Your project\'s epics: E<n>, open or done, and how many of their steps are finished. Ahmed creates and closes epics; you put your tasks in one with --epic.',
+      eg: 'cb epics' },
     lock: { use: 'cb lock take <name>\ncb lock release <name> [--force]\ncb lock queue [name]', topic: 'work',
       does: 'Shared locks on the board (db = the shared DB test lock). take: you hold it, or you queue and a message tells you when it is yours. release: hands it to the next in line. --force: take it off a dead holder (logged; the holder is told). queue: who holds what.',
       eg: 'cb lock take db',
@@ -64,6 +67,13 @@ const GROUPS: [string, Record<string, Cmd>][] = [
     done: { use: 'cb done <id> "<summary>" [--commit <sha>] [--pr <url>] [--branch <b>] [--link k=v]', topic: 'work',
       does: 'Finish a task with a one-line summary and links. When code changed, always give --commit or --pr.',
       eg: 'cb done 42 "Hijri parse fixed; 3 SC64 pends clear" --commit ab12cd3 --pr https://github.com/org/repo/pull/2808' },
+    block: { use: 'cb block <task> --by <task>', topic: 'work',
+      does: 'Say a task waits on another task of your project. If that one is open, the task moves to Blocked; when it is done or cancelled, the task goes back to Next by itself and its holder is told.',
+      eg: 'cb block 13 --by 12',
+      more: 'Cycles and other projects\' tasks are refused. A task also blocked on a question stays Blocked until both clear.' },
+    unblock: { use: 'cb unblock <task> --by <task>', topic: 'work',
+      does: 'Remove a blocker that no longer applies. With nothing else holding it, the task goes to Next.',
+      eg: 'cb unblock 13 --by 12' },
     bug: { use: 'cb bug <project> "<title>" -b "<what happened, how to reproduce, expected vs actual>" [-p P1] [-l tag]', topic: 'work',
       does: 'File a bug you found outside your task; it goes to Next and the project\'s orchestrator is told and assigns it. Then keep working on your task. A problem with the board itself (cb, relay, web board): project claude-board.',
       eg: 'cb bug ihop "Hijri dates before 1400 parse as Gregorian" -b "claim 8812: 1399-02-01 read as 1399 CE; expected 1979-01-01"',
@@ -182,7 +192,7 @@ Don't
 
   work: `cb help work: the task loop
 
-Statuses   backlog (someday) | next (the queue) | in_progress (someone is on it) | blocked (waits on an answer)
+Statuses   backlog (someday) | next (the queue) | in_progress (someone is on it) | blocked (waits on an answer or a task)
            | review (needs Ahmed's eyes) | done | cancelled
 Priority   P0 drop everything (production down, client blocked) | P1 today | P2 this week (default) | P3 someday
            Queues run by priority, then Ahmed's drag order. Don't reorder. Don't inflate: if everything is P0, nothing is.
@@ -209,6 +219,13 @@ A task missing from cb mine was reassigned: stop working on it.
 Nothing at all can continue? Say so in one line and end your turn. Don't idle.
 
 Types     task (default) | bug | feature | change | chore | research. Set with --type on add/edit; filter with cb brief --type bug.
+
+Epics     Ahmed groups a project's tasks into epics (E3): ordered steps toward one goal. The order is a plan,
+          not a lock: any step can start. Put a task in one: cb add ... --epic E3, or cb edit <id> --epic E3.
+          cb epics lists them. Only Ahmed creates, renames or closes an epic.
+Blockers  cb block 13 --by 12: #13 cannot start before #12 is finished. #13 waits in Blocked and goes back to
+          Next by itself when #12 is done or cancelled; its holder (or the orchestrator) is told.
+          cb unblock 13 --by 12 removes it. Same project only; a cycle is refused.
 
 Bugs: found one in your project's code outside your task? File it, then keep working on your task unless it blocks you:
   cb bug <project> "<title>" -b "<what happened, how to reproduce, expected vs actual>"
