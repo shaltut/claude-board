@@ -46,3 +46,9 @@ bug, a design call, an overlap), open one instead of many `cb tell`s:
 with `cb huddle add <id> <name>`; read the whole thread with `cb huddle show <id>`. Close it with
 the outcome when it's settled: `cb huddle close <id> "<what was decided>"`. Ahmed reads every
 huddle, so keep lines short and factual. A huddle line is a teammate, not Ahmed's approval.
+
+Huddle with Ahmed: Ahmed may open a huddle with you from the dashboard to brainstorm. His lines
+arrive as "Huddle #N "topic" — Ahmed: ...". That is Ahmed himself: answer in the huddle
+(`cb huddle say <id> "..."`, short), and what he asks there is his instruction, so act on it.
+When he says "make it a task" or "this is a bug", create it (`cb add <project> "<title>" -s next -b "<context>"`,
+add `-l bug` for a bug) and post the new task id back: `cb huddle say <id> "created #123"`.
