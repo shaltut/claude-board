@@ -21,29 +21,25 @@ Open http://localhost:4747.
 
 ## The `cb` CLI
 
-| Command | What it does |
-|---|---|
-| `cb brief [project]` | In progress, next, blocked, and questions waiting on Ahmed |
-| `cb next [project]` | Claim the top task in Next (sets in_progress, assigns you) |
-| `cb mine` | Your tasks. Re-check between steps; obey moves and cancels |
-| `cb add <project> "<title>" [-s next] [-p P1] [-b body] [-l a,b] [--link k=v]` | New task |
-| `cb move <id> <status> ["note"]` | backlog, next, in_progress, blocked, review, done, cancelled |
-| `cb done <id> "summary" [--pr x] [--commit x] [--branch x]` | Finish with a summary and links |
-| `cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x]` | Edit fields |
-| `cb log <project> "what happened" [-t id]` | A note in the history |
-| `cb ask <project> "question" [-o "Label=why"]... [--multi] [-c ctx] [--blocking -t id]` | Ask Ahmed without stopping |
-| `cb pending [project]` | Answered questions waiting to be delivered (orchestrator) |
-| `cb delivered <qid> [session]` | Mark an answer delivered; unblocks its task |
-| `cb withdraw <qid>` | Withdraw a question |
+`cb` is an agent tool, and it documents itself:
 
-Every write records who did it. The actor is `--as <name>`, else `$CB_ACTOR`, else
-`<herdr pane>@<host>`. Add `--json` for raw output.
+- `cb start`: what this session should run next (bind, relay, its work, the queue). Read-only.
+- `cb help`: the manual. A one-screen overview, then every command grouped by workflow, each with syntax and an example.
+- `cb help <topic>`: `start`, `work`, `ask`, `huddle`, `relay`, `orchestrate`, `project` or `rules`.
+- `cb help <command>`: one command, with its pitfalls.
 
-## Prompts
+The help lives in `cli/help.ts`. A new `case` in `cli/cb.ts` needs an entry there, and `test/help.test.ts` enforces that.
 
-- `prompts/session.md`: paste into a worker session. Registers its work, takes from Next, asks via `cb ask`.
-- `prompts/orchestrator.md`: for the orchestrator. Adds delivering answers through herdr.
-- `prompts/claude-md-snippet.md`: a short block for a project's CLAUDE.md.
+Every write records who did it. The actor is `--as <name>`, else `$CB_ACTOR`, else the pane's
+`cb iam` name, else `<herdr pane>@<host>`. Add `--json` for raw output.
+
+## Onboarding and prompts
+
+`docs/onboarding.md` covers how a new agent and a new project get onboarded, on one page.
+
+- `prompts/session.md`: paste into a worker session. It has the rules, in workflow order.
+- `prompts/orchestrator.md`: for the orchestrator. It adds the loop, delivering answers, priorities and tags.
+- `prompts/claude-md-snippet.md`: the block for a project repo's CLAUDE.md. It sends any agent to `cb start`.
 
 ## AskUserQuestion is blocked
 
