@@ -50,6 +50,8 @@ and Ahmed's view of what you do. Keep it true at all times. Use the `cb` command
     - Add `--blocking -t <id>` only if that task truly cannot continue. It parks the task in Blocked.
     - A question that only matters after one answer is a follow-up: `--after Q12 --if "Yes"` (no `--if` = after
       any answer). It stays hidden until Q12 is answered that way, else it is skipped; chain them as needed.
+    - When Ahmed sends a question back (more details, his own question, simpler, or the options are wrong),
+      rewrite that same question with `cb reask Q12 "<new question>" [-o ...] [-c ...]`; don't open a new one.
 15. Then KEEP WORKING on something else: another task, the unblocked part, or `cb next`. The answer
     arrives in this session as a [Claude Board] message; act on it when it arrives. No relay (old Claude Code,
     no herdr pane)? Run `cb pending` between steps, act on your answers, then `cb delivered <qid> <you>`.

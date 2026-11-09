@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { callFn } from '../server/rpc.ts';
 import { tick, dur } from './tick.ts';
 import { sql, databaseUrl, machine } from '../server/db.ts';
-import { help, unknownHelp, COMMANDS } from './help.ts';
+import { help, unknownHelp, COMMANDS, backWhy, reaskHint } from './help.ts';
 
 const OPTIONS = {
   as: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
@@ -186,13 +186,14 @@ async function start() {
   const project = sessionProject;
   const queue = project ? await sql`select id, priority, title, labels, project, assignee from cb.tasks
     where project = ${project} and status = 'next' and (assignee is null or assignee = ${actor}) order by priority, rank, id limit 3` : [];
-  const qs = await sql`select id, status, body from cb.questions where asked_by = ${actor} and status in ('open', 'answered') order by id`;
+  const qs = await sql`select id, status, body from cb.questions where asked_by = ${actor} and status in ('open', 'answered', 'sent_back') order by id`;
   const cut = (s: string) => (s.length > 100 ? s.slice(0, 99) + '…' : s);
   out.push(`YOUR TASKS (cb mine)`, ...(mine.length ? mine.map((t: any) => '  ' + line(t)) : ['  none']),
     `QUEUE HEAD${project ? ` (${project} Next; cb next takes the first)` : ''}`, ...(queue.length ? queue.map((t: any) => '  ' + line(t)) : ['  empty']),
     ...(qs.length ? ['YOUR QUESTIONS', ...qs.map((q: any) => `  Q${q.id} ${q.status}: ${cut(q.body)}`)] : []), '', 'NEXT');
   const doing = open.find((t: any) => t.status === 'in_progress');
   if (relay === false) out.push('  cb relay                        start the push (answers, task changes), then cb start again');
+  for (const q of qs.filter((q: any) => q.status === 'sent_back')) out.push(`  ${reaskHint(q.id)}   Q${q.id} was sent back: rewrite it (cb pending says why)`);
   if (qs.some((q: any) => q.status === 'answered')) out.push('  cb pending                      an answer to your question is waiting: act on it, then cb delivered <qid> <you>');
   if (!doing) out.push(`  already working on something not listed? register it first: cb add ${project ?? '<project>'} "<title>" -s in_progress -b "<context>"`);
   if (doing) out.push(`  continue #${doing.id} ${cut(doing.title)}: cb log ${doing.id} "<finding>" as you go, cb done ${doing.id} "<summary>" --commit <sha> when finished`);
@@ -515,9 +516,20 @@ async function run(): Promise<unknown> {
       const ids = rows.map((q: any) => q.parent_id).filter(Boolean);
       const parents = new Map((ids.length ? await sql`select id, body, answer from cb.questions where id in ${sql(ids)}` : []).map((p: any) => [p.id, p]));
       return { out: rows.length ? rows.map((q: any) => { const p: any = parents.get(q.parent_id);
+        if (q.status === 'sent_back') { const by = q.sent_back.by === 'ahmed' ? 'Ahmed' : `${q.sent_back.by} (not Ahmed)`;
+          return `Q${q.id} sent back by ${by} to ${q.asked_by}: ${backWhy(q.sent_back.reason, q.sent_back.note)}
+  asked: ${q.body}
+  rewrite it: ${reaskHint(q.id)}`; }
         return `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}` +
           `${p ? `\n  follow-up to Q${p.id} (answered ${p.answer}): ${p.body}` : ''}\n  asked: ${q.body}\n  answer: ${q.answer}`; }).join('\n')
         : 'no answers waiting', json: rows };
+    }
+    case 'reask': {
+      need(1, 'reask Q<id> ["<new question>"] [-o "<Label>=<why>" ... | --free] [--multi] [-c "<context>"]');
+      const id = args[0].replace(/^q/i, '');
+      await callFn('reask', { id, body: args.slice(1).join(' ') || null, options: o.option ? options() : null, free: !!o.free,
+        multi: o.multi ? true : null, context: o.context ?? null, actor });
+      return { out: `Q${id} rewritten and back on Ahmed's board — keep working; the answer arrives like any other` };
     }
     case 'delivered':
       need(1, 'delivered <qid> [session]');

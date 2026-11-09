@@ -20,7 +20,7 @@ export interface Epic {
 export interface QOption { label: string; description: string | null }
 export interface Question {
   id: number; project: string; task_id: number | null; asked_by: string; body: string; context: string | null
-  options: QOption[] | null; multi: boolean; blocking: boolean; status: 'open' | 'answered' | 'delivered' | 'withdrawn' | 'dormant'
+  options: QOption[] | null; multi: boolean; blocking: boolean; status: 'open' | 'answered' | 'delivered' | 'withdrawn' | 'dormant' | 'sent_back'
   answer: string | null; answered_at: string | null; delivered_at: string | null; delivered_to: string | null
   reply_to: { machine?: string; pane?: string } | null; created_at: string
   assigned_to: string | null; answered_by: string | null
@@ -28,14 +28,25 @@ export interface Question {
   // follow-ups (#472): a dormant question waits for parent_id's answer (if_answer: one label, null = any)
   parent_id: number | null; if_answer: string | null; parent_answer?: string | null
   branches?: { id: number; if_answer: string | null; body: string }[] | null // this question's dormant follow-ups
+  // send back (#616): while sent_back, why and by whom; versions: earlier texts, oldest first, with the send-back that asked for the rewrite
+  sent_back: { reason: BackReason; note: string | null; by: string; at: string; delivered_at?: string } | null
+  versions: { body: string; options: QOption[] | null; context: string | null; reason: BackReason | null; note: string | null; rewritten_at: string }[] | null
 }
+export type BackReason = 'details' | 'clarify' | 'simplify' | 'reask'
+/** Why a question goes back to its asker: the picker's label, the quiet row's word, the rewritten card's word. */
+export const BACK_REASONS: { key: BackReason; label: string; short: string; past: string }[] = [
+  { key: 'details', label: 'More details', short: 'more details', past: 'more details' },
+  { key: 'clarify', label: 'Ask a question', short: 'a question', past: 'clarified' },
+  { key: 'simplify', label: 'Simplify', short: 'simplify', past: 'simplified' },
+  { key: 'reask', label: 'Options are wrong', short: 'new options', past: 'new options' },
+]
 export interface User { name: string; display: string; projects?: string[] } // projects: only from /api/users, not on a guest's whoami
 /** People who can take work on a project (they're on it), plus whoever already holds the item. */
 export const onProject = (users: User[], project: string, holder?: string | null) =>
   users.filter((u) => u.projects?.includes(project) || u.name === holder)
 export interface CbEvent {
   id: number; at: string; actor: string; project: string | null; task_id: number | null; question_id: number | null
-  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle' | 'user' | 'epic' | 'memory'
+  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle' | 'user' | 'epic' | 'memory' | 'sent_back' | 'rewritten'
   summary: string; data: Record<string, any>
 }
 export const MEM_KINDS = ['rule', 'ruling', 'fact', 'gotcha', 'runbook'] as const

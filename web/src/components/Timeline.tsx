@@ -1,4 +1,4 @@
-import { BookMarked, CheckCircle2,CircleDot, HelpCircle, MessageSquareReply, PencilLine, Plus, Send, StickyNote, XCircle, Megaphone, MessageCircle, MessagesSquare, Milestone, UserCog } from 'lucide-react'
+import { BookMarked, CheckCircle2,CircleDot, HelpCircle, MessageSquareReply, PencilLine, Plus, Send, StickyNote, XCircle, Megaphone, MessageCircle, MessagesSquare, Milestone, UserCog, Undo2 } from 'lucide-react'
 import type { CbEvent, Status } from '@/lib/api'
 import { clock, day, STATUS } from '@/lib/format'
 import { go } from '@/lib/route'
@@ -8,6 +8,7 @@ import { ActorChip, ProjectChip, StatusDot, TaskId } from './Chips'
 const ICON: Record<CbEvent['kind'], typeof Plus> = {
   task_created: Plus, moved: CircleDot, updated: PencilLine, done: CheckCircle2, note: StickyNote,
   asked: HelpCircle, answered: MessageSquareReply, delivered: Send, withdrawn: XCircle, broadcast: Megaphone, message: MessageCircle, huddle: MessagesSquare, user: UserCog, epic: Milestone, memory: BookMarked,
+  sent_back: Undo2, rewritten: PencilLine,
 }
 const TONE: Partial<Record<CbEvent['kind'], string>> = {
   done: 'text-st-done', answered: 'text-clear', asked: 'text-foreground', broadcast: 'text-foreground',
@@ -15,6 +16,7 @@ const TONE: Partial<Record<CbEvent['kind'], string>> = {
 const VERB: Partial<Record<CbEvent['kind'], string>> = {
   task_created: 'created', updated: 'edited', done: 'finished', note: 'noted', asked: 'asked', answered: 'answered',
   delivered: 'delivered', withdrawn: 'withdrew', broadcast: 'broadcast', message: 'messaged', huddle: 'in a huddle', user: 'changed People', epic: 'changed an epic', memory: 'changed memory',
+  sent_back: 'sent back', rewritten: 'rewrote',
 }
 
 /** The DB's default move summary is "next → in_progress"; show it with the board's labels. */

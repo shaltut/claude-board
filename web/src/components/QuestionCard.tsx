@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronRight, CornerDownLeft, CornerDownRight, Loader2 } from 'lucide-react'
+import { Check, ChevronRight, CornerDownLeft, CornerDownRight, Loader2, Undo2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { onProject, rpc, useUsers, type Question } from '@/lib/api'
+import { BACK_REASONS, onProject, rpc, useUsers, type BackReason, type Question } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { go } from '@/lib/route'
 import { Textarea } from '@/components/ui/textarea'
@@ -27,6 +27,12 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
   const [showContext, setShowContext] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [cleared, setCleared] = useState(false)
+  const [backing, setBacking] = useState(false) // the send-back picker is open (#616)
+  const [reason, setReason] = useState<BackReason | null>(null)
+  const [note, setNote] = useState('')
+  const [showPrev, setShowPrev] = useState(false)
+  const prev = q.versions?.at(-1)
+  const rewrote = prev && BACK_REASONS.find((r) => r.key === prev.reason)?.past
 
   /** ruled: answer "Already ruled" with that memory entry; the server writes the text, so the session gets the rule. */
   async function send(answer: string, via = '__text', ruled?: number) {
@@ -43,6 +49,23 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
       await qc.invalidateQueries()
     } catch (e: any) {
       toast.error(`Could not answer Q${q.id}`, { description: e.message })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  /** Back to the asking session for a rewrite: it leaves the list like an answer does. clarify carries his question. */
+  async function sendBack() {
+    if (!reason || busy || (reason === 'clarify' && !note.trim())) return
+    setBusy('__back')
+    try {
+      await rpc('send_back', { id: String(q.id), reason, note: note.trim() || null })
+      onClearing?.(q)
+      setCleared(true)
+      toast.success(`Sent Q${q.id} back`, { description: 'It comes back here once the session rewrites it.' })
+      await qc.invalidateQueries()
+    } catch (e: any) {
+      toast.error(`Could not send Q${q.id} back`, { description: e.message })
     } finally {
       setBusy(null)
     }
@@ -95,7 +118,23 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
             Follow-up to <span className="callsign">Q{q.parent_id}</span>{q.parent_answer && <> — Q{q.parent_id} was answered {q.parent_answer}</>}
           </p>
         )}
-        <p id={`q${q.id}-body`} className={cn('max-w-[68ch] text-base leading-normal text-pretty', q.parent_id ? 'mt-1' : 'mt-2.5')}>{q.body}</p>
+        {prev && (
+          <div className={cn('text-xs text-muted-foreground', q.parent_id ? 'mt-1' : 'mt-2.5')}>
+            <button onClick={() => setShowPrev((s) => !s)} aria-expanded={showPrev}
+              className="-ml-1 flex items-center gap-1 rounded px-1 py-0.5 hover:text-foreground">
+              <ChevronRight className={cn('size-3.5 transition-transform duration-150', showPrev && 'rotate-90')} />
+              Rewritten{rewrote ? ` (${rewrote})` : ''} · previous version
+            </button>
+            {showPrev && (
+              <div className="mt-1 max-w-[68ch] border-l-2 pl-3 text-pretty">
+                <p>{prev.body}</p>
+                {prev.options?.length ? <p className="mt-1">Options: {prev.options.map((o) => o.label.replace(RECOMMENDED, '')).join(' · ')}</p> : null}
+                {prev.note && <p className="mt-1">Sent back: {prev.note}</p>}
+              </div>
+            )}
+          </div>
+        )}
+        <p id={`q${q.id}-body`} className={cn('max-w-[68ch] text-base leading-normal text-pretty', q.parent_id || prev ? 'mt-1' : 'mt-2.5')}>{q.body}</p>
 
         {q.context && (
           <div className="mt-2">
@@ -153,9 +192,36 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
             Send <Kbd className="hidden bg-transparent text-current opacity-70 sm:inline-flex"><CornerDownLeft className="size-3" /></Kbd>
           </Button>
         </div>
-        {!guest && !cleared && (
-          <div className="mt-1.5 -ml-1.5">
-            <AlreadyRuled q={q} disabled={!!busy} onPick={(m) => send(`Already ruled: M${m.id} ${m.title}`, '__ruled', m.id)} />
+        {!cleared && (
+          <div className="mt-1.5 -ml-1.5 flex flex-wrap items-center gap-1">
+            {!guest && <AlreadyRuled q={q} disabled={!!busy} onPick={(m) => send(`Already ruled: M${m.id} ${m.title}`, '__ruled', m.id)} />}
+            <button disabled={!!busy} onClick={() => setBacking((b) => !b)} aria-expanded={backing}
+              className="inline-flex items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-raised hover:text-foreground disabled:opacity-50">
+              <Undo2 className="size-3" /> Send back
+            </button>
+          </div>
+        )}
+        {backing && !cleared && (
+          <div className="mt-2 grid gap-2 rounded-md border bg-background/50 p-3">
+            <p className="text-xs text-muted-foreground">Not answerable yet? It goes back to {guest ? 'whoever asked' : q.asked_by} to rewrite, and comes back here.</p>
+            <div className="flex w-fit flex-wrap rounded-md border bg-card p-0.5" role="radiogroup" aria-label="Why it goes back">
+              {BACK_REASONS.map((r) => (
+                <button key={r.key} role="radio" aria-checked={reason === r.key} onClick={() => setReason(r.key)}
+                  className={cn('rounded px-2.5 py-1 text-sm transition-colors', reason === r.key ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground')}>
+                  {r.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-end gap-2">
+              <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={1} aria-label={`Note sending Q${q.id} back`}
+                onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendBack() } }}
+                placeholder={reason === 'clarify' ? 'Your question (required)…' : 'A note for the session (optional)…'}
+                className="min-h-9 resize-y bg-background/50 text-sm" />
+              <Button variant="outline" disabled={!reason || !!busy || (reason === 'clarify' && !note.trim())} onClick={sendBack} className="h-9 shrink-0 gap-1.5">
+                {busy === '__back' && <Loader2 className="size-3.5 animate-spin" />}
+                Send back
+              </Button>
+            </div>
           </div>
         )}
       </div>
@@ -206,6 +272,23 @@ export function AnsweredRow({ q, editing, onEdit }: { q: Question; editing: bool
             </span>
           </p>
         )}
+      </div>
+    </li>
+  )
+}
+
+/** Sent back to its asker (#616), waiting for the rewrite: a quiet row, no lamp. A guest doesn't see session names. */
+export function SentBackRow({ q, guest }: { q: Question; guest?: boolean }) {
+  const r = BACK_REASONS.find((x) => x.key === q.sent_back?.reason)
+  return (
+    <li className="grid grid-cols-[1.75rem_minmax(0,1fr)] py-3 sm:grid-cols-[2.5rem_minmax(0,1fr)]">
+      <Undo2 className="mt-[3px] size-3.5 justify-self-center text-muted-foreground" aria-hidden />
+      <div className="min-w-0 text-sm">
+        <p className="truncate text-muted-foreground">{q.body}</p>
+        <p className="mt-0.5 text-xs text-muted-foreground text-pretty">
+          Sent back{guest ? '' : <> to <ActorChip actor={q.asked_by} /></>}: {r?.short ?? q.sent_back?.reason}
+          {q.sent_back?.note && <> — <span className="text-foreground/90">{q.sent_back.note}</span></>} · waiting for the rewrite
+        </p>
       </div>
     </li>
   )

@@ -148,7 +148,7 @@ function PanelBody({ data }: { data: NonNullable<ReturnType<typeof useTask>['dat
               <li key={q.id} className="text-sm">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span className="callsign text-[12px]">Q{q.id}</span> <ActorChip actor={q.asked_by} />
-                  <span className={cn('ml-auto', q.status === 'open' && 'font-medium text-lamp')}>{q.status === 'open' ? 'waiting' : q.status}</span>
+                  <span className={cn('ml-auto', q.status === 'open' && 'font-medium text-lamp')}>{q.status === 'open' ? 'waiting' : q.status.replace('_', ' ')}</span>
                 </div>
                 <p className="mt-1 text-pretty">{q.body}</p>
                 {q.answer && <p className="mt-1 font-medium text-pretty">{q.answer}</p>}

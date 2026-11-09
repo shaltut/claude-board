@@ -87,7 +87,7 @@ create table if not exists cb.events (
   data        jsonb not null default '{}'
 );
 alter table cb.events drop constraint if exists events_kind_check;
-alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user','epic','memory'));
+alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user','epic','memory','sent_back','rewritten'));
 
 alter table cb.questions add column if not exists multi boolean not null default false;
 
@@ -101,8 +101,15 @@ alter table cb.questions add column if not exists if_answer text;
 -- parent answer that sends it back to dormant can put the task back exactly.
 alter table cb.questions add column if not exists hold_before jsonb;
 alter table cb.questions drop constraint if exists questions_status_check;
-alter table cb.questions add constraint questions_status_check check (status in ('open','answered','delivered','withdrawn','dormant'));
+alter table cb.questions add constraint questions_status_check check (status in ('open','answered','delivered','withdrawn','dormant','sent_back'));
 create index if not exists questions_parent on cb.questions (parent_id) where parent_id is not null;
+
+-- Send back (#616): Ahmed (or the person it is for) returns an open question to its asker, 'sent_back' until the asker
+-- rewrites it (cb.reask), then it is open again under the same id. sent_back: {reason, note, by, at, delivered_at,
+-- delivered_to} while it waits (delivered_at: the asker was told, as an answer is delivered). versions: the earlier
+-- texts, oldest first, each with the send-back that led to its rewrite (reason null: rewritten while open).
+alter table cb.questions add column if not exists sent_back jsonb;
+alter table cb.questions add column if not exists versions jsonb;
 
 -- What kind of work a task is. 'task' (unclassified) is the default: existing rows were never typed,
 -- and calling them features would be a lie. The list lives in the check and in cb.norm_type.
@@ -661,6 +668,9 @@ drop function if exists cb.user_password cascade;
 drop function if exists cb.assignee_on_project cascade;
 drop function if exists cb.question_assign cascade;
 drop function if exists cb.answer cascade;
+drop function if exists cb.send_back cascade;
+drop function if exists cb.reask cascade;
+drop function if exists cb._options cascade;
 drop function if exists cb.withdraw cascade;
 drop function if exists cb._label cascade;
 drop function if exists cb._dormant_withdraw cascade;
@@ -686,7 +696,7 @@ begin
     insert into cb.events (actor, project, task_id, question_id, kind, summary, data)
     values (a, new.project, new.task_id, new.id, 'answered', left(new.answer, 120),
             jsonb_build_object('edited', old.status = 'answered'));
-  elsif new.status is distinct from old.status and (new.status in ('delivered', 'withdrawn') or old.status = 'open') then
+  elsif new.status is distinct from old.status and new.status <> 'sent_back' and (new.status in ('delivered', 'withdrawn') or old.status = 'open') then
     -- open → dormant (the parent's answer changed) reads as a withdrawal: the question left the board
     insert into cb.events (actor, project, task_id, question_id, kind, summary, data)
     values (a, new.project, new.task_id, new.id, case when new.status = 'dormant' then 'withdrawn' else new.status end,
@@ -724,7 +734,7 @@ begin
     select * into par from cb.questions q where q.id = cb.norm_id(regexp_replace(trim(parent), '^[qQ]', '')) for update;
     if par.id is null then raise exception 'question Q% not found', regexp_replace(trim(parent), '^[qQ#]', ''); end if;
     if par.project <> p then raise exception 'Q% is in %: a follow-up is asked in its parent''s project', par.id, par.project; end if;
-    if par.status not in ('open', 'dormant') then
+    if par.status not in ('open', 'dormant', 'sent_back') then
       raise exception 'Q% is already %: a follow-up needs an open question, so ask a new one instead', par.id, par.status;
     end if;
     if nullif(trim(if_answer), '') is not null then
@@ -753,12 +763,7 @@ begin
   end if;
   insert into cb.questions (project, task_id, asked_by, body, context, options, blocking, reply_to, multi, assigned_to,
                             parent_id, if_answer, status)
-  values (p, tid, a, trim(body), context,
-          (select jsonb_agg(case when jsonb_typeof(o) = 'string'
-                                 then jsonb_build_object('label', o #>> '{}', 'description', null)
-                                 else jsonb_build_object('label', o ->> 'label', 'description', o ->> 'description') end
-                            order by i)
-             from jsonb_array_elements(options) with ordinality as e(o, i)),
+  values (p, tid, a, trim(body), context, cb._options(options),
           coalesce(blocking, false), reply_to, coalesce(multi, false), to_user,
           par.id, label, case when par.id is null then 'open' else 'dormant' end)
   returning cb.questions.id into qid;
@@ -770,16 +775,23 @@ begin
   return qid;
 end $$;
 
+-- Options as stored: jsonb array of strings or {label, description} -> [{label, description}].
+create function cb._options(options jsonb) returns jsonb language sql immutable as $$
+  select jsonb_agg(case when jsonb_typeof(o) = 'string' then jsonb_build_object('label', o #>> '{}', 'description', null)
+                        else jsonb_build_object('label', o ->> 'label', 'description', o ->> 'description') end order by i)
+    from jsonb_array_elements(options) with ordinality as e(o, i)
+$$;
+
 -- Editable until delivered. ruled_by (M12): "Already ruled" (#553): the answer is that live memory entry, so the asking
 -- session gets the rule itself; questions.ruled_by keeps the link for the weekly metric. A typed answer clears it.
 create function cb.answer(id text, answer text default null, actor text default 'ahmed', ruled_by text default null)
 returns void language plpgsql as $$
 #variable_conflict use_variable
 -- no cb.memories row type: it is created further down
-declare qid bigint := cb.norm_id(id); cur text; a text; par bigint; qp text; rid bigint; rst text; rp text; stale boolean;
+declare qid bigint := cb.norm_id(id); cur text; a text; par bigint; qp text; rid bigint; rst text; rp text; stale boolean; asker text;
 begin
   a := cb.set_actor(actor);
-  select q.status, q.parent_id, q.project into cur, par, qp from cb.questions q where q.id = qid for update;
+  select q.status, q.parent_id, q.project, q.asked_by into cur, par, qp, asker from cb.questions q where q.id = qid for update;
   if cur is null then raise exception 'question Q% not found', qid; end if;
   if nullif(trim(ruled_by), '') is not null then
     perform cb.dashboard_only('Today');  -- the metric counts Ahmed's "Already ruled", and the answer carries his authority
@@ -793,6 +805,7 @@ begin
   if coalesce(trim(answer), '') = '' then raise exception 'answer is required'; end if;
   if cur in ('delivered', 'withdrawn') then raise exception 'question Q% is already %', qid, cur; end if;
   if cur = 'dormant' then raise exception 'Q% waits on Q%: it opens when that one is answered', qid, par; end if;
+  if cur = 'sent_back' then raise exception 'Q% was sent back to %: it comes back when they rewrite it', qid, asker; end if;
   update cb.questions q set status = 'answered', answer = trim(answer), answered_at = now(), answered_by = a, ruled_by = rid where q.id = qid;
   perform cb._followups_route(qid);  -- first answer or a change: the follow-ups follow it
 end $$;
@@ -866,7 +879,7 @@ begin
 
   perform set_config('cb.note', 'waiting again: Q' || pid || ' now answered ' || left(par.answer, 100), true);
   for c in update cb.questions q set status = 'dormant'
-            where q.parent_id = pid and q.status = 'open' and q.if_answer is not null and q.if_answer <> all(picked)
+            where q.parent_id = pid and q.status in ('open', 'sent_back') and q.if_answer is not null and q.if_answer <> all(picked)
             returning q.id, q.hold_before loop
     h := c.hold_before;
     continue when h is null;
@@ -883,7 +896,7 @@ begin
   end loop;
   perform set_config('cb.note', '', true);
 
-  for c in update cb.questions q set status = 'open', created_at = now(), hold_before = null
+  for c in update cb.questions q set status = 'open', created_at = now(), hold_before = null, sent_back = null
             where q.parent_id = pid and q.status = 'dormant' and (q.if_answer is null or q.if_answer = any(picked))
             returning q.id, q.blocking, q.task_id loop
     if c.blocking and c.task_id is not null then  -- as cb.ask does, unless the task finished while it waited
@@ -904,7 +917,7 @@ returns void language plpgsql as $$
 declare qid bigint := cb.norm_id(id);
 begin
   perform cb.set_actor(actor);
-  update cb.questions q set status = 'withdrawn' where q.id = qid and q.status in ('open', 'answered', 'dormant');
+  update cb.questions q set status = 'withdrawn' where q.id = qid and q.status in ('open', 'answered', 'dormant', 'sent_back');
   if not found then raise exception 'question Q% not found or already delivered/withdrawn', qid; end if;
   perform cb._dormant_withdraw(array(select q.id from cb.questions q where q.parent_id = qid and q.status = 'dormant'),
                                'withdrawn with Q' || qid);
@@ -920,14 +933,91 @@ begin
    where t.blocked_on = qid and t.status = 'blocked';
 end $$;
 
+-- Send an open question back to its asker (#616). reason: details (more details) | clarify (note = his own question,
+-- required) | simplify | reask (the options are wrong). It leaves the waiting lists until the asker rewrites it with
+-- cb.reask; the inbox and cb pending carry it to the asker as they carry answers, cb.answer_delivered marks it told.
+-- A blocking question keeps its task held throughout: only an answer's delivery or a withdrawal releases it.
+create function cb.send_back(id text, reason text, note text default null, actor text default 'ahmed')
+returns void language plpgsql as $$
+#variable_conflict use_variable
+declare qid bigint := cb.norm_id(regexp_replace(trim(coalesce(id, '')), '^[qQ]', '')); a text := cb.set_actor(actor);
+        r text := lower(trim(coalesce(reason, ''))); n text := nullif(trim(note), ''); cur text;
+begin
+  if r not in ('details', 'clarify', 'simplify', 'reask') then
+    raise exception '"%" is not a reason: details, clarify, simplify or reask', trim(coalesce(reason, ''));
+  end if;
+  if r = 'clarify' and n is null then raise exception 'clarify needs your question in the note'; end if;
+  select q.status into cur from cb.questions q where q.id = qid for update;
+  if cur is null then raise exception 'question Q% not found', qid; end if;
+  if cur <> 'open' then raise exception 'Q% is %: only an open question can be sent back', qid, cur; end if;
+  update cb.questions q set status = 'sent_back', sent_back = jsonb_build_object('reason', r, 'note', n, 'by', a, 'at', now())
+   where q.id = qid;
+  insert into cb.events (actor, project, task_id, question_id, kind, summary)
+  select a, q.project, q.task_id, q.id, 'sent_back', 'sent back: ' || r || coalesce(' — ' || left(n, 200), '')
+    from cb.questions q where q.id = qid;
+end $$;
+
+-- The asker rewrites its question in place (#616): same id, open again, asked now (it sorts fresh and rings). From
+-- sent_back, or from open to improve a question nobody answered yet. Only the asker, or Ahmed's dashboard. Each given
+-- part replaces the old one: body, options (or free: no options), multi (null keeps it; new options reset it to
+-- false), context. The old text, options and context, with the send-back that asked for this, go to versions.
+-- A dormant follow-up waiting on one of its option labels keeps it (compared as answers compare labels, cb._label)
+-- and takes the new spelling, so the answer still routes to it; dropping it is refused.
+create function cb.reask(id text, body text default null, options jsonb default null, free boolean default false,
+                         multi boolean default null, context text default null, actor text default null)
+returns void language plpgsql as $$
+#variable_conflict use_variable
+declare qid bigint := cb.norm_id(regexp_replace(trim(coalesce(id, '')), '^[qQ]', '')); a text := cb.set_actor(actor);
+        q cb.questions; opts jsonb; c record; label text; b text := nullif(trim(body), ''); fr boolean := coalesce(free, false);
+begin
+  select * into q from cb.questions x where x.id = qid for update;
+  if q.id is null then raise exception 'question Q% not found', qid; end if;
+  if not cb._is_dashboard() and a <> q.asked_by then
+    raise exception 'only Q%''s asker (%) or Ahmed can rewrite it', qid, q.asked_by;
+  end if;
+  if q.status not in ('open', 'sent_back') then
+    raise exception 'Q% is %: only an open or sent-back question can be rewritten', qid, q.status;
+  end if;
+  if b is null and options is null and not fr and multi is null and context is null then
+    raise exception 'nothing to rewrite: give the new question, -o options, --free, --multi or -c context';
+  end if;
+  if options is not null and fr then raise exception 'give options or --free, not both'; end if;
+  if options is not null and jsonb_typeof(options) <> 'array' then
+    raise exception 'options must be a JSON array of strings or {label, description} objects';
+  end if;
+  opts := case when fr then null when options is not null then cb._options(options) else q.options end;
+  for c in select x.id, x.if_answer from cb.questions x
+            where x.parent_id = qid and x.status = 'dormant' and x.if_answer is not null order by x.id loop
+    label := (select o ->> 'label' from jsonb_array_elements(coalesce(opts, '[]')) o where cb._label(o ->> 'label') = cb._label(c.if_answer) limit 1);
+    if label is null then
+      raise exception 'Q% waits on the "%" option of Q%: keep that option, or withdraw Q% first (cb withdraw Q%)', c.id, c.if_answer, qid, c.id, c.id;
+    end if;
+    update cb.questions x set if_answer = label where x.id = c.id;
+  end loop;
+  update cb.questions x set status = 'open', created_at = now(), sent_back = null,
+         versions = coalesce(x.versions, '[]') || jsonb_build_array(jsonb_build_object(
+           'body', x.body, 'options', x.options, 'multi', x.multi, 'context', x.context, 'asked_at', x.created_at,
+           'reason', x.sent_back ->> 'reason', 'note', x.sent_back ->> 'note', 'by', x.sent_back ->> 'by',
+           'rewritten_at', now(), 'rewritten_by', a)),
+         body = coalesce(b, x.body), options = opts, context = coalesce(context, x.context),
+         multi = case when multi is not null then multi when options is not null or fr then false else x.multi end
+   where x.id = qid;
+  insert into cb.events (actor, project, task_id, question_id, kind, summary)
+  values (a, q.project, q.task_id, qid, 'rewritten', 'Q' || qid || ' rewritten'
+          || coalesce(' (' || case q.sent_back ->> 'reason' when 'details' then 'more details' when 'clarify' then 'clarified'
+                                   when 'simplify' then 'simplified' when 'reask' then 'new options' end || ')', '')
+          || ': ' || left(coalesce(b, q.body), 100));
+end $$;
+
 create function cb.answers_pending(project text default null)
 returns setof cb.questions language plpgsql as $$
 #variable_conflict use_variable
 declare p text := cb.read_project(project);
 begin
+  -- and send-backs not yet delivered (#616): the asker rewrites those (cb reask)
   return query select q.* from cb.questions q
-   where q.status = 'answered' and (p is null or q.project = p)
-   order by q.answered_at, q.id;
+   where (q.status = 'answered' or (q.status = 'sent_back' and q.sent_back ->> 'delivered_at' is null)) and (p is null or q.project = p)
+   order by coalesce(q.answered_at, (q.sent_back ->> 'at')::timestamptz), q.id;
 end $$;
 
 -- Orchestrator: answer handed to the session. Idempotent. Unblocks the task.
@@ -940,6 +1030,11 @@ begin
   select q.status, q.answer into cur, ans from cb.questions q where q.id = qid for update;
   if cur is null then raise exception 'question Q% not found', qid; end if;
   if cur = 'delivered' then return; end if;
+  if cur = 'sent_back' then  -- the asker was told (#616); the question waits for its rewrite and keeps holding its task
+    update cb.questions q set sent_back = q.sent_back || jsonb_build_object('delivered_at', now(), 'delivered_to', delivered_to)
+     where q.id = qid and q.sent_back ->> 'delivered_at' is null;
+    return;
+  end if;
   if cur <> 'answered' then raise exception 'question Q% is %, not answered', qid, cur; end if;
   update cb.questions q set status = 'delivered', delivered_at = now(), delivered_to = delivered_to where q.id = qid;
   -- the answer is final now: follow-ups it did not pick are skipped, down the chain
@@ -1072,6 +1167,14 @@ begin
                            from cb.questions q left join cb.questions pq on pq.id = q.parent_id  -- a follow-up quotes what it followed
                           where q.status = 'answered' and ((lower(q.reply_to ->> 'machine') = m and q.reply_to ->> 'pane' = pane)
                                  or (coalesce(q.reply_to ->> 'pane', '') = '' and q.asked_by = me))), '[]'),
+    -- questions sent back to me (#616), until delivered; same addressing as answers
+    'sent_back', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'task_id', q.task_id, 'project', q.project, 'body', q.body,
+                                                               'reason', q.sent_back ->> 'reason', 'note', q.sent_back ->> 'note',
+                                                               'by', q.sent_back ->> 'by') order by q.id)
+                             from cb.questions q
+                            where q.status = 'sent_back' and q.sent_back ->> 'delivered_at' is null
+                              and ((lower(q.reply_to ->> 'machine') = m and q.reply_to ->> 'pane' = pane)
+                                   or (coalesce(q.reply_to ->> 'pane', '') = '' and q.asked_by = me))), '[]'),
     'events', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'task_id', e.task_id, 'kind', e.kind, 'summary', e.summary,
                                                             'actor', e.actor, 'title', t.title, 'status', t.status) order by e.id)
                           from cb.events e join cb.tasks t on t.id = e.task_id
@@ -1352,7 +1455,7 @@ create function cb._user_hand_back(n text, why text, project text default null) 
 #variable_conflict use_variable
 declare nq int; nt int; nt2 int;
 begin
-  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status = 'open' and (project is null or q.project = project);
+  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status in ('open', 'sent_back') and (project is null or q.project = project);
   get diagnostics nq = row_count;
   -- follow-ups not asked yet go back too, uncounted: nobody has seen them
   update cb.questions q set assigned_to = null where q.assigned_to = n and q.status = 'dormant' and (project is null or q.project = project);

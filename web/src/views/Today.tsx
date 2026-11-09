@@ -7,7 +7,7 @@ import { go, href, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { AnsweredRow, QuestionCard } from '@/components/QuestionCard'
+import { AnsweredRow, QuestionCard, SentBackRow } from '@/components/QuestionCard'
 import { MakeRule } from '@/components/MakeRule'
 import { Timeline } from '@/components/Timeline'
 import { ActorChip, ProjectChip } from '@/components/Chips'
@@ -63,6 +63,7 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
   const others = allOpen.filter((q) => q.assigned_to)
   const { data: users = [] } = useUsers()
   const { data: answered = [] } = useQuestions(route.project, 'answered')
+  const { data: sentBack = [] } = useQuestions(route.project, 'sent_back')
   const clearing = useClearing(open)
   // Strips already there on arrival sit still; only questions asked while you watch slide in.
   const initial = useRef<Set<number> | null>(null)
@@ -123,6 +124,14 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
             </summary>
             <div className="mt-3 grid gap-3">{others.map((q) => <QuestionCard key={q.id} q={q} />)}</div>
           </details>
+        )}
+
+        {sentBack.length > 0 && (
+          <section className="mt-8" aria-labelledby="sentback">
+            <h2 id="sentback" className="text-sm font-semibold">Sent back</h2>
+            <p className="text-xs text-muted-foreground">Each comes back to Waiting on you when its session rewrites it.</p>
+            <ul className="mt-1 divide-y">{sentBack.map((q) => <SentBackRow key={q.id} q={q} />)}</ul>
+          </section>
         )}
 
         {answered.length > 0 && (
@@ -196,7 +205,7 @@ function Count({ n, label, tone }: { n: number; label: string; tone: string }) {
 
 const FILTERS: { key: string; label: string }[] = [
   { key: '', label: 'All' }, { key: 'open', label: 'Open' }, { key: 'answered', label: 'Answered' },
-  { key: 'delivered', label: 'Delivered' }, { key: 'withdrawn', label: 'Withdrawn' },
+  { key: 'sent_back', label: 'Sent back' }, { key: 'delivered', label: 'Delivered' }, { key: 'withdrawn', label: 'Withdrawn' },
 ]
 
 function AllQuestions({ route }: { route: Route }) {
@@ -244,7 +253,7 @@ function ClosedQuestion({ q }: { q: Question }) {
           <ActorChip actor={q.asked_by} /><ProjectChip slug={q.project} />
           <span className="tabular-nums">{ago(q.created_at)}</span>
           <span className="callsign text-[12px]">Q{q.id}</span>
-          <span className="ml-auto capitalize">{q.status}{q.delivered_to ? ` to ${q.delivered_to}` : ''}</span>
+          <span className="ml-auto capitalize">{q.status.replace('_', ' ')}{q.delivered_to ? ` to ${q.delivered_to}` : ''}</span>
         </div>
         <p className="mt-2 text-sm text-pretty">{q.body}</p>
         {q.answer && <p className="mt-1.5 text-sm font-medium text-pretty">{q.answer}</p>}

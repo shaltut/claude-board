@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 import { get, rpc, type Question, type Task, type User } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { QuestionCard } from '@/components/QuestionCard'
+import { QuestionCard, SentBackRow } from '@/components/QuestionCard'
 import { PRIORITIES, ProjectChip } from '@/components/Chips'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -27,7 +27,8 @@ export function Guest({ user }: { user: User }) {
   // Work-holding questions first, then oldest first: the order Ahmed's Today uses.
   const open = (data?.questions.filter((q) => q.status === 'open') ?? [])
     .sort((a, b) => Number(b.blocking) - Number(a.blocking) || +new Date(a.created_at) - +new Date(b.created_at))
-  const done = data?.questions.filter((q) => q.status !== 'open') ?? []
+  const sentBack = data?.questions.filter((q) => q.status === 'sent_back') ?? []
+  const done = data?.questions.filter((q) => q.status !== 'open' && q.status !== 'sent_back') ?? []
   const tasks = data?.tasks ?? []
   useTabLamp(open.length)
   useRing(data && open.map((q) => q.id))
@@ -65,6 +66,7 @@ export function Guest({ user }: { user: User }) {
               {open.length === 0
                 ? <p className="rounded-lg border border-dashed px-5 py-6 text-sm text-muted-foreground">When someone needs you, the question appears here and the tab shows a number.</p>
                 : <div className="grid gap-3">{open.map((q) => <QuestionCard key={q.id} q={q} guest />)}</div>}
+              {sentBack.length > 0 && <ul className="mt-4 divide-y" aria-label="Sent back">{sentBack.map((q) => <SentBackRow key={q.id} q={q} guest />)}</ul>}
             </section>
 
             {tasks.length > 0 && (

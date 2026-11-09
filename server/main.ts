@@ -98,17 +98,18 @@ app.use('/api/*', async (c, next) => {
   if (!u) return c.json({ ok: false, error: 'open the link Ahmed sent you' }, 401);
   if (c.req.path === '/api/stream') return next();
   if (c.req.path === '/api/me') return c.json(await q.me(u.name, onTheirProjects(u.name)));
-  const fn = c.req.method === 'POST' && /^\/api\/rpc\/(answer|log)$/.exec(c.req.path)?.[1];
+  const fn = c.req.method === 'POST' && /^\/api\/rpc\/(answer|send_back|log)$/.exec(c.req.path)?.[1];
   if (!fn) return c.json({ ok: false, error: 'not available to guests' }, 403);
   const args = (await c.req.json().catch(() => null)) ?? {};
-  const id = Number(String(fn === 'answer' ? args.id : args.task_id ?? '').replace(/^[#q]/i, ''));
+  const id = Number(String(fn !== 'log' ? args.id : args.task_id ?? '').replace(/^[#q]/i, ''));
   if (!Number.isSafeInteger(id)) return c.json({ ok: false, error: 'not a valid id' }, 400);
-  const [mine] = fn === 'answer'
+  const [mine] = fn !== 'log'
     ? await sql`select project from cb.questions where id = ${id} and assigned_to = ${u.name} and ${onTheirProjects(u.name)}`
     : await sql`select project from cb.tasks where id = ${id} and assignee = ${u.name} and ${onTheirProjects(u.name)}`;
-  if (!mine) return c.json({ ok: false, error: fn === 'answer' ? 'that question is not assigned to you' : 'that task is not assigned to you' }, 403);
+  if (!mine) return c.json({ ok: false, error: fn !== 'log' ? 'that question is not assigned to you' : 'that task is not assigned to you' }, 403);
   try {
     const safe = fn === 'answer' ? { id: String(id), answer: args.answer, actor: u.name }
+      : fn === 'send_back' ? { id: String(id), reason: args.reason, note: args.note ?? null, actor: u.name }
       : { project: mine.project, summary: args.summary, task_id: String(id), actor: u.name };
     return c.json({ ok: true, result: await callFn(fn, safe) });
   } catch (e: any) {

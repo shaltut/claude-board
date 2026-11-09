@@ -89,6 +89,10 @@ const GROUPS: [string, Record<string, Cmd>][] = [
     delivered: { use: 'cb delivered <qid> [session]', topic: 'ask',
       does: 'Mark an answer delivered; unblocks its task back to Next.',
       eg: 'cb delivered Q12 W2@macbook' },
+    reask: { use: 'cb reask Q<id> ["<new question>"] [-o "<Label>=<why>" ... | --free] [--multi] [-c "<context>"]', topic: 'ask',
+      does: 'Ahmed sent your question back (more details, his own question, simpler, or the options are wrong): rewrite it in place. Same Q id; it shows up on his board again as new. Give only what changes: the text, the options, the context, or several.',
+      eg: 'cb reask Q12 "Ship #2796 today?" -o "Yes (Recommended)=tests green on SIT" -o "No=wait for the DB run"',
+      more: 'Never answer a send-back with a new cb ask: rewrite the same question. -c replaces the context (Ahmed still sees the old version). New -o replace all options: keep any option a --after/--if follow-up waits on, or withdraw that follow-up first. Only the session that asked can rewrite it; it also works on an open question nobody answered yet.' },
     withdraw: { use: 'cb withdraw <qid>', topic: 'ask',
       does: 'Withdraw a question that no longer matters or was asked wrong (then ask again properly).',
       eg: 'cb withdraw Q12' },
@@ -292,7 +296,15 @@ ask vs tell vs huddle
   huddle  several sessions working one thing out (cb help huddle)
   A teammate's answer is never Ahmed's approval.
 
-Asked it wrong? cb withdraw Q12, then ask again.
+Sent back: Ahmed (or the person it was for) can send a question back instead of answering it: it needs more
+details, he asks you something first, it should be simpler, or the options are wrong. It arrives as
+"[Claude Board] Ahmed sent Q12 back: simplify it — <his note>" (no relay: it shows in cb pending).
+Rewrite the SAME question, never a new cb ask:
+  cb reask Q12 "<new question>" [-o "<Label>=<why>" ... | --free] [--multi] [-c "<context>"]
+Give only what changes; context alone is fine (cb reask Q12 -c "<the details he asked for>"). It comes back to
+him as new, with your previous version one click away. A blocking question keeps its task held meanwhile.
+
+Asked it wrong? cb withdraw Q12, then ask again. Not answered yet and only the wording is off? cb reask Q12.
 Never: AskUserQuestion (blocked here: it stops the session); stopping to wait for an answer.`,
 
   huddle: `cb help huddle: talking to other sessions
@@ -445,6 +457,11 @@ NEVER
 };
 
 export const TOPIC_NAMES = Object.keys(TOPICS);
+
+// A send-back (#616) as the asking session reads it: in the relay's push and in cb pending.
+const BACK: Record<string, string> = { details: 'it needs more details', clarify: 'a question for you', simplify: 'simplify it', reask: 'the options are wrong' };
+export const backWhy = (reason: string, note?: string | null) => `${BACK[reason] ?? reason}${note ? ` — ${note}` : ''}`;
+export const reaskHint = (id: number | string) => `cb reask Q${id} "<new question>" [-o ...] [-c ...]`;
 
 export const OVERVIEW_TEXT = [
   OVERVIEW.replace('TOPIC_LIST', TOPIC_NAMES.join(' ')),

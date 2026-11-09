@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect, machine } from '../server/db.ts';
+import { backWhy, reaskHint } from './help.ts';
 
 const SOCKET = process.env.CLAUDE_CODE_MESSAGING_SOCKET;
 const TOKEN = process.env.CLAUDE_CODE_MESSAGING_TOKEN;
@@ -101,6 +102,10 @@ function format(raw: any): string {
     lines.push(`${who(a)} answered Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: ${a.answer}`,
       ...(a.parent_id ? [`  Follow-up to Q${a.parent_id} (${who({ answered_by: a.parent_answered_by })} answered ${cut(a.parent_answer, 120)}): ${cut(a.parent_body, 200)}`] : []),
       `  You asked: ${cut(a.body, 200)}`);
+  // Sent back (#616): rewrite the same question. ?? []: a board whose schema predates it.
+  for (const s of i.sent_back ?? [])
+    lines.push(`${who({ answered_by: s.by })} sent Q${s.id} back: ${backWhy(s.reason, s.note).replace(/([^.!?…])$/, '$1.')} Rewrite it: ${reaskHint(s.id)}`,
+      `  You asked: ${cut(s.body, 200)}`);
   for (const c of i.answer_copies ?? [])
     lines.push(`${who(c)} answered ${c.asked_by}'s Q${c.id}${c.task_id ? ` (task #${c.task_id})` : ''}: ${c.answer}`,
       `  They asked: ${cut(c.body, 200)}`, `  (copy for you as orchestrator; ${c.asked_by} gets it directly)`);
@@ -127,6 +132,7 @@ function format(raw: any): string {
     const list = i.next_work.map((t: any) => `#${t.id} ${t.priority} ${cut(t.title, 60)}`).join('; ');
     lines.push(`New work in your project's Next: ${list}. You have nothing in progress: take it with \`cb next\`.`);
   }
+  if (i.sent_back?.length) lines.push('Rewrite each with cb reask (same Q id); do not open a new question.');
   if (i.answers.length) lines.push('Act on these now. The answers are marked delivered.');
   else if (i.bugs?.length) lines.push('A session reported it, not Ahmed: triage it, then carry on.');
   else if (i.answer_copies?.length) lines.push('The worker acts on it; update your plan, tasks or priorities if the answer changes them.');
@@ -148,11 +154,11 @@ async function check() {
       const [{ i }] = await sql`select cb.inbox(${M}, ${PANE}, ${after}) as i`;
       const read = [...i.broadcasts, ...i.messages, ...(i.huddles ?? [])].map((x: any) => Number(x.id))
         .concat([...(i.answer_copies ?? []), ...(i.bugs ?? [])].map((x: any) => Number(x.event_id)));
-      if (i.answers.length || i.events.length || read.length || i.next_work.length || i.memory?.length) {
+      if (i.answers.length || i.sent_back?.length || i.events.length || read.length || i.next_work.length || i.memory?.length) {
         await post(format(i));
         if (read.length) await sql`select cb.broadcast_seen(${M}, ${PANE}, ${Math.max(...read)})`;
-        for (const a of i.answers) await sql`select cb.answer_delivered(${String(a.id)}, ${i.actor ?? `${PANE}@${M}`}, ${'relay'})`;
-        log(`pushed ${i.bugs?.length ?? 0} bugs, ${i.huddles?.length ?? 0} huddle lines, ${i.messages.length} messages, ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next, ${i.memory?.length ?? 0} memory`);
+        for (const a of [...i.answers, ...(i.sent_back ?? [])]) await sql`select cb.answer_delivered(${String(a.id)}, ${i.actor ?? `${PANE}@${M}`}, ${'relay'})`;
+        log(`pushed ${i.bugs?.length ?? 0} bugs, ${i.huddles?.length ?? 0} huddle lines, ${i.messages.length} messages, ${i.answers.length} answers, ${i.sent_back?.length ?? 0} sent back, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next, ${i.memory?.length ?? 0} memory`);
       }
       after = Number(i.last_event);
     } while (again);

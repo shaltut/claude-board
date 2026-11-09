@@ -106,7 +106,7 @@ export async function huddle(id: number) {
 export async function me(user: string, scope: ReturnType<typeof sql>) {
   const [questions, tasks] = await Promise.all([
     sql`select q.*, ${followups(user)} from cb.questions q where assigned_to = ${user} and ${scope}
-          and (status = 'open' or answered_at > now() - interval '7 days') order by status = 'open' desc, id desc`,
+          and (status in ('open', 'sent_back') or answered_at > now() - interval '7 days') order by status = 'open' desc, id desc`,
     // only the guest's own notes come back: session notes on the same task can hold anything
     sql`select t.*, coalesce((select jsonb_agg(jsonb_build_object('summary', e.summary, 'at', e.at) order by e.at)
           from cb.events e where e.task_id = t.id and e.kind = 'note' and e.actor = ${user}), '[]') as my_notes
