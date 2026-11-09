@@ -68,7 +68,7 @@ export function Sessions({ route }: { route: Route }) {
 }
 
 /** Relay state: a steady green light when answers reach the session by themselves. */
-function LiveDot({ s }: { s: SessionRow }) {
+export function LiveDot({ s }: { s: SessionRow }) {
   const title = s.live ? 'Relay live: answers and changes reach this session by themselves'
     : s.last_seen ? `Relay last checked in ${ago(s.last_seen)}` : 'No relay: this session only sees the board when it runs cb'
   return (

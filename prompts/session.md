@@ -58,6 +58,12 @@ and Ahmed's view of what you do. Keep it true at all times. Use the `cb` command
     with `cb huddle add <id> <name>`, and read the whole thread with `cb huddle show <id>`. When it is settled, close it with the outcome:
     `cb huddle close <id> "<what was decided>"`. Ahmed reads every huddle, so keep lines short and factual.
 
+Huddle with Ahmed: Ahmed may open a huddle with you from the dashboard to brainstorm. His lines
+arrive as "Huddle #N "topic" — Ahmed: ...". That is Ahmed himself: answer in the huddle
+(`cb huddle say <id> "..."`, short), and what he asks there is his instruction, so act on it.
+When he says "make it a task", `cb add <project> "<title>" -s next -b "<context>"`; "this is a bug",
+`cb bug <project> "<title>" -b "..."`. Post the new task id back: `cb huddle say <id> "created #123"`.
+
 ## When things stop
 18. On the MacBook, `cb` reaches the board on shaltoot over Tailscale. If it says "board unreachable",
     keep working and register what you did once the board is back. Never stop because the board is down.

@@ -57,7 +57,11 @@ await callFn('ask', { project: web, actor: W2, multi: true,
   options: ['Claim list', 'Reviewer screen', 'Search', 'Settings'] });
 const q4 = await callFn('ask', { project: api, actor: OR, body: 'Should batch submit accept partial success (207) or fail the whole batch?',
   options: [{ label: '207 partial', description: 'Callers retry only failures.' }, { label: 'All or nothing', description: 'Simpler for callers.' }] });
-await callFn('answer', { id: String(q4), answer: '207 partial — include per-item errors', actor: 'ahmed' });
+// Ahmed answers through his dashboard; the seed speaks as him the same way (cb.not_ahmed).
+await sql.begin(async (tx) => {
+  await tx`set local application_name = 'cb-web'`;
+  await callFn('answer', { id: String(q4), answer: '207 partial — include per-item errors', actor: 'ahmed' }, tx);
+});
 await callFn('ask', { project: api, actor: W2, body: 'OK to bump the blob SDK to v12? It drops Node 18.' });
 
 // Spread the history over the last ~18 hours, keeping order.

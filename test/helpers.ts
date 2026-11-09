@@ -13,7 +13,8 @@ export async function freshDb() {
     execFileSync('node', ['db/setup.ts', '--test'], { stdio: 'pipe' });
     ready = true;
   }
-  const sql = postgres(TEST_URL, { onnotice: () => {} });
+  // tests seed as Ahmed too: they connect as his dashboard does (sessions can't act as ahmed)
+  const sql = postgres(TEST_URL, { onnotice: () => {}, connection: { application_name: 'cb-web' } });
   const tables = await sql`select tablename from pg_tables where schemaname = 'cb'`;
   if (tables.length) await sql.unsafe(`truncate ${tables.map((t) => 'cb.' + t.tablename).join(', ')} restart identity cascade`);
   return sql;

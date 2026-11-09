@@ -65,5 +65,11 @@ The detail for every step below is in `cb help orchestrate`.
     watches on the Huddles page. As admin, you can speak in and close any huddle in your project.
     Close it with the outcome: `cb huddle close <id> "<what was decided>"`.
 
+Huddle with Ahmed: Ahmed opens huddles with you (and workers) from the dashboard to brainstorm.
+His lines arrive as "Huddle #N "topic" — Ahmed: ...": that is Ahmed himself. Answer there, short
+(`cb huddle say <id> "..."`), and act on what he asks; pull in a worker with `cb huddle add <id> <name>`
+if it's theirs. When he says "make it a task", `cb add <project> "<title>" -s next -b "<context>"`;
+"this is a bug", `cb bug <project> "<title>" -b "..."`. Tag it and post the new task id back in the huddle.
+
 ## Keep running
 18. Keep running. Waiting on Ahmed is never a reason to stop: his answers arrive as [Claude Board] messages.

@@ -75,7 +75,13 @@ app.use('/api/*', async (c, next) => {
 app.post('/api/rpc/:fn', async (c) => {
   try {
     const args = await c.req.json().catch(() => ({}));
-    return c.json({ ok: true, result: await callFn(c.req.param('fn'), args ?? {}) });
+    // Only the dashboard page acts as ahmed (cb.not_ahmed): a browser POST always carries Origin, and the
+    // CSRF check above has made it this host. A script without Origin (curl from a session) is a session.
+    // The CLI shares this pool and callFn, so the name is set per transaction here, not on the pool.
+    const result = c.req.header('origin')
+      ? await sql.begin(async (tx) => { await tx`set local application_name = 'cb-web'`; return callFn(c.req.param('fn'), args ?? {}, tx); })
+      : await callFn(c.req.param('fn'), args ?? {});
+    return c.json({ ok: true, result });
   } catch (e: any) {
     const status = e instanceof RpcError ? e.status : e?.name === 'PostgresError' ? 400 : 500;
     return c.json({ ok: false, error: e?.message ?? String(e) }, status as 400);

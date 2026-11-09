@@ -37,3 +37,9 @@ export function splitActor(a: string) {
   const i = a.indexOf('@')
   return i > 0 ? { who: a.slice(0, i), where: a.slice(i + 1) } : { who: a, where: '' }
 }
+
+/** Who said a huddle line, for text posted under Ahmed's name: a session-chosen name only if it looks like one. */
+export function lineAuthor(actor: string) {
+  if (actor === 'ahmed') return 'Ahmed'
+  return /^[\w.-]{1,30}(@[\w.-]{1,30})?$/.test(actor) ? splitActor(actor).who : 'a teammate'
+}

@@ -119,6 +119,8 @@ create index if not exists questions_status on cb.questions (status);
 -- ===========================================================================
 
 drop function if exists cb.set_actor cascade;
+drop function if exists cb.not_ahmed cascade;
+drop function if exists cb.ahmed_like cascade;
 drop function if exists cb.norm_status cascade;
 drop function if exists cb.norm_priority cascade;
 drop function if exists cb.norm_type cascade;
@@ -163,11 +165,26 @@ drop function if exists cb.lock_take cascade;
 drop function if exists cb.lock_release cascade;
 drop function if exists cb.lock_queue cascade;
 
+-- Only Ahmed's dashboard (the web server sets application_name 'cb-web' on its writes) may act as
+-- ahmed: the relay tells sessions to act on his lines, so a session must not be able to speak as him.
+-- Any name with ahmed as a whole word counts (Ahmed (boss), ahmed-x@pc, the ahmed); ahmedx, mohammed_ahmed don't.
+-- ponytail: a deterrent, not auth. Known bypasses: PGAPPNAME=cb-web (or set application_name) on any
+-- psql/postgres connection, and a local POST to /api/rpc with a forged same-host Origin header. It stops
+-- accidents and prompt-injected sessions, not a determined local process. Real auth = a Postgres role per client.
+create function cb.ahmed_like(a text) returns boolean language sql immutable as $$ select coalesce(a, '') ~* '\mahmed\M' $$;
+create function cb.not_ahmed(a text) returns void language plpgsql as $$
+begin
+  if cb.ahmed_like(a) and current_setting('application_name') <> 'cb-web' then
+    raise exception 'only Ahmed''s dashboard can act as ahmed: sessions use their own name';
+  end if;
+end $$;
+
 -- Effective actor for this transaction; triggers read it back from cb.actor.
 create function cb.set_actor(actor text) returns text language plpgsql as $$
 #variable_conflict use_variable
 declare a text := coalesce(nullif(trim(actor), ''), nullif(current_setting('cb.actor', true), ''), 'unknown');
 begin
+  perform cb.not_ahmed(a);
   perform set_config('cb.actor', a, true);
   return a;
 end $$;
@@ -687,6 +704,7 @@ create function cb.iam(machine text, pane text, actor text, project text default
 declare p text := cb.read_project(project);  -- unknown project raises; null keeps the session's current one
 begin
   if coalesce(trim(actor), '') = '' or coalesce(trim(pane), '') = '' then raise exception 'pane and actor are required'; end if;
+  perform cb.not_ahmed(actor);
   -- a new session starts from now: it never gets broadcasts or messages sent before it existed
   insert into cb.sessions (machine, pane, actor, project, broadcast_seen)
   values (lower(trim(machine)), trim(pane), trim(actor), p, coalesce((select max(e.id) from cb.events e), 0))
@@ -703,7 +721,9 @@ declare m text := lower(trim(machine)); me text; proj text; seen bigint;
 begin
   -- a new session (relay before cb iam) starts from now; until it joins a project it hears no broadcasts
   insert into cb.sessions (machine, pane, actor, broadcast_seen)
-  values (m, pane, pane || '@' || m, coalesce((select max(e.id) from cb.events e), 0))
+  -- a pane or machine named like ahmed must not make a session named like him
+  values (m, pane, case when cb.ahmed_like(pane || '@' || m) then 'session-' || left(md5(pane || '@' || m), 8) else pane || '@' || m end,
+          coalesce((select max(e.id) from cb.events e), 0))
   on conflict on constraint sessions_pkey do update set last_seen = now()
   returning cb.sessions.actor, cb.sessions.project, cb.sessions.broadcast_seen into me, proj, seen;
   return jsonb_build_object(
@@ -971,6 +991,7 @@ create function cb.user_add(name text, display text default null) returns text l
 declare n text := lower(trim(name)); t text;
 begin
   if n !~ '^[a-z][a-z0-9_-]*$' then raise exception 'user name: lowercase letters, digits, - or _ (e.g. omar)'; end if;
+  if n = 'ahmed' then raise exception 'ahmed is the board owner, not a guest user: pick another name'; end if;
   insert into cb.users (name, display) values (n, coalesce(nullif(trim(display), ''), initcap(n)))
   on conflict on constraint users_pkey do update set display = coalesce(nullif(trim(user_add.display), ''), cb.users.display)
   returning cb.users.token into t;

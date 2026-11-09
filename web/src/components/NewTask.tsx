@@ -12,12 +12,16 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 
-export function NewTask({ open, onOpenChange, project }: { open: boolean; onOpenChange: (o: boolean) => void; project?: string }) {
+/** `initial` and `links` apply on mount: give the dialog a `key` per draft (e.g. a huddle line). */
+export function NewTask({ open, onOpenChange, project, initial, links, onCreated }: {
+  open: boolean; onOpenChange: (o: boolean) => void; project?: string
+  initial?: { title?: string; body?: string }; links?: Record<string, string>; onCreated?: (id: number) => void
+}) {
   const qc = useQueryClient()
   const { data: projects = [] } = useProjects()
   const [proj, setProj] = useState(project ?? '')
-  const [title, setTitle] = useState('')
-  const [body, setBody] = useState('')
+  const [title, setTitle] = useState(initial?.title ?? '')
+  const [body, setBody] = useState(initial?.body ?? '')
   const [status, setStatus] = useState<Status>('next')
   const [priority, setPriority] = useState<Task['priority']>('P2')
   const [type, setType] = useState<Task['type']>('task')
@@ -25,10 +29,11 @@ export function NewTask({ open, onOpenChange, project }: { open: boolean; onOpen
   async function create(e: React.FormEvent) {
     e.preventDefault()
     try {
-      const id = await rpc<number>('task_add', { project: proj, title, body, status, priority, type })
+      const id = await rpc<number>('task_add', { project: proj, title, body, status, priority, type, ...(links && { links }) })
       toast.success(`Created #${id}`, { action: { label: 'Open', onClick: () => go({ task: id }) } })
       setTitle(''); setBody('')
       onOpenChange(false)
+      onCreated?.(id)
       await qc.invalidateQueries()
     } catch (err: any) { toast.error(err.message) }
   }
