@@ -40,28 +40,29 @@ function Column({ status, tasks, showProject }: { status: Status; tasks: Task[];
   const { setNodeRef, isOver } = useDroppable({ id: `col:${status}`, data: { status } })
   const [collapsed, setCollapsed] = useState(false)
   return (
-    <section aria-label={STATUS[status].label} className="flex min-w-64 flex-1 flex-col">
-      <header className="mb-2 flex items-center gap-2 px-1">
+    <section aria-label={STATUS[status].label} className="flex min-w-0 flex-col">
+      <header className="mb-2 flex h-7 items-center gap-2 px-1">
         <StatusDot status={status} />
-        <h2 className="text-sm font-semibold">{STATUS[status].label}</h2>
-        <span className="text-sm text-muted-foreground tabular-nums">{tasks.length}</span>
-        {HINT[status] && <span className="text-xs text-muted-foreground">· {HINT[status]}</span>}
+        <h2 className="callsign text-[15px]">{STATUS[status].label}</h2>
+        <span className="text-[13px] text-muted-foreground tabular-nums">{tasks.length}</span>
+        {HINT[status] && <span className="hidden truncate text-xs text-muted-foreground 2xl:inline">{HINT[status]}</span>}
         {status === 'done' && (
-          <button onClick={() => setCollapsed((c) => !c)} className="ml-auto text-muted-foreground hover:text-foreground"
-            aria-label={collapsed ? 'Show done' : 'Hide done'}>
+          <button onClick={() => setCollapsed((c) => !c)} className="ml-auto grid size-6 place-items-center rounded text-muted-foreground hover:bg-raised hover:text-foreground"
+            aria-label={collapsed ? 'Show done' : 'Hide done'} aria-expanded={!collapsed}>
             <ChevronDown className={cn('size-4 transition-transform', collapsed && '-rotate-90')} />
           </button>
         )}
       </header>
       <div ref={setNodeRef}
-        className={cn('flex min-h-32 flex-1 flex-col gap-2 rounded-lg p-1.5 transition-colors', isOver ? 'bg-accent/60' : 'bg-muted/40')}>
+        className={cn('flex min-h-40 flex-1 flex-col gap-1.5 rounded-lg border border-transparent p-1.5 transition-colors duration-150',
+          isOver ? 'border-dashed border-ring/60 bg-ring/8' : 'bg-raised/55')}>
         {!collapsed && (
           <SortableContext items={tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
             {tasks.map((t) => <SortableCard key={t.id} t={t} showProject={showProject} />)}
           </SortableContext>
         )}
-        {tasks.length === 0 && <p className="px-2 py-6 text-center text-xs text-muted-foreground">Drop a task here</p>}
-        {status === 'done' && !collapsed && tasks.length > 0 && <p className="px-2 text-center text-[11px] text-muted-foreground">Last 7 days</p>}
+        {tasks.length === 0 && <p className="px-2 py-8 text-center text-xs text-muted-foreground">Drop a task here</p>}
+        {status === 'done' && !collapsed && tasks.length > 0 && <p className="px-2 pt-1 text-center text-[11px] text-muted-foreground">Last 7 days</p>}
       </div>
     </section>
   )
@@ -112,7 +113,8 @@ export function Board({ route }: { route: Route }) {
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={onStart} onDragEnd={onEnd} onDragCancel={() => setActive(null)}>
-      <div className="flex gap-4 overflow-x-auto pb-4">
+      <h1 className="sr-only">Board</h1>
+      <div className="-mx-4 grid auto-cols-[minmax(15.5rem,1fr)] grid-flow-col gap-3 overflow-x-auto px-4 pb-4 sm:-mx-6 sm:px-6 xl:auto-cols-[minmax(0,1fr)]">
         {COLUMNS.map((s) => <Column key={s} status={s} tasks={columns[s]} showProject={!route.project} />)}
       </div>
       <DragOverlay>{active && <TaskCard t={active} showProject={!route.project} overlay />}</DragOverlay>
