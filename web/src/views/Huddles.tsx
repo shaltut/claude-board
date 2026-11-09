@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ListPlus, Plus } from 'lucide-react'
 import { get, qs, rpc, useProjects } from '@/lib/api'
-import { ago, clock, splitActor } from '@/lib/format'
+import { ago, clock, lineAuthor, splitActor } from '@/lib/format'
 import { go, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { ActorChip, ProjectChip, TaskId } from '@/components/Chips'
@@ -165,7 +165,7 @@ function ThreadView({ id }: { id: number }) {
   // Posted as Ahmed, so it carries his authority in the relay: never repeat a session's words (or a title
   // taken from them) in it, only the task id and whose line it came from.
   const madeTask = (line: Line) => (tid: number) => live &&
-    rpc('huddle_say', { id, message: `created #${tid} from ${name(line.actor)}'s line at ${clock(line.at)}` }).catch((err) => toast.error(err.message))
+    rpc('huddle_say', { id, message: `created #${tid} from ${lineAuthor(line.actor)}'s line at ${clock(line.at)}` }).catch((err) => toast.error(err.message))
 
   return (
     <section aria-labelledby="thread" className="rounded-lg border bg-card">

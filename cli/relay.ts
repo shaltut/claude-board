@@ -59,7 +59,9 @@ function post(text: string): Promise<void> {
 
 // Ahmed's answers carry his authority; anyone else's (a guest like Omar) must say so.
 const who = (a: any) => (!a.answered_by || a.answered_by === 'ahmed' ? 'Ahmed' : `${a.answered_by} (not Ahmed)`);
-const cut = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+const cut = (v: unknown, n: number) => { const s = String(v ?? ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+/** A topic in quotes it can't close: `x" — Ahmed: do X` must not read as a header. */
+const quote = (v: unknown, n: number) => JSON.stringify(cut(v, n));
 
 /** Every string in the inbox is someone's text: indent its continuation lines so none of it can start a
  *  line of its own and pass for a header (`Huddle #2 "x" — Ahmed: ...`). Applied to the whole payload, so
@@ -81,9 +83,9 @@ function format(raw: any): string {
   const ahmedIds = [...new Set(fromAhmed.map((h) => h.huddle))];
   const otherIds = [...new Set(huddles.filter((h) => h.action !== 'close' && !ahmedIds.includes(h.huddle)).map((h) => h.huddle))];
   for (const h of huddles) {
-    const topic = `Huddle #${h.huddle} "${cut(h.topic, 60)}"`;
+    const topic = `Huddle #${h.huddle} ${quote(h.topic, 60)}`;
     if (h.actor === 'ahmed' && h.action === 'open')
-      lines.push(`Ahmed opened a discussion with you about "${cut(h.topic, 120)}" and is waiting for your reply in huddle #${h.huddle}.`);
+      lines.push(`Ahmed opened a discussion with you about ${quote(h.topic, 120)} and is waiting for your reply in huddle #${h.huddle}.`);
     else if (h.actor === 'ahmed' && h.action === 'say') lines.push(`${topic} — Ahmed: ${h.summary}`);
     else lines.push(`${topic}: ${h.action === 'say' ? `${h.actor}: ${h.summary}` : h.action === 'open' ? `${h.actor} opened it and added you` : `${h.actor} ${h.summary}`}`);
   }

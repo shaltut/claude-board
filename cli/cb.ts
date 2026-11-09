@@ -75,7 +75,7 @@ let actor = o.as || process.env.CB_ACTOR || `${pane || 'session'}@${hostname()}`
 const explicitActor = !!(o.as || process.env.CB_ACTOR);
 const [cmd, ...args] = pos;
 // Ahmed's lines carry his authority in every session; only his dashboard speaks as him (cb.not_ahmed guards the DB too).
-const isAhmed = (a?: string) => /^\s*ahmed\s*(@|$)/i.test(a ?? '');
+const isAhmed = (a?: string) => /\bahmed\b/i.test(a ?? ''); // ahmed as a whole word, same as cb.ahmed_like
 if (isAhmed(actor) || (cmd === 'iam' && isAhmed(args[0]))) {
   console.error("cb: only Ahmed's dashboard can act as ahmed: sessions use their own name");
   process.exit(1);

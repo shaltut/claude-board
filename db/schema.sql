@@ -120,6 +120,7 @@ create index if not exists questions_status on cb.questions (status);
 
 drop function if exists cb.set_actor cascade;
 drop function if exists cb.not_ahmed cascade;
+drop function if exists cb.ahmed_like cascade;
 drop function if exists cb.norm_status cascade;
 drop function if exists cb.norm_priority cascade;
 drop function if exists cb.norm_type cascade;
@@ -166,11 +167,14 @@ drop function if exists cb.lock_queue cascade;
 
 -- Only Ahmed's dashboard (the web server sets application_name 'cb-web' on its writes) may act as
 -- ahmed: the relay tells sessions to act on his lines, so a session must not be able to speak as him.
--- ponytail: anyone with psql can still set application_name and forge this; it stops accidents and
--- prompt-injected sessions, not a determined local process. Real auth (a role per client) if that matters.
+-- Any name with ahmed as a whole word counts (Ahmed (boss), ahmed-x@pc, the ahmed); ahmedx, mohammed_ahmed don't.
+-- ponytail: a deterrent, not auth. Known bypasses: PGAPPNAME=cb-web (or set application_name) on any
+-- psql/postgres connection, and a local POST to /api/rpc with a forged same-host Origin header. It stops
+-- accidents and prompt-injected sessions, not a determined local process. Real auth = a Postgres role per client.
+create function cb.ahmed_like(a text) returns boolean language sql immutable as $$ select coalesce(a, '') ~* '\mahmed\M' $$;
 create function cb.not_ahmed(a text) returns void language plpgsql as $$
 begin
-  if (lower(trim(a)) = 'ahmed' or lower(trim(a)) like 'ahmed@%') and current_setting('application_name') <> 'cb-web' then
+  if cb.ahmed_like(a) and current_setting('application_name') <> 'cb-web' then
     raise exception 'only Ahmed''s dashboard can act as ahmed: sessions use their own name';
   end if;
 end $$;
@@ -717,7 +721,9 @@ declare m text := lower(trim(machine)); me text; proj text; seen bigint;
 begin
   -- a new session (relay before cb iam) starts from now; until it joins a project it hears no broadcasts
   insert into cb.sessions (machine, pane, actor, broadcast_seen)
-  values (m, pane, pane || '@' || m, coalesce((select max(e.id) from cb.events e), 0))
+  -- a pane or machine named like ahmed must not make a session named like him
+  values (m, pane, case when cb.ahmed_like(pane || '@' || m) then 'session-' || left(md5(pane || '@' || m), 8) else pane || '@' || m end,
+          coalesce((select max(e.id) from cb.events e), 0))
   on conflict on constraint sessions_pkey do update set last_seen = now()
   returning cb.sessions.actor, cb.sessions.project, cb.sessions.broadcast_seen into me, proj, seen;
   return jsonb_build_object(
