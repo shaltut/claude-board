@@ -206,14 +206,17 @@ begin
   return v;
 end $$;
 
--- Who triages a project's new bugs: its live orchestrator(s) (orch@*, relay seen in 90s), else every
--- session bound to it. One rule for the relay push (cb.inbox) and for what `cb bug` prints.
+-- Who triages a project's new bugs: its orchestrator(s) (orch@*, seen in the last day), else every
+-- session bound to it and seen in the last day. A day, not the 90s relay liveness: a relay restart or
+-- a sleeping Mac must not hand the orchestrator's bugs to every worker; session rows are never deleted.
+-- One rule for the relay push (cb.inbox) and for what `cb bug` prints.
 create function cb.triagers(project text) returns text[] language sql stable as $$
   select coalesce(
     nullif(array(select s.actor from cb.sessions s
                   where s.project = $1 and (s.actor like 'orch@%' or s.actor = 'orch')
-                    and s.last_seen > now() - interval '90 seconds' order by s.actor), '{}'),
-    array(select distinct s.actor from cb.sessions s where s.project = $1 order by s.actor))
+                    and s.last_seen > now() - interval '1 day' order by s.actor), '{}'),
+    array(select distinct s.actor from cb.sessions s
+           where s.project = $1 and s.last_seen > now() - interval '1 day' order by s.actor))
 $$;
 
 create function cb.norm_id(id text) returns bigint language plpgsql immutable as $$
@@ -712,7 +715,7 @@ begin
                                  from cb.events e join cb.questions q on q.id = e.question_id
                                 where e.kind = 'answered' and (me like 'orch@%' or me = 'orch') and e.project = proj
                                   and q.asked_by <> me and e.id > seen and e.at > now() - interval '24 hours'), '[]'),
-    -- new unassigned bugs filed in my project, if I triage it (cb.triagers: the live orchestrator, else everyone bound)
+    -- new unassigned bugs filed in my project, if I triage it (cb.triagers: its orchestrator, else everyone bound)
     'bugs', coalesce((select jsonb_agg(jsonb_build_object('event_id', e.id, 'id', t.id, 'project', t.project, 'title', t.title,
                                                           'body', t.body, 'priority', t.priority, 'actor', e.actor) order by e.id)
                         from cb.events e join cb.tasks t on t.id = e.task_id

@@ -59,6 +59,8 @@ test('cb bug files an unassigned P2 bug in Next and says who is told', async () 
   await sql`select cb.iam('pc', 'w2:p2', 'orch@shaltoot', 'ihop')`;
   await sql`select cb.iam('mac', 'w1:p3', 'W2@macbook', 'ihop')`;
   await sql`select cb.iam('pc', 'w3:pA', 'board-dev@shaltoot', 'claude-board')`;
+  await sql`select cb.iam('pc', 'w9:pZ', 'old-dev@shaltoot', 'claude-board')`;
+  await sql`update cb.sessions set last_seen = now() - interval '2 days' where actor = 'old-dev@shaltoot'`; // dead session row
   const env = { CB_ACTOR: '', HERDR_PANE_ID: 'w1:p7', CB_MACHINE: 'mac' };
   assert.equal(cb(['iam', 'W7@macbook', 'ihop'], env).code, 0);
 
@@ -75,7 +77,7 @@ test('cb bug files an unassigned P2 bug in Next and says who is told', async () 
   // a bug against Claude Board itself, from an ihop session: no orchestrator there, so its bound sessions hear it
   const b = cb(['bug', 'claude-board', 'cb brief hangs', '-b', 'cb brief took 30s', '-p', 'P1'], env);
   assert.equal(b.code, 0, b.err);
-  assert.equal(b.out, '#4 bug filed in claude-board; told board-dev@shaltoot (no live orchestrator there)');
+  assert.equal(b.out, '#4 bug filed in claude-board; told board-dev@shaltoot (no orchestrator there)');
   const [x] = await sql`select project, priority from cb.tasks where id = 4`;
   assert.deepEqual({ ...x }, { project: 'claude-board', priority: 'P1' });
 
@@ -90,8 +92,15 @@ test('cb bug files an unassigned P2 bug in Next and says who is told', async () 
   await sql`select cb.project_alias('board', 'claude-board')`;
   assert.match(cb(['bug', 'board', 'alias test', '-b', 'x'], env).out, /^#5 bug filed in claude-board/);
 
+  // a typo is refused, not filed into a brand-new project nobody watches
+  const typo = cb(['bug', 'tawuniy', 'x', '-b', 'y'], env);
+  assert.equal(typo.code, 1);
+  assert.match(typo.err, /unknown project "tawuniy"; known: claude-board, ihop/);
+  assert.equal((await sql`select count(*)::int as n from cb.projects where slug = 'tawuniy'`)[0].n, 0);
+
+  await sql`select cb.task_add(project => 'newproj', title => 'seed3')`;
   const nobody = cb(['bug', 'newproj', 'x', '-b', 'y'], env);
-  assert.equal(nobody.out, '#6 bug filed in newproj; no session works in newproj yet: it waits in Next');
+  assert.equal(nobody.out, '#7 bug filed in newproj; no session works in newproj yet: it waits in Next');
   const own = cb(['bug', 'ihop', 'orch found one', '-b', 'z'], { CB_ACTOR: 'orch@shaltoot' });
-  assert.equal(own.out, '#7 bug filed in ihop; you triage it: cb edit 7 --assignee <worker>');
+  assert.equal(own.out, '#8 bug filed in ihop; you triage it: cb edit 8 --assignee <worker>');
 });

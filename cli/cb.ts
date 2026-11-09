@@ -281,12 +281,13 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
     case 'bug': {
       need(2, 'bug <project> "<title>" -b "what happened, how to reproduce, expected vs actual"');
       if (!o.body?.trim()) throw new Error('describe it: -b "what happened, how to reproduce, expected vs actual"');
+      await sql`select cb.read_project(${args[0]})`; // a typo errors with the known projects instead of creating one
       const id = await callFn('task_add', { project: args[0], title: args.slice(1).join(' '), body: o.body, status: 'next',
         priority: o.priority ?? 'P2', labels: o.labels ? o.labels.split(',') : [], links: links(), actor, type: 'bug' });
       const [{ project, all }] = await sql`select t.project, cb.triagers(t.project) as all from cb.tasks t where t.id = ${id}`;
       const told = all.filter((a: string) => a !== actor);
       const orch = told.some((a: string) => a === 'orch' || a.startsWith('orch@'));
-      const who = told.length ? `told ${told.join(', ')}${orch ? '' : ' (no live orchestrator there)'}`
+      const who = told.length ? `told ${told.join(', ')}${orch ? '' : ' (no orchestrator there)'}`
         : all.length ? `you triage it: cb edit ${id} --assignee <worker>` : `no session works in ${project} yet: it waits in Next`;
       return { out: `#${id} bug filed in ${project}; ${who}`, json: { id, project, told } };
     }

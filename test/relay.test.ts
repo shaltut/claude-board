@@ -102,7 +102,7 @@ test('relay pushes an answer into its session and marks it delivered', { timeout
     for (let i = 0; i < 50 && !/ship Monday/.test(inbox.got.at(-1)?.message.content ?? ''); i++) await new Promise((r) => setTimeout(r, 100));
     assert.match(inbox.got.at(-1).message.content, /Huddle #1 "rollout": orch: ship Monday\?[\s\S]*cb huddle say 1/);
     // a bug filed in its project while no orchestrator is live reaches this session
-    await sql`update cb.sessions set last_seen = now() - interval '10 minutes' where actor = 'orch'`;
+    await sql`update cb.sessions set last_seen = now() - interval '25 hours' where actor = 'orch'`;
     await sql`select cb.task_add(project => 'demo', title => 'save crashes', body => ${'Click save twice.\nExpected one save.'}, status => 'next', type => 'bug', actor => 'W7@macbook')`;
     for (let i = 0; i < 50 && !/filed bug/.test(inbox.got.at(-1)?.message.content ?? ''); i++) await new Promise((r) => setTimeout(r, 100));
     assert.match(inbox.got.at(-1).message.content,
@@ -353,7 +353,7 @@ test('an answer with no reply address reaches the session that asked it', async 
   assert.equal((await box('mac', 'w1:p3')).answers.length, 0);
 });
 
-test('a new bug goes to its project\'s live orchestrator, else to the project\'s sessions; never as next_work', async () => {
+test('a new bug goes to its project\'s orchestrator (seen today), else to the project\'s recent sessions; never as next_work', async () => {
   const sql = await db();
   await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
   await sql`select cb.task_add(project => 'claude-board', title => 'seed2')`;
@@ -377,8 +377,11 @@ test('a new bug goes to its project\'s live orchestrator, else to the project\'s
   assert.equal((await box('mac', 'w1:p7')).bugs.length, 0, 'the filer');
   assert.deepEqual((await box('pc', 'w3:pA')).bugs.map((b: any) => b.title), ['brief hangs'], 'no orchestrator in claude-board: board-dev hears it');
 
-  // orchestrator gone quiet (relay down): the project's sessions hear the bug instead
-  await sql`update cb.sessions set last_seen = now() - interval '10 minutes' where actor = 'orch@shaltoot'`;
+  // a relay restart or a sleeping Mac (quiet for minutes) keeps the orchestrator as the triager: no worker race
+  await sql`update cb.sessions set last_seen = now() - interval '2 hours' where actor = 'orch@shaltoot'`;
+  assert.equal((await box('mac', 'w1:p3')).bugs.length, 0);
+  // orchestrator gone for a day: the project's recently seen sessions hear the bug instead
+  await sql`update cb.sessions set last_seen = now() - interval '25 hours' where actor = 'orch@shaltoot'`;
   assert.deepEqual((await box('mac', 'w1:p3')).bugs.map((b: any) => b.id), [3]);
 
   // read once: the relay acknowledges through the broadcast_seen watermark
