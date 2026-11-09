@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronRight, CornerDownLeft } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { rpc, type Question } from '@/lib/api'
+import { rpc, useUsers, type Question } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { go } from '@/lib/route'
 import { Textarea } from '@/components/ui/textarea'
@@ -14,7 +14,7 @@ import { Md } from './Md'
 
 /** An open question from Claude, answerable in place. Draft text lives here, keyed by question id,
  *  so live refetches never wipe what Ahmed is typing. */
-export function QuestionCard({ q, onAnswered }: { q: Question; onAnswered?: (id: number) => void }) {
+export function QuestionCard({ q, onAnswered, guest }: { q: Question; onAnswered?: (id: number) => void; guest?: boolean }) {
   const qc = useQueryClient()
   const [text, setText] = useState('')
   const [picked, setPicked] = useState<string[]>([])
@@ -56,11 +56,12 @@ export function QuestionCard({ q, onAnswered }: { q: Question; onAnswered?: (id:
         <ActorChip actor={q.asked_by} />
         <span>{ago(q.created_at)}</span>
         {q.task_id && (
-          <button onClick={() => go({ task: q.task_id! })} className="hover:text-foreground">
+          <button onClick={() => go({ task: q.task_id! })} disabled={guest} className="enabled:hover:text-foreground">
             on <TaskId id={q.task_id} />
           </button>
         )}
         {q.blocking && <span className="ml-auto rounded bg-dawn px-1.5 py-px font-medium text-background">Blocking a task</span>}
+        {!guest && <AssignPicker q={q} />}
       </header>
 
       <p id={`q${q.id}-body`} className="mt-3 text-[15px] leading-relaxed text-pretty">{q.body}</p>
@@ -144,9 +145,37 @@ export function AnsweredRow({ q, editing, onEdit }: { q: Question; editing: bool
       ) : (
         <p className="mt-1 pl-7 text-sm">
           <span className="text-dawn">→</span> {q.answer}
-          <span className="ml-2 text-xs text-muted-foreground">for {q.asked_by}, waiting for the orchestrator</span>
+          <span className="ml-2 text-xs text-muted-foreground">
+            {q.answered_by && q.answered_by !== 'ahmed' && `${q.answered_by} answered, `}for {q.asked_by}, waiting for the orchestrator
+          </span>
         </p>
       )}
     </li>
+  )
+}
+
+/** Who should answer: Ahmed (default) or a guest user who answers through their link. */
+function AssignPicker({ q }: { q: Question }) {
+  const qc = useQueryClient()
+  const { data: users = [] } = useUsers()
+  if (!users.length) return null
+  async function assign(to: string) {
+    try {
+      await rpc('question_assign', { id: String(q.id), to_user: to || null })
+      toast.success(to ? `Q${q.id} is now for ${users.find((u) => u.name === to)?.display ?? to}` : `Q${q.id} is back with you`)
+      await qc.invalidateQueries()
+    } catch (e: any) {
+      toast.error(`Could not reassign Q${q.id}`, { description: e.message })
+    }
+  }
+  return (
+    <label className={cn('flex items-center gap-1', !q.blocking && 'ml-auto')}>
+      For
+      <select value={q.assigned_to ?? ''} onChange={(e) => assign(e.target.value)}
+        className="rounded border bg-transparent px-1 py-0.5 text-xs text-foreground">
+        <option value="">Ahmed</option>
+        {users.map((u) => <option key={u.name} value={u.name}>{u.display}</option>)}
+      </select>
+    </label>
   )
 }

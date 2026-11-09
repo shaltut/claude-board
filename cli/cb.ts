@@ -4,6 +4,7 @@ import { hostname } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { callFn } from '../server/rpc.ts';
+import { tick, dur } from './tick.ts';
 import { sql, databaseUrl, machine, dotenv } from '../server/db.ts';
 
 const HELP = `cb — Claude Board (http://localhost:4747)
@@ -31,6 +32,9 @@ const HELP = `cb — Claude Board (http://localhost:4747)
   cb sessions [project]                      every session: relay, what it holds, who went quiet (orchestrator)
   cb session <name>                          one session: open tasks, questions, last 10 actions
   cb pending [project]                       answered questions to deliver (orchestrator)
+  cb tick [project]                          the actions due now, ranked, one command each; silent when nothing is (orchestrator)
+  cb lock take|release <name> / cb lock queue [name]   shared locks (the DB test lock): take queues you; release hands it on
+  cb lock release <name> --force             take a lock off a dead holder (logged; the holder is told)
   cb delivered <qid> [session]               mark an answer delivered (unblocks its task)
   cb withdraw <qid>
   ask on behalf of a worker (orchestrator): add --as <worker> --reply-to <machine>:<pane>
@@ -45,7 +49,7 @@ const OPTIONS = {
   title: { type: 'string' }, assignee: { type: 'string' }, project: { type: 'string' },
   task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
   multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, to: { type: 'string' }, context: { type: 'string', short: 'c' },
-  'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' }, type: { type: 'string' },
+  'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' }, type: { type: 'string' }, force: { type: 'boolean' },
 } as const;
 
 // Text like "-5% latency" is text, not a flag: only --name, --name=x and -x look like options.
@@ -231,7 +235,6 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
     case 'sessions': {
       const rows: any = await callFn('sessions_overview', { project: args[0] ?? sessionProject ?? null });
       const idle = (r: any) => (r.last ? (Date.now() - +new Date(r.last.at)) / 60000 : Infinity);
-      const dur = (m: number) => (m === Infinity ? 'never' : m < 60 ? `${Math.round(m)}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`);
       const open = rows.filter((r: any) => r.live || r.doing.length || r.queued || r.open_questions);
       const out = open.map((r: any) => {
         const head = `${r.actor} ${r.live ? 'relay live' : 'no relay'}${r.pane ? ` · ${r.pane}` : ''} · idle ${dur(idle(r))}` +
@@ -363,6 +366,33 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       need(1, 'withdraw <qid>');
       await callFn('withdraw', { id: args[0].replace(/^q/i, ''), actor });
       return { out: `Q${args[0].replace(/^q/i, '')} withdrawn` };
+    case 'tick': {
+      const project = args[0] ?? sessionProject;
+      if (!project) throw new Error('no project: say which (cb tick ihop) or bind this session once (cb iam <name> <project>)');
+      return await tick(project, actor);
+    }
+    case 'lock': {
+      const [sub, name] = args;
+      const show = (l: any) => `lock ${l.name}: ${l.holder ?? 'nobody'} holds it ${dur((Date.now() - +new Date(l.held_at)) / 60000)}${l.queue.length ? `, queue ${l.queue.join(', ')}` : ''}`;
+      if (sub === 'queue') {
+        const rows: any = await callFn('lock_queue', { name: name ?? null });
+        return { out: rows.map(show).join('\n') || 'no locks held', json: rows };
+      }
+      need(2, 'lock take|release <name>   e.g. cb lock take db');
+      if (sub === 'take') {
+        const l: any = await callFn('lock_take', { name, actor });
+        const pos = l.queue.indexOf(actor) + 1;
+        return { out: l.holder === actor ? `you hold lock ${l.name}`
+          : `lock ${l.name} is held by ${l.holder} (${dur((Date.now() - +new Date(l.held_at)) / 60000)}); you are #${pos} in the queue: a message tells you when it is yours`, json: l };
+      }
+      if (sub === 'release') {
+        const next: any = await callFn('lock_release', { name, actor, force: !!o.force });
+        const n = name.trim().toLowerCase();
+        const [l]: any = await callFn('lock_queue', { name: n });
+        return { out: `released lock ${n}; ${next ? `${next} holds it now` : l ? `${l.holder} holds it` : 'it is free'}`, json: next };
+      }
+      throw new Error(`unknown lock command "${sub}": take, release, queue`);
+    }
     case 'brief': {
       const b = await callFn('brief', { project: args[0] ?? sessionProject, tag: o.tag ?? null, ...(o.type ? { type: o.type } : {}) });
       if (o.json) return { json: b };

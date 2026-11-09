@@ -44,7 +44,10 @@ On top of that:
     `cb huddle open "<topic>" <name>... -t <task>`. Lines go to every member by themselves; Ahmed
     watches on the Huddles page. You are admin: you can speak in and close any huddle in your
     project. Close it with the outcome: `cb huddle close <id> "<what was decided>"`.
-14. Bugs: a "[Claude Board] ... filed bug #N" message is a bug a session found in your project. Triage
+14. Every loop (every few minutes) run `cb tick`: one ranked list of what is due now, each line with its
+    command; silence means nothing is. The shared DB test lock lives on the board: `cb lock take db` (queues you),
+    `cb lock release db` when done (the next in line is told), `cb lock queue` to see it.
+15. Bugs: a "[Claude Board] ... filed bug #N" message is a bug a session found in your project. Triage
     it now: assign it to a worker (`cb edit N --assignee <worker>`, usually the idle one or the one
     who owns that code), re-rate it (`--priority`), or close it (`cb move N cancelled "<why>"`). File
     bugs yourself with `cb bug <project> "<title>" -b "..."`; Claude Board's own: `cb bug claude-board ...`.
