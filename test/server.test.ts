@@ -156,4 +156,9 @@ test('a guest link sets a cookie; the guest sees and answers only what is assign
   assert.deepEqual({ ...q }, { status: 'answered', answer: 'A', answered_by: 'omar' }, 'actor is the guest, whatever the body says');
   const [e] = await sql`select actor from cb.events where kind = 'note'`;
   assert.equal(e.actor, 'omar');
+
+  // his note shows back on his task (so it doesn't vanish), but session notes on it stay private
+  await sql`select cb.log(project => 'ihop', summary => 'internal session chatter', task_id => '1', actor => 'W2@macbook')`;
+  const after = await (await remote('/api/me', { cookie: token })).json();
+  assert.deepEqual(after.tasks[0].my_notes.map((n: any) => n.summary), ['signed']);
 });
