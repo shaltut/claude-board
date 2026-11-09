@@ -545,7 +545,9 @@ async function run(): Promise<unknown> {
       throw new Error(`unknown lock command "${sub}": take, release, queue`);
     }
     case 'brief': {
-      const b = await callFn('brief', { project: args[0] ?? sessionProject, tag: o.tag ?? null, ...(o.type ? { type: o.type } : {}) });
+      const b: any = await callFn('brief', { project: args[0] ?? sessionProject, tag: o.tag ?? null, ...(o.type ? { type: o.type } : {}) });
+      // the same pack cb iam prints, with this machine's own entries (cb.brief can't know the machine)
+      if (b.memory && (args[0] ?? sessionProject)) b.memory = await callFn('mem_pack', { project: args[0] ?? sessionProject, machine: machine() });
       if (o.json) return { json: b };
       printBrief(b);
       return {};

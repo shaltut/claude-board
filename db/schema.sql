@@ -1683,6 +1683,7 @@ drop function if exists cb._mem_check cascade;
 drop function if exists cb._mem_text cascade;
 drop function if exists cb._mem_event cascade;
 drop function if exists cb._mem_json cascade;
+drop function if exists cb._mem_visible cascade;
 drop function if exists cb._mem_similar cascade;
 drop function if exists cb._mem_new cascade;
 drop function if exists cb.mem_add cascade;
@@ -1718,15 +1719,23 @@ end $$;
 
 -- Secrets and personal data never go in (memory reaches every session): record the shape and where it lives.
 -- Deliberately narrow so normal notes pass: a commit SHA, or the board's own passwordless postgres://cb@host URL.
+-- A credential is key=value / key: value / "key": "value" / --key value, where the key may be prefixed (DB_PASSWORD,
+-- PGPASSWORD) and the value looks secret (6+ characters with a digit or symbol): "password: none" and "token: see
+-- the vault" pass. Service logins in addresses (git@github.com, opc@vps2..., postgres://cb@host) are not emails.
 create function cb._mem_check(t text) returns void language plpgsql immutable as $$
-declare hit text := case
+declare u text := regexp_replace(t, '[a-z][a-z0-9+.-]*://[^/\s:@]+@', '://', 'gi');  -- drop passwordless URL logins
+        hit text := case
     when t ~ '\m(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,})' then 'an access token'
+    when t ~* '\mbearer\s+[a-z0-9._~+/=-]{20,}' then 'a bearer token'
     when t ~ 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}' then 'a JWT'
     when t ~ '-----BEGIN [A-Z ]*PRIVATE KEY' then 'a private key'
-    when t ~* '[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@' then 'a connection string with a password'
-    when t ~* '\m(password|passwd|pwd|secret|api[_-]?key|access[_-]?key|token)=[^\s<]' or t ~* '\m(password|passwd|pwd)\s*:\s*[^\s<]' then 'a credential'
-    when t ~ '\m[12][0-9]{9}\M' then 'a 10-digit ID number'
-    when t ~* '[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}\M' then 'an email address'
+    when t ~* '[a-z][a-z0-9+.-]*://[^/\s:@]*:[^/\s@]+@' then 'a connection string with a password'
+    when exists (select 1 from regexp_matches(t, '(?:^|[^a-z0-9])[a-z0-9_]*(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|accountkey|token)["'']?\s*[=:]\s*["'']?([^\s<"'',;]{6,})', 'gi') m
+                  where m[1] ~ '[0-9!@#$%^&*+=/_.-]')
+      or t ~* '--(password|passwd|secret|token|api-key)[ =][^\s<]' then 'a credential'
+    when regexp_replace(t, '\m214748364[78]\M', '', 'g') ~ '\m[12][0-9]{9}\M' then 'a 10-digit ID number'
+    when exists (select 1 from regexp_matches(u, '([a-z0-9._%+-]+)@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\M', 'gi') m
+                  where lower(m[1]) not in ('git', 'cb', 'opc', 'ubuntu', 'root', 'admin', 'postgres', 'ec2-user', 'azureuser', 'debian', 'deploy')) then 'an email address'
     when t ~ '(\+[0-9][0-9 -]{8,}[0-9]|\m05[0-9]{8}\M)' then 'a phone number'
   end;
 begin
@@ -1753,6 +1762,12 @@ create function cb._mem_event(m cb.memories, action text, summary text, a text) 
   values ($4, $1.project, 'memory', $3, jsonb_build_object('memory', $1.id, 'action', $2, 'kind', $1.kind))
 $$;
 
+-- A flagged proposal (reads like an order, claims Ahmed's say-so, carries a URL) is for Ahmed's eyes only: no
+-- session reads it through find, list, show or "similar", so a poisoned note can't reach an agent before he looks.
+create function cb._mem_visible(m cb.memories) returns boolean language sql stable as $$
+  select cb._is_dashboard() or not ($1.status = 'proposed' and coalesce(($1.source ->> 'flagged')::boolean, false))
+$$;
+
 create function cb._mem_json(m cb.memories) returns jsonb language sql stable as $$
   select (to_jsonb($1) - 'tsv') || jsonb_build_object('expired', $1.status = 'active' and coalesce($1.review_after < current_date, false))
 $$;
@@ -1768,7 +1783,7 @@ begin
   return coalesce((select jsonb_agg(jsonb_build_object('id', o.id, 'kind', o.kind, 'title', o.title, 'status', o.status) order by o.r desc, o.id desc)
     from (select x.id, x.kind, x.title, x.status, ts_rank(x.tsv, q) as r from cb.memories x
            where x.id <> m.id and x.status in ('active', 'proposed') and (x.project is not distinct from m.project or x.project is null)
-             and x.tsv @@ q
+             and x.tsv @@ q and cb._mem_visible(x)
            order by r desc, x.id desc limit 3) o), '[]');
 end $$;
 
@@ -1783,15 +1798,22 @@ begin
   end if;
   if days is not null and (days < 1 or days > 365) then raise exception 'review must be 1 to 365 days, e.g. --review 30d'; end if;
   tb := cb._mem_text(k, t, b);
-  -- reads like an order to the agent, or points somewhere to fetch: Ahmed sees it before any session does
-  flagged := (tb[1] || ' ' || tb[2]) ~* '(\mignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above|earlier)\M|\mdisregard\M|\malways\s+run\M|\mrun\s+this\M|\mcurl\M|\mwget\M|https?://)';
+  lk := coalesce(lk, '{}');
+  if jsonb_typeof(lk) <> 'object' or length(lk::text) > 500 then raise exception 'links must be a few name=value pairs (under 500 characters)'; end if;
+  perform cb._mem_check(lk::text);
+  mach := nullif(lower(trim(mach)), '');
+  if mach !~ '^[a-z0-9][a-z0-9_.-]{0,31}$' then raise exception 'machine "%" is not a machine name like macbook', mach; end if;
+  -- reads like an order to the agent, claims Ahmed's say-so, or points somewhere to fetch: Ahmed sees it before any session does
+  flagged := (tb[1] || ' ' || tb[2] || ' ' || lk::text) ~* ('(\mignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above|earlier)\M|\mdisregard\M|\malways\s+run\M|\mrun\s+this\M'
+    || '|\mcurl\M|\mwget\M|(https?|ftp)://|\mahmed\s+(said|says|approved|agreed|wants)\M|\mfrom\s+now\s+on\M|--no-verify|\mforce[- ]?push'
+    || '|\myou\s+(must|should|need\s+to)\M|\mbypass\M|\mskip(ping)?\s+(the\s+)?(tests?|review|hooks?|ci)\M)');
   live := dash or (k in ('fact', 'gotcha') and p is not null and not flagged and not hold);
   insert into cb.memories (project, machine, kind, title, body, status, authority, source, links, tags, created_by,
                            confirmed_by, confirmed_at, review_after)
-  values (p, nullif(lower(trim(mach)), ''), k, tb[1], tb[2], case when live then 'active' else 'proposed' end,
+  values (p, mach, k, tb[1], tb[2], case when live then 'active' else 'proposed' end,
           case when dash then 'ahmed' else 'team' end,
           coalesce(src, '{}') || case when flagged and not dash then '{"flagged": true}'::jsonb else '{}' end,
-          coalesce(lk, '{}'), coalesce(tg, '{}'), a,
+          lk, coalesce(tg, '{}'), a,
           case when dash then a end, case when dash then now() end,
           case when k in ('fact', 'gotcha') then current_date + coalesce(days, 14) end)
   returning * into m;
@@ -1824,7 +1846,8 @@ begin
 end $$;
 
 -- An answered question becomes a ruling: from the dashboard ("Make it a rule") it is live at once; from a session it
--- is a proposal. Title defaults to the answer. One live or proposed entry per question.
+-- is a proposal. Title defaults to the answer, the body is the answer, source.question_id points back. One live or
+-- proposed entry per question.
 create function cb.mem_rule(question text, title text default null, actor text default null) returns jsonb language plpgsql as $$
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); q cb.questions; dup bigint; m cb.memories;
@@ -1832,10 +1855,11 @@ begin
   select * into q from cb.questions x where x.id = cb.norm_id(regexp_replace(trim(coalesce(question, '')), '^[qQ]', ''));
   if q.id is null then raise exception 'question % not found', question; end if;
   if q.status not in ('answered', 'delivered') then raise exception 'Q% has no answer yet (it is %)', q.id, q.status; end if;
+  perform pg_advisory_xact_lock(hashtext('cb.mem_rule:' || q.id));  -- a double click makes one ruling, not two
   select x.id into dup from cb.memories x where x.source ->> 'question_id' = q.id::text and x.status in ('active', 'proposed') limit 1;
   if dup is not null then raise exception 'Q% is already M%: cb mem show M%', q.id, dup, dup; end if;
   m := cb._mem_new(q.project, 'ruling', coalesce(nullif(trim(title), ''), left(regexp_replace(q.answer, '\s+', ' ', 'g'), 200)),
-         left('Q' || q.id || ': ' || q.body || E'\n→ ' || q.answer, 500), jsonb_build_object('question_id', q.id),
+         left(q.answer, 500), jsonb_build_object('question_id', q.id),  -- the answer only: the question may hold anything
          '{}', null, '{}', null, a);
   return cb._mem_json(m) || jsonb_build_object('similar', cb._mem_similar(m.id));
 end $$;
@@ -1912,7 +1936,7 @@ begin
     select m, row_number() over (order by ts_rank(m.tsv, tq) desc, m.id desc) as n
       from cb.memories m
      where (m.tsv @@ tq or m.title ilike '%' || s || '%' or m.body ilike '%' || s || '%')
-       and (p is null or m.project = p or m.project is null)
+       and (p is null or m.project = p or m.project is null) and cb._mem_visible(m)
        and (coalesce(include_old, false) or m.status in ('active', 'proposed'))) y
    where y.n <= 20), '[]');
 end $$;
@@ -1925,7 +1949,7 @@ begin
   return coalesce((select jsonb_agg(cb._mem_json(m) order by
       case m.kind when 'rule' then 0 when 'ruling' then 1 when 'fact' then 2 when 'gotcha' then 3 else 4 end, m.project nulls first, m.id)
     from cb.memories m
-   where (p is null or m.project = p or m.project is null) and (k is null or m.kind = k)
+   where (p is null or m.project = p or m.project is null) and (k is null or m.kind = k) and cb._mem_visible(m)
      and (coalesce(include_old, false) or m.status in ('active', 'proposed'))), '[]');
 end $$;
 
@@ -1934,6 +1958,7 @@ create function cb.mem_show(id text) returns jsonb language plpgsql stable as $$
 declare m cb.memories;
 begin
   select * into m from cb.memories x where x.id = cb.norm_mem(id);
+  if not cb._mem_visible(m) then raise exception 'memory M% not found', m.id; end if;
   return cb._mem_json(m);
 end $$;
 
