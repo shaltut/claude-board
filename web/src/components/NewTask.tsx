@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { rpc, useProjects, type Status, type Task } from '@/lib/api'
+import { rpc, TASK_TYPES, useProjects, type Status, type Task } from '@/lib/api'
 import { STATUS } from '@/lib/format'
 import { go } from '@/lib/route'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -18,11 +18,12 @@ export function NewTask({ open, onOpenChange, project }: { open: boolean; onOpen
   const [body, setBody] = useState('')
   const [status, setStatus] = useState<Status>('next')
   const [priority, setPriority] = useState<Task['priority']>('P2')
+  const [type, setType] = useState<Task['type']>('task')
 
   async function create(e: React.FormEvent) {
     e.preventDefault()
     try {
-      const id = await rpc<number>('task_add', { project: proj, title, body, status, priority })
+      const id = await rpc<number>('task_add', { project: proj, title, body, status, priority, type })
       toast.success(`Created #${id}`, { action: { label: 'Open', onClick: () => go({ task: id }) } })
       setTitle(''); setBody('')
       onOpenChange(false)
@@ -39,7 +40,7 @@ export function NewTask({ open, onOpenChange, project }: { open: boolean; onOpen
             <DialogDescription>Tasks in Next are what sessions take with <code className="font-mono">cb next</code>.</DialogDescription>
           </DialogHeader>
           <Input autoFocus required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs doing" aria-label="Title" />
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Input required list="cb-projects" value={proj} onChange={(e) => setProj(e.target.value)} placeholder="project" aria-label="Project" />
             <datalist id="cb-projects">{projects.map((p) => <option key={p.slug} value={p.slug} />)}</datalist>
             <Select value={status} onValueChange={(v) => setStatus(v as Status)}>
@@ -49,6 +50,10 @@ export function NewTask({ open, onOpenChange, project }: { open: boolean; onOpen
             <Select value={priority} onValueChange={(v) => setPriority(v as Task['priority'])}>
               <SelectTrigger className="w-full" aria-label="Priority"><SelectValue /></SelectTrigger>
               <SelectContent>{(['P0', 'P1', 'P2', 'P3'] as const).map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+            </Select>
+            <Select value={type} onValueChange={(v) => setType(v as Task['type'])}>
+              <SelectTrigger className="w-full capitalize" aria-label="Type"><SelectValue /></SelectTrigger>
+              <SelectContent>{TASK_TYPES.map((k) => <SelectItem key={k} value={k} className="capitalize">{k}</SelectItem>)}</SelectContent>
             </Select>
           </div>
           <Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={4} placeholder="Details for Claude (markdown)" aria-label="Description" />

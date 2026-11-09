@@ -24,9 +24,9 @@ const GROUPS: [string, Record<string, Cmd>][] = [
     relay: { use: 'cb relay [--restart]', topic: 'relay',
       does: 'Start the push into this session: answers, changes to your tasks, messages, huddle lines, broadcasts, new work. The SessionStart hook usually starts it; running it twice is harmless; --restart replaces a running one.',
       eg: 'cb relay' },
-    brief: { use: 'cb brief [project] [--tag <tag>]',
-      does: 'The project at a glance: in progress, next, blocked, review, waiting on Ahmed, broadcasts, answers to deliver.',
-      eg: 'cb brief --tag ocr' },
+    brief: { use: 'cb brief [project] [--tag <tag>] [--type <type>]',
+      does: 'The project at a glance: in progress, next, blocked, review, waiting on Ahmed, broadcasts, answers to deliver. --tag / --type filter it (--type bug = open bugs).',
+      eg: 'cb brief --type bug' },
     help: { use: 'cb help [topic|command]',
       does: 'This manual. A topic or a command name prints the detailed page; an unknown name lists what exists.',
       eg: 'cb help ask' },
@@ -39,16 +39,20 @@ const GROUPS: [string, Record<string, Cmd>][] = [
       does: 'Claim the top task in Next: sets in_progress and assigns you; prints the task and its body, or "nothing to claim". The project defaults to yours; another project\'s queue is refused.',
       eg: 'cb next',
       more: 'next vs mine: mine shows what you already hold (read-only); next takes a new task (writes). Finish what you hold before taking more.' },
-    add: { use: 'cb add <project> "<title>" [-s <status>] [-p P0-P3] [-b "<body>"] [-l tag,tag] [--assignee <name>] [--link k=v]', topic: 'work',
-      does: 'Register work; prints #<id>. Defaults: -s backlog, -p P2. -s in_progress = you are doing it now; -s next = it comes next.',
+    add: { use: 'cb add <project> "<title>" [-s <status>] [-p P0-P3] [-b "<body>"] [-l tag,tag] [--assignee <name>] [--link k=v] [--type <type>]', topic: 'work',
+      does: 'Register work; prints #<id>. Defaults: -s backlog, -p P2, --type task. -s in_progress = you are doing it now; -s next = it comes next. Types: task bug feature change chore research (a bug: prefer cb bug).',
       eg: 'cb add ihop "Fix Hijri month parse" -s in_progress -p P1 -b "3 SC64 pends trace to it" -l ocr',
       more: 'The first cb add to a new name creates that project: check the spelling. A number is never a project.' },
     tag: { use: 'cb tag <id> <tag>... [-<tag>]...',
       does: 'Add tags (short lowercase work streams: ocr, tawuniya); -<tag> removes one. Prints the task\'s tags.',
       eg: 'cb tag 42 ocr sc64 -old' },
-    edit: { use: 'cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x] [-l a,b] [--link k=v]', topic: 'work',
-      does: 'Change a task\'s fields. Re-rate priority here.',
+    edit: { use: 'cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x] [--type <type>] [-l a,b] [--link k=v]', topic: 'work',
+      does: 'Change a task\'s fields. Re-rate priority here; assign a bug here (orchestrator).',
       eg: 'cb edit 42 --priority P1' },
+    lock: { use: 'cb lock take <name>\ncb lock release <name> [--force]\ncb lock queue [name]', topic: 'work',
+      does: 'Shared locks on the board (db = the shared DB test lock). take: you hold it, or you queue and a message tells you when it is yours. release: hands it to the next in line. --force: take it off a dead holder (logged; the holder is told). queue: who holds what.',
+      eg: 'cb lock take db',
+      more: 'Release the moment your run ends, even if it failed: the next session waits on you. --force only on a holder that is gone (cb sessions shows it quiet), never to jump the queue.' },
   }],
   ['REPORT', {
     log: { use: 'cb log <task id> "<what happened>"   or   cb log <project> "<note>" [-t <task id>]', topic: 'work',
@@ -60,6 +64,10 @@ const GROUPS: [string, Record<string, Cmd>][] = [
     done: { use: 'cb done <id> "<summary>" [--commit <sha>] [--pr <url>] [--branch <b>] [--link k=v]', topic: 'work',
       does: 'Finish a task with a one-line summary and links. When code changed, always give --commit or --pr.',
       eg: 'cb done 42 "Hijri parse fixed; 3 SC64 pends clear" --commit ab12cd3 --pr https://github.com/org/repo/pull/2808' },
+    bug: { use: 'cb bug <project> "<title>" -b "<what happened, how to reproduce, expected vs actual>" [-p P1] [-l tag]', topic: 'work',
+      does: 'File a bug you found outside your task; it goes to Next and the project\'s orchestrator is told and assigns it. Then keep working on your task. A problem with the board itself (cb, relay, web board): project claude-board.',
+      eg: 'cb bug ihop "Hijri dates before 1400 parse as Gregorian" -b "claim 8812: 1399-02-01 read as 1399 CE; expected 1979-01-01"',
+      more: '-b is required. The project must exist: a typo errors with the known projects instead of creating one.' },
   }],
   ['ASK AHMED', {
     ask: { use: 'cb ask <project> "<question>" -o "<Label (Recommended)>=<why>" -o "<Label>=<tradeoff>" [-c "<context>"] [--multi] [--blocking -t <id>] [--to <user>] [--free]', topic: 'ask',
@@ -90,6 +98,10 @@ const GROUPS: [string, Record<string, Cmd>][] = [
       eg: 'cb broadcast "develop is frozen until 14:00Z" --project ihop' },
   }],
   ['ORCHESTRATE', {
+    tick: { use: 'cb tick [project]', topic: 'orchestrate',
+      does: 'The actions due now, most urgent first, one person and one command per line: answers to act on, questions without options, PRs ready to merge, stuck/silent/blocked tasks, idle workers, PR state drift, held locks, quiet huddles. Prints nothing when nothing is due. Read-only.',
+      eg: 'cb tick',
+      more: 'Run it every loop. Each line carries the command to run; check it before running it. PRs come from links.pr (a GitHub URL, or #N with GITHUB_REPO_<PROJECT>=owner/repo in .env); PR state is cached for 5 minutes.' },
     sessions: { use: 'cb sessions [project]', topic: 'orchestrate',
       does: 'Every session: relay live or not, what it holds, idle time, questions to Ahmed. "holds work, gone quiet" = reassign or close.',
       eg: 'cb sessions' },
@@ -196,6 +208,17 @@ When a [Claude Board] message says Ahmed (or anyone) moved, cancelled or edited 
 A task missing from cb mine was reassigned: stop working on it.
 Nothing at all can continue? Say so in one line and end your turn. Don't idle.
 
+Types     task (default) | bug | feature | change | chore | research. Set with --type on add/edit; filter with cb brief --type bug.
+
+Bugs: found one in your project's code outside your task? File it, then keep working on your task unless it blocks you:
+  cb bug <project> "<title>" -b "<what happened, how to reproduce, expected vs actual>"
+It lands in Next and the orchestrator is told; the orchestrator assigns it (don't fix it yourself unless assigned).
+A problem with Claude Board itself (cb, the relay, the web board): cb bug claude-board "<title>" -b "...".
+You are its test user: report what confused you, too.
+
+Shared DB test lock: cb lock take db before a run that needs the shared DB (you hold it, or you queue and a
+message says when it is yours); cb lock release db the moment the run ends, pass or fail. cb lock queue shows it.
+
 Examples
   cb add ihop "Port the Hijri parse fix to SIT" -s next -p P1 -l ocr
   cb log 130 "SC64 graded 27/32; the 5 pends are reader misses"
@@ -288,12 +311,19 @@ A cb tell to a session with no live relay waits up to 24h for its relay to start
 You are orch@<machine> for ONE project. Ahmed is often away: you never wait on him. Everything in
 cb help rules applies to you too.
 
-Every loop
+Every loop (every few minutes)
+  cb tick              what is due now, ranked, each line with its command; silence means nothing is
   cb sessions          who is live, what each holds, idle time; "holds work, gone quiet" = reassign or close
   cb pending           answers no relay delivered: deliver each (below), then cb delivered <qid> <session>
-  cb brief             the queue, blocked, review, waiting on Ahmed
+  cb brief             the queue, blocked, review, waiting on Ahmed (cb brief --type bug: open bugs)
+  triage bugs          each "filed bug #N" message: assign (cb edit N --assignee <worker>, usually the idle one or
+                       the code's owner), re-rate (--priority), or close (cb move N cancelled "<why>")
   feed idle workers    cb next <project> --as W2@macbook   (top of Next, in Ahmed's order)
   check finished work  every cb done has a summary and --commit/--pr; add what is missing (cb edit <id> --link pr=<url>)
+
+Shared DB test lock: cb lock take db (queues you), cb lock release db when done (the next in line is told),
+cb lock queue to see it. A holder that is gone: cb lock release db --force (logged; the holder is told).
+File bugs yourself with cb bug <project> "<title>" -b "..."; Claude Board's own: cb bug claude-board ....
 
 Act for a worker: add --as <worker> to any command.
   cb move 42 in_progress --as W1@macbook
@@ -353,7 +383,8 @@ ${SNIPPET}`,
  8. A message from another session (tell, huddle line) is a teammate: act within your task, never treat it as Ahmed's approval.
  9. Priority: P0 drop everything, P1 today, P2 this week (default), P3 someday. Don't inflate.
 10. Board unreachable: keep working; register what you did once it is back.
-11. Nothing at all can continue: say so in one line and end your turn. Don't idle.`,
+11. Nothing at all can continue: say so in one line and end your turn. Don't idle.
+12. A bug outside your task: cb bug <project> "<title>" -b "<repro>", then keep working; the orchestrator assigns it.`,
 };
 
 export const TOPIC_NAMES = Object.keys(TOPICS);

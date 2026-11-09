@@ -3,7 +3,7 @@ import { GitCommitHorizontal, GitPullRequest, GitBranch } from 'lucide-react'
 import type { Task } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { ActorChip, Priority, ProjectChip, TagChip, TaskId } from './Chips'
+import { ActorChip, Priority, ProjectChip, TagChip, TaskId, TypeChip } from './Chips'
 
 type Props = { t: Task; showProject?: boolean; dragging?: boolean; overlay?: boolean } & React.HTMLAttributes<HTMLDivElement>
 
@@ -17,6 +17,7 @@ export const TaskCard = forwardRef<HTMLDivElement, Props>(function TaskCard({ t,
       <div className="flex items-center gap-2">
         <TaskId id={t.id} />
         <Priority p={t.priority} />
+        <TypeChip type={t.type} />
         {showProject && <ProjectChip slug={t.project} />}
         <span className="ml-auto text-[11px] text-muted-foreground">{ago(t.updated_at)}</span>
       </div>

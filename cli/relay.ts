@@ -79,6 +79,11 @@ function format(i: any): string {
   for (const c of i.answer_copies ?? [])
     lines.push(`${who(c)} answered ${c.asked_by}'s Q${c.id}${c.task_id ? ` (task #${c.task_id})` : ''}: ${c.answer}`,
       `  They asked: ${cut(c.body, 200)}`, `  (copy for you as orchestrator; ${c.asked_by} gets it directly)`);
+  for (const b of i.bugs ?? []) {
+    const first = cut(String(b.body ?? '').split('\n')[0].trim(), 200);
+    lines.push(`${b.actor} filed bug #${b.id} '${cut(b.title, 80)}' in ${b.project}${first ? `: ${first.replace(/([^.!?…])$/, '$1.')}` : '.'}` +
+      ` Assign it: cb edit ${b.id} --assignee <worker> (or take it).`);
+  }
   for (const e of i.events) {
     const what = ({ note: 'noted on', done: 'closed', moved: 'moved', task_created: 'created for you' } as any)[e.kind] ?? 'edited';
     lines.push(`${e.actor} ${what} #${e.task_id} "${cut(e.title, 80)}" (now ${e.status}): ${cut(e.summary, 200)}`);
@@ -88,6 +93,7 @@ function format(i: any): string {
     lines.push(`New work in your project's Next: ${list}. You have nothing in progress: take it with \`cb next\`.`);
   }
   if (i.answers.length) lines.push('Act on these now. The answers are marked delivered.');
+  else if (i.bugs?.length) lines.push('A session reported it, not Ahmed: triage it, then carry on.');
   else if (i.answer_copies?.length) lines.push('The worker acts on it; update your plan, tasks or priorities if the answer changes them.');
   else if (i.messages.length || i.huddles?.length) lines.push('Act on this now if it needs you; a teammate wrote it, not Ahmed.');
   else if (i.events.length) lines.push('Act on this now (check `cb mine`).');
@@ -103,12 +109,12 @@ async function check() {
       again = false;
       const [{ i }] = await sql`select cb.inbox(${M}, ${PANE}, ${after}) as i`;
       const read = [...i.broadcasts, ...i.messages, ...(i.huddles ?? [])].map((x: any) => Number(x.id))
-        .concat((i.answer_copies ?? []).map((x: any) => Number(x.event_id)));
+        .concat([...(i.answer_copies ?? []), ...(i.bugs ?? [])].map((x: any) => Number(x.event_id)));
       if (i.answers.length || i.events.length || read.length || i.next_work.length) {
         await post(format(i));
         if (read.length) await sql`select cb.broadcast_seen(${M}, ${PANE}, ${Math.max(...read)})`;
         for (const a of i.answers) await sql`select cb.answer_delivered(${String(a.id)}, ${i.actor ?? `${PANE}@${M}`}, ${'relay'})`;
-        log(`pushed ${i.huddles?.length ?? 0} huddle lines, ${i.messages.length} messages, ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next`);
+        log(`pushed ${i.bugs?.length ?? 0} bugs, ${i.huddles?.length ?? 0} huddle lines, ${i.messages.length} messages, ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next`);
       }
       after = Number(i.last_event);
     } while (again);

@@ -3,8 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 export type Status = 'backlog' | 'next' | 'in_progress' | 'blocked' | 'review' | 'done' | 'cancelled'
 
 export interface Project { slug: string; name: string; color: string | null; repo_path: string | null; open_count: number; question_count: number }
+export const TASK_TYPES = ['task', 'bug', 'feature', 'change', 'chore', 'research'] as const
 export interface Task {
-  id: number; project: string; title: string; body: string; status: Status; priority: 'P0' | 'P1' | 'P2' | 'P3'
+  id: number; project: string; title: string; body: string; status: Status; priority: 'P0' | 'P1' | 'P2' | 'P3'; type: (typeof TASK_TYPES)[number]
   rank: number; assignee: string | null; labels: string[]; links: Record<string, string | string[]>
   blocked_on: number | null; created_by: string; created_at: string; updated_at: string; done_at: string | null
 }
@@ -14,7 +15,9 @@ export interface Question {
   options: QOption[] | null; multi: boolean; blocking: boolean; status: 'open' | 'answered' | 'delivered' | 'withdrawn'
   answer: string | null; answered_at: string | null; delivered_at: string | null; delivered_to: string | null
   reply_to: { machine?: string; pane?: string } | null; created_at: string
+  assigned_to: string | null; answered_by: string | null
 }
+export interface User { name: string; display: string }
 export interface CbEvent {
   id: number; at: string; actor: string; project: string | null; task_id: number | null; question_id: number | null
   kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle'
@@ -45,6 +48,7 @@ const qs = (o: Record<string, string | undefined>) => {
   return s ? `?${s}` : ''
 }
 
+export const useUsers = () => useQuery({ queryKey: ['users'], queryFn: () => get<User[]>('/api/users') })
 export const useProjects = () => useQuery({ queryKey: ['projects'], queryFn: () => get<Project[]>('/api/projects') })
 export const useTasks = (project?: string, status?: Status) =>
   useQuery({ queryKey: ['tasks', project, status], queryFn: () => get<Task[]>(`/api/tasks${qs({ project, status })}`) })

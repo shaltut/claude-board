@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Search } from 'lucide-react'
-import { get, qs, rpc, useQuestions, type CbEvent, type Question } from '@/lib/api'
+import { get, qs, rpc, useQuestions, useUsers, type CbEvent, type Question } from '@/lib/api'
 import { ago, clock, day } from '@/lib/format'
 import { go, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
@@ -42,7 +42,10 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
   const qc = useQueryClient()
   const [anchor, setAnchor] = anchorState
   const [editing, setEditing] = useState<number | null>(null)
-  const { data: open = [] } = useQuestions(route.project, 'open')
+  const { data: allOpen = [] } = useQuestions(route.project, 'open')
+  const open = allOpen.filter((q) => !q.assigned_to)
+  const others = allOpen.filter((q) => q.assigned_to)
+  const { data: users = [] } = useUsers()
   const { data: answered = [] } = useQuestions(route.project, 'answered')
   const today = useQuery({
     queryKey: ['today', route.project, anchor], enabled: !!anchor,
@@ -79,6 +82,15 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
           </div>
         ) : (
           <div className="space-y-4">{open.map((q) => <QuestionCard key={q.id} q={q} onAnswered={setEditing} />)}</div>
+        )}
+        {others.length > 0 && (
+          <details className="mt-6">
+            <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">
+              Waiting on others: {[...new Set(others.map((q) => q.assigned_to!))].map((u) =>
+                `${users.find((x) => x.name === u)?.display ?? u} (${others.filter((q) => q.assigned_to === u).length})`).join(', ')}
+            </summary>
+            <div className="mt-3 space-y-4">{others.map((q) => <QuestionCard key={q.id} q={q} />)}</div>
+          </details>
         )}
 
         {answered.length > 0 && (

@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { get, type User } from '@/lib/api'
+import { Guest } from '@/views/Guest'
 import { useLive } from '@/lib/live'
 import { go, useRoute, VIEWS } from '@/lib/route'
 import { TopBar } from '@/components/TopBar'
@@ -15,6 +18,27 @@ import { Huddles } from '@/views/Huddles'
 const typing = (e: KeyboardEvent) => {
   const el = e.target as HTMLElement
   return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+}
+
+type Who = { role: 'local' } | { role: 'guest'; user: User } | { role: 'anonymous' }
+
+/** The full board only on this machine; a guest link gets the guest page; anyone else gets nothing. */
+export function Gate() {
+  const { data } = useQuery({ queryKey: ['whoami'], queryFn: () => get<Who>('/api/whoami'), staleTime: Infinity })
+  if (!data) return null
+  if (data.role === 'local') return <App />
+  if (data.role === 'guest') return <GuestLive user={data.user} />
+  return (
+    <main className="mx-auto max-w-md px-4 py-20 text-center">
+      <h1 className="text-lg font-semibold">Claude Board</h1>
+      <p className="mt-2 text-sm text-muted-foreground">Open the personal link Ahmed sent you to see your questions.</p>
+    </main>
+  )
+}
+
+function GuestLive({ user }: { user: User }) {
+  useLive()
+  return <Guest user={user} />
 }
 
 export default function App() {
@@ -42,12 +66,13 @@ export default function App() {
     <div className="min-h-dvh">
       <TopBar route={route} live={live} onSearch={() => setMenu(true)} />
       <main className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
-        {route.tag && (route.view === 'board' || route.view === 'backlog') && (
+        {(route.tag || route.type) && (route.view === 'board' || route.view === 'backlog') && (
           <div className="mb-4 flex items-center gap-2 text-sm">
             <span className="text-muted-foreground">Showing</span>
-            <span className="rounded-full border px-2 py-0.5 font-medium">#{route.tag}</span>
-            <button onClick={() => go({ tag: undefined })} className="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
-              Show all tags
+            {route.tag && <span className="rounded-full border px-2 py-0.5 font-medium">#{route.tag}</span>}
+            {route.type && <span className="rounded-full border px-2 py-0.5 font-medium">{route.type}s</span>}
+            <button onClick={() => go({ tag: undefined, type: undefined })} className="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
+              Show all
             </button>
           </div>
         )}

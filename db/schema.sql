@@ -81,6 +81,12 @@ alter table cb.events add constraint events_kind_check check (kind in ('task_cre
 
 alter table cb.questions add column if not exists multi boolean not null default false;
 
+-- What kind of work a task is. 'task' (unclassified) is the default: existing rows were never typed,
+-- and calling them features would be a lie. The list lives in the check and in cb.norm_type.
+alter table cb.tasks add column if not exists type text not null default 'task';
+alter table cb.tasks drop constraint if exists tasks_type_check;
+alter table cb.tasks add constraint tasks_type_check check (type in ('task','bug','feature','change','chore','research'));
+
 -- Which actor a session (herdr pane on a machine) is: set by `cb iam`, used by the CLI and the relay.
 create table if not exists cb.sessions (
   machine    text not null,
@@ -115,6 +121,8 @@ create index if not exists questions_status on cb.questions (status);
 drop function if exists cb.set_actor cascade;
 drop function if exists cb.norm_status cascade;
 drop function if exists cb.norm_priority cascade;
+drop function if exists cb.norm_type cascade;
+drop function if exists cb.triagers cascade;
 drop function if exists cb.norm_id cascade;
 drop function if exists cb.ensure_project cascade;
 drop function if exists cb.slug cascade;
@@ -147,6 +155,13 @@ drop function if exists cb._huddle_post cascade;
 drop function if exists cb._huddle_join cascade;
 drop function if exists cb.broadcast_seen cascade;
 drop function if exists cb._broadcasts cascade;
+drop function if exists cb.tick cascade;
+drop function if exists cb._is_review cascade;
+drop function if exists cb._pr_no cascade;
+drop function if exists cb._has_reviewer cascade;
+drop function if exists cb.lock_take cascade;
+drop function if exists cb.lock_release cascade;
+drop function if exists cb.lock_queue cascade;
 
 -- Effective actor for this transaction; triggers read it back from cb.actor.
 create function cb.set_actor(actor text) returns text language plpgsql as $$
@@ -187,6 +202,29 @@ begin
   end if;
   return v;
 end $$;
+
+create function cb.norm_type(t text) returns text language plpgsql immutable as $$
+#variable_conflict use_variable
+declare v text := lower(trim(coalesce(t, 'task')));
+begin
+  if v not in ('task','bug','feature','change','chore','research') then
+    raise exception 'unknown type "%"; use one of task, bug, feature, change, chore, research', t;
+  end if;
+  return v;
+end $$;
+
+-- Who triages a project's new bugs: its orchestrator(s) (orch@*, seen in the last day), else every
+-- session bound to it and seen in the last day. A day, not the 90s relay liveness: a relay restart or
+-- a sleeping Mac must not hand the orchestrator's bugs to every worker; session rows are never deleted.
+-- One rule for the relay push (cb.inbox) and for what `cb bug` prints.
+create function cb.triagers(project text) returns text[] language sql stable as $$
+  select coalesce(
+    nullif(array(select s.actor from cb.sessions s
+                  where s.project = $1 and (s.actor like 'orch@%' or s.actor = 'orch')
+                    and s.last_seen > now() - interval '1 day' order by s.actor), '{}'),
+    array(select distinct s.actor from cb.sessions s
+           where s.project = $1 and s.last_seen > now() - interval '1 day' order by s.actor))
+$$;
 
 create function cb.norm_id(id text) returns bigint language plpgsql immutable as $$
 #variable_conflict use_variable
@@ -349,7 +387,7 @@ create or replace trigger projects_notify after insert or update or delete on cb
 
 create function cb.task_add(project text, title text, body text default '', status text default 'backlog',
                             priority text default 'P2', labels jsonb default '[]', links jsonb default '{}',
-                            assignee text default null, actor text default null)
+                            assignee text default null, actor text default null, type text default null)
 returns bigint language plpgsql as $$
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); p text := cb.ensure_project(project); new_id bigint;
@@ -358,10 +396,10 @@ begin
   if coalesce(trim(title), '') = '' then raise exception 'title is required'; end if;
   -- work added through an alias ("tawuniya") keeps that stream's tags
   l := l || array(select g from cb.project_aliases pa, unnest(pa.tags) g where pa.alias = cb.slug(project) and g <> all(l));
-  insert into cb.tasks (project, title, body, status, priority, labels, links, assignee, created_by)
+  insert into cb.tasks (project, title, body, status, priority, labels, links, assignee, created_by, type)
   values (p, trim(title), coalesce(body, ''), cb.norm_status(status), cb.norm_priority(priority),
           l, coalesce(links, '{}'),
-          coalesce(assignee, case when cb.norm_status(status) = 'in_progress' then a end), a)
+          coalesce(assignee, case when cb.norm_status(status) = 'in_progress' then a end), a, cb.norm_type(type))
   returning cb.tasks.id into new_id;
   return new_id;
 end $$;
@@ -385,11 +423,12 @@ declare tid bigint := cb.norm_id(id); bad text;
 begin
   perform cb.set_actor(actor);
   select string_agg(k, ', ') into bad from jsonb_object_keys(coalesce(fields, '{}')) k
-   where k not in ('title','body','priority','assignee','labels','links','project','rank');
+   where k not in ('title','body','priority','assignee','labels','links','project','rank','type');
   if bad is not null then
-    raise exception 'unknown field(s) %; allowed: title, body, priority, assignee, labels, links, project, rank', bad;
+    raise exception 'unknown field(s) %; allowed: title, body, priority, assignee, labels, links, project, rank, type', bad;
   end if;
   update cb.tasks t set
+    type     = case when fields ? 'type' then cb.norm_type(fields ->> 'type') else t.type end,
     title    = case when fields ? 'title' then fields ->> 'title' else t.title end,
     body     = case when fields ? 'body' then coalesce(fields ->> 'body', '') else t.body end,
     priority = case when fields ? 'priority' then cb.norm_priority(fields ->> 'priority') else t.priority end,
@@ -597,16 +636,17 @@ begin
 end $$;
 
 -- Snapshot a session reads at start.
-create function cb.brief(project text default null, tag text default null)
+create function cb.brief(project text default null, tag text default null, type text default null)
 returns jsonb language plpgsql stable as $$
 #variable_conflict use_variable
 declare p text := cb.read_project(project); tg text := nullif(cb.norm_tag(tag), '');
+  ty text := case when nullif(trim(type), '') is null then null else cb.norm_type(type) end;
 begin
   return jsonb_build_object(
-    'in_progress', cb._brief_tasks(p, tg, 'in_progress', 50),
-    'next', cb._brief_tasks(p, tg, 'next', 10),
-    'blocked', cb._brief_tasks(p, tg, 'blocked', 50),
-    'review', cb._brief_tasks(p, tg, 'review', 50),
+    'in_progress', cb._brief_tasks(p, tg, 'in_progress', 50, ty),
+    'next', cb._brief_tasks(p, tg, 'next', 10, ty),
+    'blocked', cb._brief_tasks(p, tg, 'blocked', 50, ty),
+    'review', cb._brief_tasks(p, tg, 'review', 50, ty),
     'open_questions', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body,
         'blocking', q.blocking, 'asked_by', q.asked_by, 'task_id', q.task_id, 'options', q.options, 'assigned_to', q.assigned_to) order by q.blocking desc, q.id)
       from cb.questions q where q.status = 'open' and (p is null or q.project = p)), '[]'),
@@ -620,10 +660,11 @@ begin
 end $$;
 
 drop function if exists cb._brief_tasks cascade;
-create function cb._brief_tasks(p text, tg text, s text, lim int) returns jsonb language sql stable as $$
+create function cb._brief_tasks(p text, tg text, s text, lim int, ty text default null) returns jsonb language sql stable as $$
   select coalesce(jsonb_agg(x order by x.priority, x.rank), '[]') from (
-    select t.id, t.project, t.title, t.priority, t.assignee, t.updated_at, t.blocked_on, t.rank, t.labels
+    select t.id, t.project, t.title, t.priority, t.assignee, t.updated_at, t.blocked_on, t.rank, t.labels, t.type
       from cb.tasks t where t.status = s and (p is null or t.project = p) and (tg is null or tg = any(t.labels))
+                        and (ty is null or t.type = ty)
      order by t.priority, t.rank limit lim) x
 $$;
 
@@ -681,6 +722,13 @@ begin
                                  from cb.events e join cb.questions q on q.id = e.question_id
                                 where e.kind = 'answered' and (me like 'orch@%' or me = 'orch') and e.project = proj
                                   and q.asked_by <> me and e.id > seen and e.at > now() - interval '24 hours'), '[]'),
+    -- new unassigned bugs filed in my project, if I triage it (cb.triagers: its orchestrator, else everyone bound)
+    'bugs', coalesce((select jsonb_agg(jsonb_build_object('event_id', e.id, 'id', t.id, 'project', t.project, 'title', t.title,
+                                                          'body', t.body, 'priority', t.priority, 'actor', e.actor) order by e.id)
+                        from cb.events e join cb.tasks t on t.id = e.task_id
+                       where e.kind = 'task_created' and t.type = 'bug' and t.assignee is null and t.status not in ('done', 'cancelled')
+                         and t.project = proj and e.actor <> me and e.id > seen and e.at > now() - interval '24 hours'
+                         and me = any(cb.triagers(proj))), '[]'),
     -- huddle lines for huddles I'm in; a member added later hears only from its own 'add' on
     'huddles', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'huddle', h.id, 'topic', h.topic, 'action', e.data ->> 'action',
                                                              'actor', e.actor, 'summary', e.summary) order by e.id)
@@ -701,10 +749,11 @@ begin
                            and e.kind in ('task_created', 'moved', 'updated', 'done', 'note')
                            and (t.assignee = me or e.data -> 'assignee' ->> 'from' = me)), '[]'),
     -- New work in my project's Next (unassigned or mine), only while I have nothing in progress.
+    -- A new unassigned bug goes to triage ('bugs') instead: one decision, not every idle worker racing for it.
     'next_work', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'priority', t.priority) order by t.priority, t.rank)
                              from cb.tasks t
                             where me is not null and proj is not null and t.project = proj and t.status = 'next'
-                              and (t.assignee is null or t.assignee = me)
+                              and (t.assignee is null or t.assignee = me) and not (t.type = 'bug' and t.assignee is null)
                               and exists (select 1 from cb.events e where e.task_id = t.id and e.id > after_event and e.actor <> me
                                             and ((e.kind = 'task_created' and e.data ->> 'status' = 'next')
                                                  or (e.kind = 'moved' and e.data ->> 'to' = 'next')))
@@ -938,4 +987,157 @@ begin
   end if;
   update cb.questions q set assigned_to = to_user where q.id = qid;
   if not found then raise exception 'question Q% not found', qid; end if;
+end $$;
+
+-- ---------------------------------------------------------------- locks and tick
+
+-- Shared locks (the Mac's DB test lock): per name, the row with held_at holds it, the rest queue by id.
+create table if not exists cb.locks (
+  id        bigint generated always as identity primary key,
+  name      text not null,
+  actor     text not null,
+  queued_at timestamptz not null default now(),
+  held_at   timestamptz,
+  unique (name, actor)
+);
+
+-- [{name, holder, held_at, holder_seen, queue: [actor...]}] for one lock or all. holder_seen: the holder's last sign
+-- of life (relay heartbeat, any event, or taking the lock).
+create function cb.lock_queue(name text default null) returns jsonb language sql stable as $$
+  select coalesce(jsonb_agg(jsonb_build_object('name', g.name, 'holder', g.holder, 'held_at', g.held_at, 'queue', g.queue,
+           'holder_seen', greatest(g.held_at, (select max(s.last_seen) from cb.sessions s where s.actor = g.holder),
+                                   (select max(e.at) from cb.events e where e.actor = g.holder))) order by g.name), '[]')
+    from (select l.name, max(l.actor) filter (where l.held_at is not null) as holder, max(l.held_at) as held_at,
+                 coalesce(jsonb_agg(l.actor order by l.id) filter (where l.held_at is null), '[]') as queue
+            from cb.locks l where $1 is null or l.name = lower(trim($1)) group by l.name) g
+$$;
+
+-- Take a lock, or join its queue (idempotent). Returns the lock's state.
+create function cb.lock_take(name text, actor text default null) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); n text := lower(trim(coalesce(name, '')));
+begin
+  if n = '' then raise exception 'lock name is required'; end if;
+  perform pg_advisory_xact_lock(hashtext('cb.lock:' || n));
+  insert into cb.locks (name, actor) values (n, a) on conflict do nothing;
+  update cb.locks l set held_at = now()
+   where l.id = (select min(x.id) from cb.locks x where x.name = n)
+     and not exists (select 1 from cb.locks h where h.name = n and h.held_at is not null);
+  return cb.lock_queue(n) -> 0;
+end $$;
+
+-- Release a lock (or leave its queue). The next in the queue holds it and gets a message. Returns the new holder.
+-- force: any session takes the lock off its holder (a dead session); logged, and the old holder is told.
+create function cb.lock_release(name text, actor text default null, force boolean default false) returns text language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); n text := lower(trim(coalesce(name, ''))); nxt text; old text;
+begin
+  perform pg_advisory_xact_lock(hashtext('cb.lock:' || n));
+  if coalesce(force, false) then
+    delete from cb.locks l where l.name = n and l.held_at is not null returning l.actor into old;
+    if old is null then raise exception 'lock % is not held', n; end if;
+    if old <> a then
+      insert into cb.events (actor, kind, summary, data)
+      values (a, 'note', format('force-released lock %s from %s', n, old), jsonb_build_object('lock', n, 'from', old)),
+             (a, 'message', format('%s force-released your lock %s (you seemed gone); cb lock take %s to queue again', a, n, n), jsonb_build_object('to', old));
+    end if;
+  else
+    delete from cb.locks l where l.name = n and l.actor = a;
+    if not found then raise exception '% does not hold or wait for lock %', a, n; end if;
+  end if;
+  if not exists (select 1 from cb.locks h where h.name = n and h.held_at is not null) then
+    update cb.locks l set held_at = now() where l.id = (select min(x.id) from cb.locks x where x.name = n)
+    returning l.actor into nxt;
+    if nxt is not null then
+      insert into cb.events (actor, kind, summary, data)
+      values (a, 'message', format('lock %s is yours now (released by %s); cb lock release %s when done', n, a, n), jsonb_build_object('to', nxt));
+    end if;
+  end if;
+  return nxt;
+end $$;
+
+-- A reviewer's task: tagged review (what the orchestrator does), or titled "Review/Cross-review/Delta review/Re-check ...".
+create function cb._is_review(labels text[], title text) returns boolean language sql immutable as $$
+  select 'review' = any($1) or $2 ~* '^((cross-|delta )?review|re-check)'
+$$;
+
+-- PR number from links.pr: "https://github.com/o/r/pull/2800" or "#2800" → 2800.
+create function cb._pr_no(links jsonb) returns text language sql immutable as $$
+  select substring($1 ->> 'pr' from '([0-9]+)/?$')
+$$;
+
+-- Some reviewer task (not cancelled) covers this task: same PR, or "#<task id>"/"#<pr>" in its title.
+create function cb._has_reviewer(t cb.tasks) returns boolean language sql stable as $$
+  select exists (select 1 from cb.tasks r
+                  where r.project = t.project and r.id <> t.id and r.status <> 'cancelled' and cb._is_review(r.labels, r.title)
+                    and (r.title ~ ('#' || t.id || '([^0-9]|$)')
+                         or (cb._pr_no(t.links) is not null
+                             and (cb._pr_no(r.links) = cb._pr_no(t.links) or r.title ~ ('#' || cb._pr_no(t.links) || '([^0-9]|$)')))))
+$$;
+
+-- cb tick, board side (read-only): what needs someone now. The CLI adds GitHub's view and one command per line.
+-- GO rule: a reviewer task's verdict is its latest done/note summary that says GO; "NO-GO"/"NO GO" is not GO.
+-- The reviewed commit is links.commit (cb done --commit), the PR links.pr.
+create function cb.tick(project text default null, actor text default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb.read_project(project); me text := coalesce(nullif(trim(actor), ''), 'unknown');
+begin
+  return jsonb_build_object(
+    -- answered, not delivered: whoever the answer is addressed to (reply_to's session, else the asker) acts
+    'answered', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'body', q.body, 'answer', q.answer, 'answered_by', q.answered_by,
+        'answered_at', q.answered_at, 'who', coalesce(s.actor, q.asked_by)) order by q.answered_at, q.id)
+      from cb.questions q
+      left join cb.sessions s on s.machine = lower(q.reply_to ->> 'machine') and s.pane = q.reply_to ->> 'pane'
+     where q.status = 'answered' and (p is null or q.project = p)), '[]'),
+    'my_questions', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'body', q.body, 'created_at', q.created_at,
+        'for', coalesce(q.assigned_to, 'ahmed'), 'no_options', coalesce(jsonb_array_length(q.options), 0) = 0) order by q.id)
+      from cb.questions q where q.status = 'open' and q.asked_by = me and (p is null or q.project = p)), '[]'),
+    -- in progress, and the holder has written nothing anywhere for 30 minutes (relay heartbeats don't count)
+    'silent', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'assignee', t.assignee, 'last_at', l.at) order by l.at nulls first, t.id)
+      from cb.tasks t cross join lateral (select max(e.at) as at from cb.events e where e.actor = t.assignee) l
+     where t.status = 'in_progress' and (p is null or t.project = p) and t.assignee is not null and t.assignee <> 'ahmed'
+       and t.assignee not in (select u.name from cb.users u) and (l.at is null or l.at < now() - interval '30 minutes')), '[]'),
+    'blocked', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'assignee', t.assignee, 'since', coalesce(b.at, t.updated_at),
+        'note', b.summary, 'question', q.id, 'question_body', q.body, 'question_status', q.status, 'question_for', coalesce(q.assigned_to, 'ahmed'))
+        order by coalesce(b.at, t.updated_at))
+      from cb.tasks t
+      left join cb.questions q on q.id = t.blocked_on
+      left join lateral (select e.at, e.summary from cb.events e where e.task_id = t.id and e.kind = 'moved' and e.data ->> 'to' = 'blocked'
+                          order by e.id desc limit 1) b on true
+     where t.status = 'blocked' and (p is null or t.project = p) and coalesce(b.at, t.updated_at) < now() - interval '1 hour'), '[]'),
+    'unreviewed', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'assignee', t.assignee, 'pr', t.links ->> 'pr') order by t.id)
+      from cb.tasks t where t.status = 'review' and (p is null or t.project = p)
+       and not cb._is_review(t.labels, t.title) and not cb._has_reviewer(t)
+       -- held by Ahmed, a user or an orchestrator, "review" means waiting on a person, not on a code review
+       and coalesce(t.assignee, '') not in ('ahmed', 'orch') and coalesce(t.assignee, '') not like 'orch@%'
+       and coalesce(t.assignee, '') not in (select u.name from cb.users u)), '[]'),
+    -- in progress, but the last one to move it or write on it is another worker (not Ahmed, the relay or an orchestrator)
+    'misheld', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'assignee', t.assignee, 'by', l.actor) order by t.id)
+      from cb.tasks t cross join lateral (select e.actor from cb.events e where e.task_id = t.id and e.kind in ('moved', 'note', 'done')
+                                           order by e.id desc limit 1) l
+     where t.status = 'in_progress' and (p is null or t.project = p) and t.assignee is not null and l.actor <> t.assignee
+       and l.actor not in ('ahmed', 'relay', 'unknown', 'orch') and l.actor not like 'orch@%'
+       and l.actor not in (select u.name from cb.users u)), '[]'),
+    -- live sessions (relay within 90s) holding nothing in progress; tags = what they worked on this week
+    'idle', coalesce((select jsonb_agg(jsonb_build_object('actor', s.actor, 'tags',
+          (select coalesce(jsonb_agg(distinct g), '[]') from cb.tasks t, unnest(t.labels) g where t.assignee = s.actor and t.updated_at > now() - interval '7 days'))
+        order by s.actor)
+      from (select distinct s2.actor from cb.sessions s2 where (p is null or s2.project = p) and s2.last_seen > now() - interval '90 seconds') s
+     where s.actor <> me and s.actor <> 'orch' and s.actor not like 'orch@%'
+       and not exists (select 1 from cb.tasks t where t.assignee = s.actor and t.status = 'in_progress')), '[]'),
+    'next', cb._brief_tasks(p, null, 'next', 50),
+    'huddles', coalesce((select jsonb_agg(jsonb_build_object('id', h.id, 'topic', h.topic, 'last_at', l.at) order by l.at)
+      from cb.huddles h cross join lateral (select coalesce(max(e.at), h.opened_at) as at from cb.events e
+                                             where e.kind = 'huddle' and (e.data ->> 'huddle')::bigint = h.id) l
+     where h.status = 'open' and (p is null or h.project = p) and l.at < now() - interval '20 minutes'), '[]'),
+    'locks', cb.lock_queue(null),
+    -- tasks with a PR, open or touched this week: the CLI asks GitHub about these
+    'prs', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'status', t.status, 'assignee', t.assignee, 'labels', t.labels,
+        'pr', t.links ->> 'pr', 'commit', t.links ->> 'commit', 'done_at', t.done_at,
+        'review', cb._is_review(t.labels, t.title), 'reviewed', cb._has_reviewer(t),
+        'go', (select e.summary ~ '\mGO\M' and e.summary !~ 'NO[- ]?GO' from cb.events e
+                where e.task_id = t.id and e.kind in ('done', 'note') and e.summary ~ '\mGO\M' order by e.id desc limit 1))
+        order by t.id)
+      from cb.tasks t where (p is null or t.project = p) and cb._pr_no(t.links) is not null
+       and (t.status not in ('done', 'cancelled') or t.updated_at > now() - interval '7 days')), '[]'));
 end $$;

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { callFn } from '../server/rpc.ts';
+import { tick, dur } from './tick.ts';
 import { sql, databaseUrl, machine, dotenv } from '../server/db.ts';
 import { help, unknownHelp, COMMANDS } from './help.ts';
 
@@ -17,7 +18,7 @@ const OPTIONS = {
   title: { type: 'string' }, assignee: { type: 'string' }, project: { type: 'string' },
   task: { type: 'string', short: 't' }, option: { type: 'string', short: 'o', multiple: true },
   multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, to: { type: 'string' }, context: { type: 'string', short: 'c' },
-  'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' },
+  'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' }, type: { type: 'string' }, force: { type: 'boolean' },
 } as const;
 
 // Text like "-5% latency" is text, not a flag: only --name, --name=x and -x look like options.
@@ -85,7 +86,7 @@ function options() {
 }
 
 const line = (t: any) =>
-  `#${t.id} [${t.status ?? ''}] ${t.priority} ${t.title}${t.labels?.length ? ` {${t.labels.join(', ')}}` : ''}${t.assignee ? ` (${t.assignee})` : ''} · ${t.project}`.replace(' [] ', ' ');
+  `#${t.id} [${t.status ?? ''}] ${t.priority} ${t.type && t.type !== 'task' ? `${t.type}: ` : ''}${t.title}${t.labels?.length ? ` {${t.labels.join(', ')}}` : ''}${t.assignee ? ` (${t.assignee})` : ''} · ${t.project}`.replace(' [] ', ' ');
 
 function printBrief(b: any) {
   const sec = (name: string, rows: any[], fmt: (r: any) => string) => {
@@ -269,7 +270,6 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
     case 'sessions': {
       const rows: any = await callFn('sessions_overview', { project: args[0] ?? sessionProject ?? null });
       const idle = (r: any) => (r.last ? (Date.now() - +new Date(r.last.at)) / 60000 : Infinity);
-      const dur = (m: number) => (m === Infinity ? 'never' : m < 60 ? `${Math.round(m)}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`);
       const open = rows.filter((r: any) => r.live || r.doing.length || r.queued || r.open_questions);
       const out = open.map((r: any) => {
         const head = `${r.actor} ${r.live ? 'relay live' : 'no relay'}${r.pane ? ` · ${r.pane}` : ''} · idle ${dur(idle(r))}` +
@@ -283,7 +283,7 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
     case 'session': {
       need(1, 'session <name>   e.g. cb session W6@macbook');
       const who = args[0];
-      const tasks = await sql`select id, status, priority, title, project from cb.tasks where assignee = ${who} and status not in ('done','cancelled') order by status, priority, rank`;
+      const tasks = await sql`select id, status, priority, type, title, project from cb.tasks where assignee = ${who} and status not in ('done','cancelled') order by status, priority, rank`;
       const qs = await sql`select id, status, body from cb.questions where asked_by = ${who} and status in ('open','answered') order by id`;
       const ev = await sql`select at, kind, task_id, summary from cb.events where actor = ${who} order by id desc limit 10`;
       const out = [`${who}: ${tasks.length} open tasks`, ...tasks.map((t: any) => '  ' + line(t)),
@@ -313,8 +313,21 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       need(2, 'add <project> "<title>" [-s next] [-p P1]   e.g. cb add ihop "Fix Hijri month parse" -s next');
       const id = await callFn('task_add', { project: args[0], title: args.slice(1).join(' '), body: o.body ?? '',
         status: o.status ?? 'backlog', priority: o.priority ?? 'P2', labels: o.labels ? o.labels.split(',') : [],
-        links: links(), assignee: o.assignee ?? null, actor });
+        links: links(), assignee: o.assignee ?? null, actor, ...(o.type ? { type: o.type } : {}) });
       return { out: `#${id}`, json: id };
+    }
+    case 'bug': {
+      need(2, 'bug <project> "<title>" -b "what happened, how to reproduce, expected vs actual"');
+      if (!o.body?.trim()) throw new Error('describe it: -b "what happened, how to reproduce, expected vs actual"');
+      await sql`select cb.read_project(${args[0]})`; // a typo errors with the known projects instead of creating one
+      const id = await callFn('task_add', { project: args[0], title: args.slice(1).join(' '), body: o.body, status: 'next',
+        priority: o.priority ?? 'P2', labels: o.labels ? o.labels.split(',') : [], links: links(), actor, type: 'bug' });
+      const [{ project, all }] = await sql`select t.project, cb.triagers(t.project) as all from cb.tasks t where t.id = ${id}`;
+      const told = all.filter((a: string) => a !== actor);
+      const orch = told.some((a: string) => a === 'orch' || a.startsWith('orch@'));
+      const who = told.length ? `told ${told.join(', ')}${orch ? '' : ' (no orchestrator there)'}`
+        : all.length ? `you triage it: cb edit ${id} --assignee <worker>` : `no session works in ${project} yet: it waits in Next`;
+      return { out: `#${id} bug filed in ${project}; ${who}`, json: { id, project, told } };
     }
     case 'move':
       need(2, 'move <id> <status> ["<note>"]');
@@ -327,10 +340,10 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       await callFn('task_done', { id: args[0], summary: args.slice(1).join(' '), links: links(), actor });
       return { out: `#${args[0].replace('#', '')} done` };
     case 'edit': {
-      need(1, 'edit <id> --title/--body/--priority/--assignee/--project   e.g. cb edit 42 --priority P1');
+      need(1, 'edit <id> --title/--body/--priority/--assignee/--project/--type   e.g. cb edit 42 --priority P1');
       await guard(args[0]);
       const fields: Record<string, unknown> = {};
-      for (const k of ['title', 'body', 'priority', 'assignee', 'project'] as const) if (o[k] !== undefined) fields[k] = o[k];
+      for (const k of ['title', 'body', 'priority', 'assignee', 'project', 'type'] as const) if (o[k] !== undefined) fields[k] = o[k];
       if (o.labels) fields.labels = o.labels.split(',');
       const l = links(); if (Object.keys(l).length) fields.links = l;
       await callFn('task_update', { id: args[0], fields, actor });
@@ -389,8 +402,35 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       need(1, 'withdraw <qid>');
       await callFn('withdraw', { id: args[0].replace(/^q/i, ''), actor });
       return { out: `Q${args[0].replace(/^q/i, '')} withdrawn` };
+    case 'tick': {
+      const project = args[0] ?? sessionProject;
+      if (!project) throw new Error('no project: say which (cb tick ihop) or bind this session once (cb iam <name> <project>)');
+      return await tick(project, actor);
+    }
+    case 'lock': {
+      const [sub, name] = args;
+      const show = (l: any) => `lock ${l.name}: ${l.holder ?? 'nobody'} holds it ${dur((Date.now() - +new Date(l.held_at)) / 60000)}${l.queue.length ? `, queue ${l.queue.join(', ')}` : ''}`;
+      if (sub === 'queue') {
+        const rows: any = await callFn('lock_queue', { name: name ?? null });
+        return { out: rows.map(show).join('\n') || 'no locks held', json: rows };
+      }
+      need(2, 'lock take|release <name>   e.g. cb lock take db');
+      if (sub === 'take') {
+        const l: any = await callFn('lock_take', { name, actor });
+        const pos = l.queue.indexOf(actor) + 1;
+        return { out: l.holder === actor ? `you hold lock ${l.name}`
+          : `lock ${l.name} is held by ${l.holder} (${dur((Date.now() - +new Date(l.held_at)) / 60000)}); you are #${pos} in the queue: a message tells you when it is yours`, json: l };
+      }
+      if (sub === 'release') {
+        const next: any = await callFn('lock_release', { name, actor, force: !!o.force });
+        const n = name.trim().toLowerCase();
+        const [l]: any = await callFn('lock_queue', { name: n });
+        return { out: `released lock ${n}; ${next ? `${next} holds it now` : l ? `${l.holder} holds it` : 'it is free'}`, json: next };
+      }
+      throw new Error(`unknown lock command "${sub}": take, release, queue`);
+    }
     case 'brief': {
-      const b = await callFn('brief', { project: args[0] ?? sessionProject, tag: o.tag ?? null });
+      const b = await callFn('brief', { project: args[0] ?? sessionProject, tag: o.tag ?? null, ...(o.type ? { type: o.type } : {}) });
       if (o.json) return { json: b };
       printBrief(b);
       return {};
