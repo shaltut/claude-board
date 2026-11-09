@@ -305,6 +305,9 @@ begin
     update cb.questions q set project = t where q.project = a;
     update cb.events e set project = t where e.project = a;
     update cb.project_aliases pa set slug = t where pa.slug = a;
+    -- people on the merged project follow their work (#315 review); the FK cascade would drop them
+    insert into cb.user_projects (user_name, project) select up.user_name, t from cb.user_projects up where up.project = a
+    on conflict do nothing;
     delete from cb.projects p where p.slug = a;
     perform set_config('cb.quiet', '', true);
     insert into cb.events (actor, project, kind, summary, data)
@@ -1134,7 +1137,7 @@ begin
   perform cb.dashboard_only();
   a := cb.set_actor(actor);
   if length(coalesce(password, '')) < 8 then raise exception 'password: at least 8 characters'; end if;
-  update cb.users u set password = public.crypt(password, public.gen_salt('bf')) where u.name = n returning u.display into d;
+  update cb.users u set password = public.crypt(password, public.gen_salt('bf', 10)) where u.name = n returning u.display into d;
   if d is null then raise exception 'unknown user %: see cb users', name; end if;
   insert into cb.events (actor, kind, summary, data)
   values (a, 'user', 'password set for ' || d || ' (' || n || ')', jsonb_build_object('user', n, 'action', 'password'));

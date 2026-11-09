@@ -36,8 +36,11 @@ app.use('*', async (c, next) => {
   return c.redirect('/', 302);
 });
 function signIn(c: Context, token: string) {
-  setCookie(c, 'cb_user', token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 90 * 86_400 });
+  setCookie(c, 'cb_user', token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 90 * 86_400,
+    secure: c.req.header('x-forwarded-proto') === 'https' }); // the tunnel is https; local dev is plain http
 }
+export const loginFails = new Map<string, { n: number; until: number }>();
+let loginWaits = 0;
 // Guests with a project scope: only what is assigned to them, on a project Ahmed put them on.
 const onTheirProjects = (user: string) => sql`project in (select project from cb.user_projects where user_name = ${user})`;
 
@@ -49,18 +52,32 @@ app.use('/api/*', async (c, next) => {
     if (host !== c.req.header('host') && host !== c.req.header('x-forwarded-host')) return c.json({ ok: false, error: 'cross-site request refused' }, 403);
   }
   // The login page (#315): name and password set the same cookie as the link. One answer for every failure,
-  // after a second. ponytail: a fixed delay, not lockout or rate limiting; add those if the tunnel gets hammered.
+  // after a second. A name is locked for 2 minutes after 5 tries without a success (counted before the
+  // password check, so a parallel burst can't slip past), and at most 20 failures wait at once.
+  // ponytail: in-memory, per process; lost on restart, which is fine for one board.
   if (c.req.path === '/api/login' && c.req.method === 'POST') {
     const b = (await c.req.json().catch(() => null)) ?? {};
     const name = typeof b.name === 'string' ? b.name.trim().toLowerCase() : '', pw = typeof b.password === 'string' ? b.password : '';
+    const refuse = (status: 401 | 429) => c.json({ ok: false, error: "That name and password don't match." }, status);
+    const now = Date.now();
+    if (loginFails.size > 1000) for (const [k, f] of loginFails) if (f.until <= now) loginFails.delete(k);
+    let f = loginFails.get(name);
+    if (f?.until && f.until <= now) f = undefined; // the lock ran out: start counting again
+    if (f?.until) return refuse(429);
+    f ??= { n: 0, until: 0 };
+    if (++f.n >= 5) f.until = now + 120_000;
+    loginFails.set(name, f);
     const [u] = name && pw ? await sql`select token from cb.users where name = ${name} and password is not null
                                          and password = public.crypt(${pw}, password)` : [];
-    if (!u) {
-      await new Promise((r) => setTimeout(r, 1000));
-      return c.json({ ok: false, error: "That name and password don't match." }, 401);
+    if (u) {
+      loginFails.delete(name);
+      signIn(c, u.token);
+      return c.json({ ok: true });
     }
-    signIn(c, u.token);
-    return c.json({ ok: true });
+    if (loginWaits >= 20) return refuse(429);
+    loginWaits++;
+    try { await new Promise((r) => setTimeout(r, 1000)) } finally { loginWaits-- }
+    return refuse(401);
   }
   if (c.req.path === '/api/logout' && c.req.method === 'POST') {
     deleteCookie(c, 'cb_user', { path: '/' });

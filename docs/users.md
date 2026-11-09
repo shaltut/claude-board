@@ -20,7 +20,9 @@ board is readable through the tunnel. The link is the whole login, so send it pr
    **Optional: a password.** **Set password** on his card lets Omar sign in on the board's login page
    with his name and password instead of the link (send the password separately from the name). The
    link keeps working as one-click sign-in. Anyone reaching the board through the tunnel without
-   being signed in gets the login page; a wrong name or password gets one message after a second.
+   being signed in gets the login page; a wrong name or password gets one message after a second, and
+   after 5 tries without a success that name is locked for 2 minutes (same message, even with the
+   right password).
    He can **Sign out** on his page.
 
 2. **Check the tunnel is up.** The board is shared through a Cloudflare named tunnel,

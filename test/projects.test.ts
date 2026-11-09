@@ -2,7 +2,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { freshDb } from './helpers.ts'; // sets CB_DATABASE_URL before the server's db client loads
 
-const { app } = await import('../server/main.ts');
+const { app, loginFails } = await import('../server/main.ts');
 const { sql: serverSql } = await import('../server/db.ts');
 
 const clients: any[] = [];
@@ -96,7 +96,7 @@ test('login: name and password set the same cookie as the link; a wrong one wait
   await sql`select cb.user_add('iman', 'Iman')`; // no password
   await sql`select cb.user_password('omar', 'correct horse', 'ahmed')`;
   const [{ password }] = await sql`select password from cb.users where name = 'omar'`;
-  assert.match(password, /^\$2[abxy]\$/, 'bcrypt, never the plain text');
+  assert.match(password, /^\$2[abxy]\$10\$/, 'bcrypt at cost 10, never the plain text');
   await assert.rejects(sql`select cb.user_password('omar', 'short', 'ahmed')`, /at least 8/);
 
   const ok = await post('/api/login', { name: ' Omar ', password: 'correct horse' });
@@ -132,4 +132,62 @@ test('a session cannot set passwords or projects', async () => {
   assert.deepEqual({ ...u }, { none: true, n: 1 });
   const page = await (await app.request('/api/people', { headers: { ...SESSION, 'sec-fetch-site': 'same-origin' } })).text();
   assert.doesNotMatch(page, /\$2[abxy]\$/, 'the hash never leaves the database');
+});
+
+test('projects: an alias merge or a slug rename keeps a guest on their work', async () => {
+  const { sql, token } = await setup();
+  await sql`select cb.task_add(project => 'acme', title => 'seed acme')`;
+  await sql`select cb.user_project_add('omar', 'acme', 'ahmed')`;
+  await sql`select cb.ask(project => 'acme', body => 'merged one', to_user => 'omar', actor => 'orch@pc')`;
+  await sql`select cb.project_alias('acme', 'qhs')`; // omar was not on qhs
+  const me = await (await remote('/api/me', { cookie: token })).json();
+  assert.deepEqual(me.questions.map((q: any) => q.body), ['merged one']);
+  const [{ q }] = await sql`select id::text as q from cb.questions where body = 'merged one'`;
+  assert.equal((await post('/api/rpc/answer', { id: q, answer: 'yes' }, token)).status, 200);
+  assert.deepEqual((await sql`select project from cb.user_projects order by 1`).map((r: any) => r.project), ['ihop', 'qhs']);
+
+  await sql`select cb.ask(project => 'ihop', body => 'renamed one', to_user => 'omar', actor => 'orch@pc')`;
+  await sql`update cb.projects set slug = 'ihop2' where slug = 'ihop'`;
+  const me2 = await (await remote('/api/me', { cookie: token })).json();
+  assert.ok(me2.questions.some((q: any) => q.body === 'renamed one'), 'still on the guest page after ihop became ihop2');
+  assert.deepEqual((await sql`select project from cb.user_projects order by 1`).map((r: any) => r.project), ['ihop2', 'qhs']);
+});
+
+test('login: five wrong tries lock the name for two minutes; a success resets the count', async () => {
+  const { sql } = await setup();
+  loginFails.clear();
+  await sql`select cb.user_add('iman', 'Iman')`;
+  await sql`select cb.user_password('omar', 'correct horse', 'ahmed'), cb.user_password('iman', 'battery staple', 'ahmed')`;
+  const msg = { ok: false, error: "That name and password don't match." };
+
+  const five = await Promise.all(Array.from({ length: 5 }, () => post('/api/login', { name: 'omar', password: 'wrong' })));
+  assert.deepEqual(five.map((r) => r.status), [401, 401, 401, 401, 401], 'in parallel too');
+  const locked = await post('/api/login', { name: 'omar', password: 'correct horse' });
+  assert.equal(locked.status, 429, 'the right password waits out the lock');
+  assert.deepEqual(await locked.json(), msg);
+  assert.equal(locked.headers.get('set-cookie'), null);
+  loginFails.get('omar')!.until = Date.now() - 1; // two minutes later
+  assert.equal((await post('/api/login', { name: 'omar', password: 'correct horse' })).status, 200);
+
+  for (let round = 0; round < 2; round++) {
+    const four = await Promise.all(Array.from({ length: 4 }, () => post('/api/login', { name: 'iman', password: 'wrong' })));
+    assert.deepEqual(four.map((r) => r.status), [401, 401, 401, 401]);
+    assert.equal((await post('/api/login', { name: 'iman', password: 'battery staple' })).status, 200, `round ${round}`);
+  }
+
+  // at most 20 failures wait at once; past that the answer comes at once
+  const flood = await Promise.all(Array.from({ length: 25 }, (_, i) => post('/api/login', { name: `nobody${i}`, password: 'x' })));
+  const n = (s: number) => flood.filter((r) => r.status === s).length;
+  assert.deepEqual([n(401), n(429)], [20, 5]);
+  loginFails.clear();
+});
+
+test('the sign-in cookie is Secure when the tunnel says https', async () => {
+  const { sql, token } = await setup();
+  await sql`select cb.user_password('omar', 'correct horse', 'ahmed')`;
+  const https = { 'content-type': 'application/json', 'x-forwarded-proto': 'https' };
+  const login = await remote('/api/login', { method: 'POST', body: JSON.stringify({ name: 'omar', password: 'correct horse' }), headers: https });
+  assert.match(login.headers.get('set-cookie') ?? '', /;\s*Secure/i);
+  assert.match((await remote(`/?u=${token}`, { headers: https })).headers.get('set-cookie') ?? '', /;\s*Secure/i);
+  assert.doesNotMatch((await remote(`/?u=${token}`)).headers.get('set-cookie') ?? '', /Secure/i, 'plain http (local dev) stays usable');
 });
