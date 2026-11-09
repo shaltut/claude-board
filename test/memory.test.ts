@@ -225,7 +225,7 @@ test('cb mem: add, find, list, show, rule, retire from the CLI; cb brief and cb 
   assert.match(cb(['mem', 'add', 'demo', 'x']).err, /-k/);
 
   const f = cb(['mem', 'find', 'heavy mac', '--project', 'demo']);
-  assert.match(f.out, new RegExp(`M${id} F .*Heavy runs go to the Mac.*team: W1@test`));
+  assert.match(f.out, new RegExp(`F +M${id} Heavy runs go to the Mac \\(team: W1@test, review \\d{4}-\\d{2}-\\d{2}\\)`));
   const l = cb(['mem', 'list', 'demo']);
   assert.match(l.out, /R +M\d+ .*Every merge needs a GO.*\(Ahmed\)/);
   assert.match(l.out, /proposed/);

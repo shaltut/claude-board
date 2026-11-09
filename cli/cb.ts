@@ -20,6 +20,7 @@ const OPTIONS = {
   multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, to: { type: 'string' }, context: { type: 'string', short: 'c' },
   'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' }, type: { type: 'string' }, force: { type: 'boolean' },
   epic: { type: 'string' }, by: { type: 'string' },
+  kind: { type: 'string', short: 'k' }, review: { type: 'string' }, machine: { type: 'string' }, all: { type: 'boolean' },
 } as const;
 
 // Text like "-5% latency" is text, not a flag: only --name, --name=x and -x look like options.
@@ -95,6 +96,24 @@ function options() {
 const line = (t: any) =>
   `#${t.id} [${t.status ?? ''}] ${t.priority} ${t.type && t.type !== 'task' ? `${t.type}: ` : ''}${t.title}${t.labels?.length ? ` {${t.labels.join(', ')}}` : ''}${t.assignee ? ` (${t.assignee})` : ''} · ${t.project}`.replace(' [] ', ' ');
 
+// Shared memory (#167). One line per entry: kind code, id, title, who stands behind it. Team = a teammate's note.
+const KIND_CODE: Record<string, string> = { rule: 'R', ruling: 'RU', fact: 'F', gotcha: 'G', runbook: 'RB' };
+const memLine = (m: any) =>
+  `${(KIND_CODE[m.kind] ?? m.kind).padEnd(2)} M${m.id} ${m.title} (${m.authority === 'ahmed' ? 'Ahmed' : `team: ${m.created_by}`}` +
+  `${m.review_after ? `, review ${String(m.review_after).slice(0, 10)}` : ''})` +
+  `${m.status && m.status !== 'active' ? ` [${m.status}${m.superseded_by ? ` by M${m.superseded_by}` : ''}]` : m.expired ? ' [stale]' : ''}`;
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
+/** What a session is told when it binds: the pack, its size, and how team entries count. */
+function packText(p: any): string {
+  if (!p?.entries?.length) return '';
+  const n: Record<string, number> = {};
+  for (const e of p.entries) n[e.kind] = (n[e.kind] ?? 0) + 1;
+  const counts = Object.entries(n).map(([k, v]) => plural(v, k)).join(', ');
+  const shown = p.entries.length < p.total ? ` (${p.entries.length} of ${p.total} shown)` : '';
+  return [`[${p.project ?? 'global'} memory: ${counts}${shown}; more: cb mem find "<words>"]`, ...p.entries.map(memLine),
+    ...(p.entries.some((e: any) => e.authority !== 'ahmed') ? ["team = a teammate's note, not Ahmed's approval"] : [])].join('\n');
+}
+
 function printBrief(b: any) {
   const sec = (name: string, rows: any[], fmt: (r: any) => string) => {
     console.log(`${name} (${rows.length})`);
@@ -108,6 +127,7 @@ function printBrief(b: any) {
   sec('BROADCASTS (24h)', b.broadcasts ?? [], (x) => `${x.actor}${x.project ? ` to ${x.project}` : ' to everyone'}: ${x.summary}`);
   sec('ANSWERED — DELIVER THESE', b.answered_pending, (q) =>
     `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}: ${q.answer}`);
+  sec('RULES & FACTS', b.memory?.entries ?? [], memLine);
 }
 
 /** Projects are namespaces: a session bound to one project never changes another project's tasks. */
@@ -188,6 +208,67 @@ async function released(id: string) {
     where b.blocker = ${Number(id.replace(/^#/, ''))} and t.status not in ('done', 'cancelled') order by t.id`;
   return rows.map((t: any) => t.status !== 'blocked' ? `\n#${t.id} unblocked: now ${t.status}`
     : `\n#${t.id} still blocked${t.waits.length ? `: waits on #${t.waits.join(', #')}` : t.blocked_on ? `: on Q${t.blocked_on}` : ''}`).join('');
+}
+
+/** cb mem <add|rule|find|list|show|supersede|retire>: shared memory. Confirming is Ahmed's, on the Memory page. */
+async function mem(): Promise<{ out?: string; json?: unknown }> {
+  const [sub, ...a] = args;
+  const after = (m: any, verb: string) => {
+    const head = m.status === 'active'
+      ? `M${m.id} ${m.kind} ${verb}${m.authority === 'ahmed' ? '' : ` (team, not Ahmed${m.review_after ? `; review ${String(m.review_after).slice(0, 10)}` : ''})`}: ${m.title}`
+      : `M${m.id} ${m.kind} proposed${m.source?.flagged ? ' (it reads like an instruction or carries a URL)' : ''}: Ahmed confirms it on the Memory page. ${m.title}`;
+    const sim = (m.similar ?? []).map((x: any) => `  similar: M${x.id} (${x.kind}${x.status === 'proposed' ? ', proposed' : ''}) ${x.title}`);
+    return [head, ...sim, ...(sim.length ? [`  the same thing? keep one: cb mem supersede M<old> "<title>" and cb mem retire M${m.id}`] : [])].join('\n');
+  };
+  {
+    if (sub === 'add') {
+      if (!a.length) throw new Error('usage: cb mem add [project|global] "<title>" -k fact|gotcha|rule|runbook [-b "<body>"]. Details: cb help mem');
+      if (!o.kind) throw new Error('say what it is: -k fact (system state), gotcha (a trap), rule (standing practice: Ahmed confirms), runbook (a procedure). Details: cb help mem');
+      const project = a.length > 1 ? a[0] : sessionProject;
+      if (!project) throw new Error('name the project (or global): cb mem add <project> "<title>" -k <kind>, or bind this pane first with cb iam <name> <project>');
+      const m: any = await callFn('mem_add', { project, title: a.length > 1 ? a.slice(1).join(' ') : a[0], kind: o.kind, body: o.body ?? '',
+        task_id: o.task ?? null, review: o.review ?? null, links: links(), machine: o.machine ?? null,
+        tags: o.labels ? o.labels.split(',') : [], actor });
+      return { out: after(m, 'added'), json: m };
+    }
+    if (sub === 'rule') {
+      if (!a.length) throw new Error('usage: cb mem rule Q<id> ["<the rule in one line>"]   e.g. cb mem rule Q29 "Money PRs: merge on two GOs, owe the docs as a task"');
+      const m: any = await callFn('mem_rule', { question: a[0], title: a.slice(1).join(' ') || null, actor });
+      return { out: after(m, 'added').replace(' proposed', ` proposed from Q${m.source.question_id}`), json: m };
+    }
+    if (sub === 'find') {
+      if (!a.length) throw new Error('usage: cb mem find "<words>" [--project <p>] [--all]');
+      const rows: any = await callFn('mem_find', { q: a.join(' '), project: o.project ?? sessionProject ?? null, include_old: !!o.all });
+      return { out: rows.map(memLine).join('\n') || `nothing about "${a.join(' ')}"${o.all ? '' : ' (--all adds retired and replaced entries)'}`, json: rows };
+    }
+    if (sub === 'list') {
+      const rows: any = await callFn('mem_list', { project: a[0] ?? sessionProject ?? null, kind: o.kind ?? null, include_old: !!o.all });
+      return { out: rows.map(memLine).join('\n') || 'no memory here yet: cb mem add <project> "<title>" -k fact', json: rows };
+    }
+    if (sub === 'show') {
+      if (!a.length) throw new Error('usage: cb mem show M<id>');
+      const m: any = await callFn('mem_show', { id: a[0] });
+      const src = Object.entries(m.source ?? {}).map(([k, v]) => `${k}=${v}`).join(' ');
+      const lk = Object.entries(m.links ?? {}).map(([k, v]) => `${k}=${v}`).join(' ');
+      return { out: [memLine(m), m.body, `${m.project ?? 'global'}${m.machine ? `, ${m.machine} only` : ''} · by ${m.created_by} ${String(m.created_at).slice(0, 10)}` +
+        `${m.confirmed_by ? ` · confirmed by ${m.confirmed_by}` : ''}${src ? ` · ${src}` : ''}${lk ? ` · ${lk}` : ''}`].filter(Boolean).join('\n'), json: m };
+    }
+    if (sub === 'supersede') {
+      if (a.length < 2) throw new Error('usage: cb mem supersede M<id> "<new title>" [-b "<body>"]');
+      const m: any = await callFn('mem_supersede', { id: a[0], title: a.slice(1).join(' '), body: o.body ?? null, actor });
+      const old = String(a[0]).replace(/^m/i, '');
+      return { out: m.status === 'active' ? `M${m.id} replaces M${old}: ${m.title}`
+        : `M${m.id} proposed to replace M${old}: Ahmed confirms it on the Memory page; M${old} stays until then`, json: m };
+    }
+    if (sub === 'retire') {
+      if (!a.length) throw new Error('usage: cb mem retire M<id> ["why"]');
+      await callFn('mem_retire', { id: a[0], why: a.slice(1).join(' ') || null, actor });
+      return { out: `M${String(a[0]).replace(/^m/i, '')} retired` };
+    }
+    if (sub === 'confirm')
+      throw new Error('only Ahmed confirms, on the Memory page (key 9 on the board). Ask him if it matters now: cb ask');
+    throw new Error(`unknown mem command "${sub ?? ''}": add, rule, find, list, show, supersede, retire. Details: cb help mem`);
+  }
 }
 
 async function run(): Promise<unknown> {
@@ -323,8 +404,11 @@ async function run(): Promise<unknown> {
       if (!pane) throw new Error('cb iam needs a herdr pane ($HERDR_PANE_ID); use --as <name> on each command instead');
       const p = await callFn('iam', { machine: machine(), pane, actor: args[0], project: args[1] ?? null });
       const [b] = await sql`select project from cb.sessions where machine = ${machine()} and pane = ${pane}`;
-      return { out: `this pane (${pane}@${machine()}) is ${p}${b?.project ? `, working on ${b.project}` : ' (no project: add one, cb iam <name> <project>)'}` };
+      const pack = b?.project ? packText(await callFn('mem_pack', { project: b.project, machine: machine() })) : '';
+      return { out: `this pane (${pane}@${machine()}) is ${p}${b?.project ? `, working on ${b.project}` : ' (no project: add one, cb iam <name> <project>)'}${pack ? `\n\n${pack}` : ''}` };
     }
+    case 'mem':
+      return await mem();
     case 'add': {
       need(2, 'add <project> "<title>" [-s next] [-p P1]   e.g. cb add ihop "Fix Hijri month parse" -s next');
       const id = await callFn('task_add', { project: args[0], title: args.slice(1).join(' '), body: o.body ?? '',

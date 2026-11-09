@@ -56,7 +56,7 @@ test('cb help <topic> and cb help <command> print the detailed page; -h on a com
 test('cb help <unknown> exits 1 and lists the topics and commands', () => {
   const r = cb(['help', 'queue']);
   assert.equal(r.code, 1);
-  assert.match(r.err, /no help for "queue"\. Topics: start, work, ask, huddle, relay, orchestrate, project, rules\. Commands: .*next/);
+  assert.match(r.err, /no help for "queue"\. Topics: start, work, ask, huddle, relay, orchestrate, project, rules, memory\. Commands: .*next/);
 });
 
 test('prompts/claude-md-snippet.md is the snippet cb help project prints', () => {

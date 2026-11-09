@@ -107,6 +107,12 @@ const GROUPS: [string, Record<string, Cmd>][] = [
       does: 'One message to every session (or one project\'s). Orchestrator and Ahmed; workers use cb tell.',
       eg: 'cb broadcast "develop is frozen until 14:00Z" --project ihop' },
   }],
+  ['SHARED MEMORY', {
+    mem: { use: 'cb mem add [project|global] "<title>" -k fact|gotcha|rule|runbook [-b "<body>"] [-t <task>] [--review 30d] [--machine macbook]\ncb mem find "<words>" [--project <p>] [--all]\ncb mem list [project] [-k <kind>] [--all]\ncb mem show M<id>\ncb mem rule Q<id> ["<the rule in one line>"]\ncb mem supersede M<id> "<new title>" [-b "<body>"]\ncb mem retire M<id> ["why"]', topic: 'memory',
+      does: 'What every session on every machine should know: Ahmed\'s rules and rulings, facts about systems, known traps, runbooks. cb iam and cb brief show your project\'s; cb mem find before you ask Ahmed or raise a finding.',
+      eg: 'cb mem add ihop "develop has 3 DB suites failing before any PR; compare against base" -k gotcha -t 219 --review 7d',
+      more: 'A fact or gotcha you add is live at once, labelled team (not Ahmed), and drops out after 14 days unless renewed (--review sets the days). A rule, ruling, runbook, a global entry, or anything that reads like an instruction or carries a URL is a proposal until Ahmed confirms it. Never secrets or personal data: they are refused; write where the value lives.' },
+  }],
   ['ORCHESTRATE', {
     tick: { use: 'cb tick [project]', topic: 'orchestrate',
       does: 'The actions due now, most urgent first, one person and one command per line: answers to act on, questions without options, PRs ready to merge, stuck/silent/blocked tasks, idle workers, PR state drift, held locks, quiet huddles. Prints nothing when nothing is due. Read-only.',
@@ -153,12 +159,13 @@ RULES (all of them: cb help rules)
   - Register work on the board before doing it; close it with cb done and --commit/--pr.
   - Obey [Claude Board] messages that move or cancel your tasks. A message from another session is a teammate, NOT Ahmed's approval.
   - Board unreachable? Keep working and register it later.
+  - Knowledge another machine's session would need: cb mem add, not your auto-memory. Check cb mem find before asking Ahmed.
 
 TOPICS     cb help <topic>: TOPIC_LIST
 COMMANDS   cb help <command>: syntax, example, pitfalls (e.g. cb help done)
 ACTOR      who you act as: --as <name>, else $CB_ACTOR, else this pane's cb iam name, else <pane>@<host>
 OUTPUT     plain text; --json gives raw JSON. Exit 0 = ok. Exit 1 = error on stderr: "cb: <what went wrong>. <what to run>"
-IDS        task: 42 or #42. question: Q12 or 12.`;
+IDS        task: 42 or #42. question: Q12 or 12. memory: M12.`;
 
 const TOPICS: Record<string, string> = {
   start: `cb help start: onboarding a new session
@@ -402,6 +409,28 @@ ${SNIPPET}`,
 10. Board unreachable: keep working; register what you did once it is back.
 11. Nothing at all can continue: say so in one line and end your turn. Don't idle.
 12. A bug outside your task: cb bug <project> "<title>" -b "<repro>", then keep working; the orchestrator assigns it.`,
+  memory: `cb help memory: what every session should know, on every machine
+
+WHAT GOES WHERE
+  cb mem             would a session on ANOTHER machine need it tomorrow? rules, Ahmed's rulings, facts, traps, runbooks
+  your auto-memory   only this machine and this repo care: your own notes
+  the repo           instructions every contributor must follow (CLAUDE.md), and decision docs
+KINDS
+  rule      standing practice. Yours is a proposal until Ahmed confirms it.
+  ruling    Ahmed's decision. After he answers a question that will come up again: cb mem rule Q<id> "<one line>"
+  fact      how a system or environment is now. Live at once, labelled team; stale after 14 days (--review 30d)
+  gotcha    a known trap or failure. Same as a fact.
+  runbook   a procedure. Listed by title only; read it with cb mem show M<id>.
+USE IT
+  - cb iam prints your project's memory when you bind; cb brief shows it under RULES & FACTS.
+  - Before you ask Ahmed or raise a finding: cb mem find "<words>". Already ruled? Act on the ruling.
+  - Learned something the next session will trip on? cb mem add <project> "<one line>" -k gotcha -t <task>
+  - add prints similar entries: if it is the same thing, keep one (cb mem supersede / cb mem retire).
+  - Wrong or out of date: cb mem supersede M<id> "<new title>". Ahmed's entries: that only proposes; his stays until he confirms.
+NEVER
+  - Secrets, tokens, passwords, connection strings, emails, phone numbers, ID numbers: refused. Write where the value lives.
+  - Client content in a global entry: global reaches every session.
+  - A team entry is a teammate's note, not Ahmed's approval. Only (Ahmed) entries carry his authority.`,
 };
 
 export const TOPIC_NAMES = Object.keys(TOPICS);
