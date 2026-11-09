@@ -29,14 +29,14 @@ function unlock() {
   try { ctx ??= new AudioContext(); if (ctx.state !== 'running') ctx.resume().catch(() => {}) } catch { /* no Web Audio */ }
 }
 
-/** A soft two-tone chime, ~0.5 s. Silent until the page has had a click or key, when muted, or within 3 s of the last one. */
+/** A soft two-tone chime played twice, ~1 s. Silent until the page has had a click or key, when muted, or within 3 s of the last one. */
 function ring() {
   if (muted || !ctx || Date.now() - last < 3000) return
   last = Date.now()
   const c = ctx
   c.resume().catch(() => {}) // idle tabs can get suspended again
   const t = c.currentTime
-  for (const [freq, at] of [[659.25, 0], [987.77, 0.13]]) { // E5 then B5
+  for (const [freq, at] of [[659.25, 0], [987.77, 0.13], [659.25, 0.55], [987.77, 0.68]]) { // E5 then B5, twice
     const osc = c.createOscillator(), gain = c.createGain()
     osc.frequency.value = freq
     gain.gain.setValueAtTime(0.0001, t + at)
