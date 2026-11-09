@@ -431,7 +431,9 @@ KINDS
   runbook   a procedure. Listed by title only; read it with cb mem show M<id>.
 USE IT
   - cb iam prints your project's memory when you bind; cb brief shows it under RULES & FACTS.
+  - The relay pushes changes that apply to you (confirmed, added, superseded, retired), labelled Ahmed or team.
   - Before you ask Ahmed or raise a finding: cb mem find "<words>". Already ruled? Act on the ruling.
+    If you ask anyway, he may answer "Already ruled: M12 <rule>": that rule is your answer.
   - Learned something the next session will trip on? cb mem add <project> "<one line>" -k gotcha -t <task>
   - add prints similar entries: if it is the same thing, keep one (cb mem supersede / cb mem retire).
   - Wrong or out of date: cb mem supersede M<id> "<new title>". Ahmed's entries: that only proposes; his stays until he confirms.

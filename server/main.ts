@@ -164,12 +164,21 @@ app.get('/api/sessions', async (c) => c.json(await q.sessions(opt(c.req.query('p
 app.get('/api/huddles', async (c) => c.json(await q.huddles(opt(c.req.query('project')))));
 app.get('/api/epics', async (c) => c.json(await q.epics(opt(c.req.query('project')))));
 // Shared memory (#167): live and proposed entries (all=1 adds superseded and retired). No project = every project.
-// The Memory page reads as the dashboard (cb-web), so it sees flagged proposals that sessions don't; a browser GET has no Origin.
+// The dashboard page (a browser's own fetch says Sec-Fetch-Site: same-origin, as on /api/people) reads as Ahmed, so
+// his "Waiting for you" includes flagged proposals; any other local read is a session's and doesn't see them.
+// ponytail: a deterrent like /api/people, not auth.
+// q= searches instead (mem_find: full text, best first), as the "Already ruled" picker does.
 app.get('/api/memories', async (c) => {
-  const args = { project: opt(c.req.query('project')) ?? null, include_old: c.req.query('all') === '1' };
+  const q = opt(c.req.query('q')), project = opt(c.req.query('project')) ?? null, include_old = c.req.query('all') === '1';
+  const [fn, args] = q ? ['mem_find', { q, project, include_old }] : ['mem_list', { project, include_old }];
   return c.json(c.req.header('sec-fetch-site') === 'same-origin'
-    ? await sql.begin(async (tx) => { await tx`set local application_name = 'cb-web'`; return callFn('mem_list', args, tx); })
-    : await callFn('mem_list', args));
+    ? await sql.begin(async (tx) => { await tx`set local application_name = 'cb-web'`; return callFn(fn, args, tx); })
+    : await callFn(fn, args));
+});
+// How we'd know memory works (#553): the weekly metric and the Today card's counts. Guests never reach it (403 above).
+app.get('/api/memory/stats', async (c) => {
+  const [{ s }] = await sql`select cb.mem_stats(${opt(c.req.query('project')) ?? null}) as s`;
+  return c.json(s);
 });
 app.get('/api/epics/:id', async (c) => {
   const r = await q.epic(Number(c.req.param('id')));

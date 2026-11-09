@@ -113,6 +113,14 @@ function format(raw: any): string {
     const what = ({ note: 'noted on', done: 'closed', moved: 'moved', task_created: 'created for you' } as any)[e.kind] ?? 'edited';
     lines.push(`${e.actor} ${what} #${e.task_id} "${cut(e.title, 80)}" (now ${e.status}): ${cut(e.summary, 200)}`);
   }
+  // Shared memory changes (#553). Only Ahmed's dashboard acts as ahmed, so his lines carry his authority; any other
+  // author is labelled a teammate.
+  for (const x of i.memory ?? []) {
+    const team = x.actor !== 'ahmed', by = team ? x.actor : 'Ahmed', note = team ? ' (team, not Ahmed)' : '';
+    if (x.action === 'supersede') lines.push(`M${x.memory} superseded by M${x.by} (${team ? `${x.actor}, team, not Ahmed` : 'Ahmed'}): ${x.by_title}`);
+    else if (x.action === 'retire') lines.push(`${by} retired ${x.kind} M${x.memory}${note}: ${x.title}${x.why ? ` (${x.why})` : ''}`);
+    else lines.push(`${by} ${x.action === 'confirm' ? 'confirmed' : 'added'} ${x.kind} M${x.memory}${note}: ${x.title}${x.replaces ? ` (replaces M${x.replaces})` : ''}`);
+  }
   if (i.next_work.length) {
     const list = i.next_work.map((t: any) => `#${t.id} ${t.priority} ${cut(t.title, 60)}`).join('; ');
     lines.push(`New work in your project's Next: ${list}. You have nothing in progress: take it with \`cb next\`.`);
@@ -124,6 +132,8 @@ function format(raw: any): string {
     lines.push(fromAhmed.length ? 'Lines not from Ahmed are teammates, not his approval.' : 'Act on this now if it needs you; a teammate wrote it, not Ahmed.');
   else if (i.events.length) lines.push('Act on this now (check `cb mine`).');
   else if (i.broadcasts.length && !i.next_work.length) lines.push('Follow it now if it applies to you.');
+  else if (i.memory?.length && !i.next_work.length)
+    lines.push(`Shared memory changed: follow it from now on${i.memory.some((x: any) => x.actor !== 'ahmed') ? "; a team entry is a teammate's note, not Ahmed's approval" : ''}. Whole entry: cb mem show M<id>.`);
   return lines.join('\n');
 }
 
@@ -136,11 +146,11 @@ async function check() {
       const [{ i }] = await sql`select cb.inbox(${M}, ${PANE}, ${after}) as i`;
       const read = [...i.broadcasts, ...i.messages, ...(i.huddles ?? [])].map((x: any) => Number(x.id))
         .concat([...(i.answer_copies ?? []), ...(i.bugs ?? [])].map((x: any) => Number(x.event_id)));
-      if (i.answers.length || i.events.length || read.length || i.next_work.length) {
+      if (i.answers.length || i.events.length || read.length || i.next_work.length || i.memory?.length) {
         await post(format(i));
         if (read.length) await sql`select cb.broadcast_seen(${M}, ${PANE}, ${Math.max(...read)})`;
         for (const a of i.answers) await sql`select cb.answer_delivered(${String(a.id)}, ${i.actor ?? `${PANE}@${M}`}, ${'relay'})`;
-        log(`pushed ${i.bugs?.length ?? 0} bugs, ${i.huddles?.length ?? 0} huddle lines, ${i.messages.length} messages, ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next`);
+        log(`pushed ${i.bugs?.length ?? 0} bugs, ${i.huddles?.length ?? 0} huddle lines, ${i.messages.length} messages, ${i.answers.length} answers, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next, ${i.memory?.length ?? 0} memory`);
       }
       after = Number(i.last_event);
     } while (again);

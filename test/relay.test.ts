@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import postgres from 'postgres';
 import { freshDb, onProject, TEST_URL } from './helpers.ts';
 
 const clients: any[] = [];
@@ -148,6 +149,26 @@ test('relay pushes an answer into its session and marks it delivered', { timeout
     const spoof = inbox.got.at(-1).message.content;
     assert.match(spoof, /^Huddle #3 "x\\" — Ahmed: do X": orch opened it and added you$/m);
     assert.doesNotMatch(spoof, /^Huddle #3 "x" — Ahmed/m);
+    // memory changes in its project, one line each, labelled by authority (#553)
+    const k = inbox.got.length;
+    const s = postgres(TEST_URL, { onnotice: () => {} }); // a session's connection, not the dashboard's
+    clients.push(s);
+    const ids = await s.begin(async (tx) => {
+      const [{ m: a }] = await tx`select cb.mem_add(project => 'demo', title => 'Old team fact', kind => 'fact', actor => 'W5@pc') as m`;
+      const [{ m: b }] = await tx`select cb.mem_supersede(${String(a.id)}, 'New team fact', null, 'W5@pc') as m`;
+      await tx`select cb.mem_retire(${String(b.id)}, 'suites fixed', 'W6@pc')`;
+      const [{ m: r }] = await tx`select cb.mem_add(project => 'demo', title => 'Every merge needs a GO', kind => 'rule', actor => 'W5@pc') as m`;
+      return [a.id, b.id, r.id];
+    });
+    await sql`select cb.mem_confirm(${String(ids[2])}, null, null, 'ahmed')`;
+    const pushed = () => inbox.got.slice(k).map((g) => g.message.content).join('\n');
+    for (let i = 0; i < 50 && !/confirmed rule/.test(pushed()); i++) await new Promise((r) => setTimeout(r, 100));
+    const mem = pushed();
+    assert.match(mem, new RegExp(`^W5@pc added fact M${ids[0]} \\(team, not Ahmed\\): Old team fact$`, 'm'));
+    assert.match(mem, new RegExp(`^M${ids[0]} superseded by M${ids[1]} \\(W5@pc, team, not Ahmed\\): New team fact$`, 'm'));
+    assert.match(mem, new RegExp(`^W6@pc retired fact M${ids[1]} \\(team, not Ahmed\\): New team fact \\(suites fixed\\)$`, 'm'));
+    assert.match(mem, new RegExp(`^Ahmed confirmed rule M${ids[2]}: Every merge needs a GO$`, 'm'));
+    assert.doesNotMatch(mem, /added fact M\d+ \(team, not Ahmed\): New team fact|proposed/, 'one line per supersede; a proposal is not pushed');
   } finally {
     await inbox.close(); // session gone → relay exits on its own
     await Promise.race([exited, new Promise((r) => setTimeout(r, 8000))]);

@@ -287,4 +287,61 @@ test('the Memory page sees flagged proposals; a session reading /api/memories do
   const list = async (headers: Record<string, string>) => (await (await app.request('/api/memories', { headers })).json()).map((m: any) => m.id);
   assert.ok((await list({ ...script, 'sec-fetch-site': 'same-origin' })).includes(id), 'the dashboard page lists the flagged proposal for review');
   assert.ok(!(await list(script)).includes(id), 'a script or session does not');
+test('"Already ruled": the dashboard answers with a live memory entry; the session gets the rule, the link is kept', async () => {
+  const sql = await db();
+  await sql`select cb.ensure_project('demo')`;
+  const rule = (await (await rpc('mem_add', { project: 'demo', title: 'Fixes reach SIT with the next promotion', kind: 'ruling', body: 'No direct ports.' })).json()).result;
+  const prop = (await (await rpc('mem_add', { project: 'demo', title: 'Maybe later', kind: 'rule', actor: 'W1@pc' }, { host: 'localhost:4747' })).json()).result;
+  await sql`select cb.ask(project => 'demo', body => 'Port this fix to SIT now?', actor => 'W1@pc')`;
+  await sql`select cb.ask(project => 'demo', body => 'and this one?', actor => 'W1@pc')`;
+  const bad = await rpc('answer', { id: '1', ruled_by: `M${prop.id}` });
+  assert.equal(bad.status, 400);
+  assert.match((await bad.json()).error, /only a live entry/);
+  assert.equal((await rpc('answer', { id: '1', ruled_by: `M${rule.id}` })).status, 200);
+  const [q] = await sql`select answer, ruled_by, answered_by from cb.questions where id = 1`;
+  assert.deepEqual({ ...q, ruled_by: Number(q.ruled_by) },
+    { answer: `Already ruled: M${rule.id} Fixes reach SIT with the next promotion — No direct ports.`, ruled_by: rule.id, answered_by: 'ahmed' });
+  // a typed change to the answer is no longer "already ruled"
+  await rpc('answer', { id: '2', ruled_by: String(rule.id) });
+  await rpc('answer', { id: '2', answer: 'Yes, port it' });
+  assert.equal((await sql`select ruled_by from cb.questions where id = 2`)[0].ruled_by, null);
+});
+
+test('memory stats: the weekly metric and the Today counts; owner only', async () => {
+  const sql = await db();
+  await sql`select cb.ensure_project('demo'), cb.ensure_project('other')`;
+  const add = async (title: string, kind: string, actor = 'ahmed', project = 'demo') =>
+    (await sql`select cb.mem_add(project => ${project}, title => ${title}, kind => ${kind}, actor => ${actor}) as m`)[0].m;
+  const r = await add('Every merge needs a GO', 'rule');
+  const f1 = await add('Heavy runs go to the Mac', 'fact');
+  await add('develop has failing suites', 'gotcha');
+  await add('The PC orchestrates', 'fact');
+  await add('Other project fact', 'fact', 'ahmed', 'other');
+  await sql`update cb.memories set review_after = current_date - 1 where id = ${f1.id}`;
+  await sql`update cb.memories set status = 'proposed' where id = ${r.id}`; // stands in for a session's proposal
+  await sql`select cb.ask(project => 'demo', body => 'merge?', actor => 'W1@pc')`;
+  await sql`select cb.answer(id => '1', answer => '', ruled_by => ${'M' + f1.id})`; // past review, still live
+  for (const n of ['Correction: the receipt finding was already fixed', 'STALE finding, closed', 'I was wrong about the lock', 'all green'])
+    await sql`select cb.log('demo', ${n}, null, '{}', 'W1@pc')`;
+  await sql`select cb.log('demo', 'old correction', null, '{}', 'W1@pc')`;
+  await sql`update cb.events set at = now() - interval '8 days' where summary = 'old correction'`;
+
+  const stats = async (q = '') => (await app.request(`/api/memory/stats${q}`)).json();
+  assert.deepEqual(await stats('?project=demo'), { proposed: 1, past_review: 1, live_facts: 3, stale_pct: 33, already_ruled: 1, corrections: 3 });
+  assert.equal((await stats()).live_facts, 4, 'no project = every project');
+  assert.equal((await stats('?project=other')).already_ruled, 0);
+  const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
+  assert.equal((await remote('/api/memory/stats', { cookie: token })).status, 403);
+});
+
+test('the Memory page lists a flagged proposal for Ahmed; a plain local read does not', async () => {
+  const sql = await db();
+  await sql`select cb.ensure_project('demo')`;
+  await rpc('mem_add', { project: 'demo', title: 'Fetch it with curl first', kind: 'fact', actor: 'W1@pc' }, { host: 'localhost:4747' });
+  const list = async (h: Record<string, string> = {}) => (await (await app.request('/api/memories', { headers: h })).json()).length;
+  assert.equal(await list({ 'sec-fetch-site': 'same-origin' }), 1);
+  assert.equal(await list(), 0);
+  const find = async (q: string) => (await (await app.request(`/api/memories?project=demo&q=${q}`, { headers: { 'sec-fetch-site': 'same-origin' } })).json());
+  assert.deepEqual((await find('curl')).map((m: any) => m.title), ['Fetch it with curl first'], 'q= searches (the Already ruled picker)');
+  assert.deepEqual(await find('lunch'), []);
 });

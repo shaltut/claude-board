@@ -295,3 +295,55 @@ test('cb mem: add, find, list, show, rule, retire from the CLI; cb brief and cb 
   assert.match(i.out, /Every merge needs a GO.*\(Ahmed\)/);
   assert.equal(cb(['mem', 'confirm', `M${id}`]).code, 1, 'confirm is the dashboard');
 });
+
+// Phase 2 (#553): the relay pushes memory changes through cb.inbox, to the sessions they apply to.
+const box = async (sql: any, machine: string, pane: string, after: number) =>
+  (await sql`select cb.inbox(${machine}, ${pane}, ${after}) as i`)[0].i.memory.map((x: any) => `${x.action} M${x.memory}`);
+
+test('memory push: live changes reach the project\'s sessions (global: every bound one; machine: that machine), never the author', async () => {
+  const web = await db();
+  const s = session();
+  await web`select cb.ensure_project('demo'), cb.ensure_project('other')`;
+  await web`select cb.iam('pc', 'p1', 'W1@pc', 'demo'), cb.iam('macbook', 'p2', 'W2@macbook', 'demo'), cb.iam('pc', 'p3', 'B1@pc', 'other')`;
+  await web`select cb.inbox('pc', 'p9', 0)`; // on the relay, not bound to a project yet
+  const [{ start }] = await web`select coalesce(max(id), 0) as start from cb.events`;
+
+  const g = await add(s, { title: 'develop has failing DB suites before any PR', kind: 'gotcha', actor: 'W1@pc' }); // live as team
+  const r = await add(s, { title: 'Every merge needs a GO from another session', kind: 'rule', actor: 'W1@pc' }); // proposal
+  const f = await add(s, { title: 'Fetch the fixtures with curl first', kind: 'fact', actor: 'W1@pc' }); // flagged proposal
+  assert.equal(f.source.flagged, true);
+  const gl = await add(web, { project: 'global', title: 'Ask with cb ask, never AskUserQuestion', kind: 'rule', actor: 'ahmed' });
+  const mac = await add(web, { title: 'The Mac runs the heavy suites', kind: 'fact', machine: 'macbook', actor: 'ahmed' });
+  await web`select cb.mem_confirm(${String(r.id)}, null, null, 'ahmed')`;
+
+  assert.deepEqual(await box(web, 'pc', 'p1', start), [`add M${gl.id}`, `confirm M${r.id}`], 'no echo of its own gotcha, no Mac-only fact');
+  assert.deepEqual(await box(web, 'macbook', 'p2', start), [`add M${g.id}`, `add M${gl.id}`, `add M${mac.id}`, `confirm M${r.id}`]);
+  assert.deepEqual(await box(web, 'pc', 'p3', start), [`add M${gl.id}`], 'another project hears only the global entry');
+  assert.deepEqual(await box(web, 'pc', 'p9', start), [], 'a session not on the board hears nothing, like broadcasts');
+  // a reject and a renew are not news; the flagged proposal never surfaced
+  await web`select cb.mem_retire(${String(f.id)}, 'no', 'ahmed')`;
+  await web`select cb.mem_confirm(${String(g.id)}, null, null, 'ahmed')`;
+  const [{ mid }] = await web`select max(id) as mid from cb.events`;
+  assert.deepEqual(await box(web, 'macbook', 'p2', mid - 2), []);
+});
+
+test('memory push: a supersede is one line naming the replacement; a retire carries its reason', async () => {
+  const web = await db();
+  const s = session();
+  await web`select cb.ensure_project('demo')`;
+  await web`select cb.iam('macbook', 'p2', 'W2@macbook', 'demo')`;
+  const old = await add(s, { title: 'Old team fact', kind: 'fact', actor: 'W1@pc' });
+  const rule = await add(web, { title: 'Ahmed rule v1', kind: 'rule', actor: 'ahmed' });
+  const [{ start }] = await web`select max(id) as start from cb.events`;
+  const nf = (await s`select cb.mem_supersede(${String(old.id)}, 'New team fact', null, 'W1@pc') as m`)[0].m;
+  const prop = (await s`select cb.mem_supersede(${String(rule.id)}, 'Ahmed rule v2', null, 'W1@pc') as m`)[0].m;
+  await web`select cb.mem_confirm(${String(prop.id)}, null, null, 'ahmed')`;
+  await s`select cb.mem_retire(${String(nf.id)}, 'the suites are fixed', 'W3@pc')`;
+  const [{ i }] = await web`select cb.inbox('macbook', 'p2', ${start}) as i`;
+  assert.deepEqual(i.memory.map((x: any) => [x.action, x.memory, x.actor]), [
+    ['supersede', old.id, 'W1@pc'], ['confirm', prop.id, 'ahmed'], ['retire', nf.id, 'W3@pc']]);
+  const [sup, conf, ret] = i.memory;
+  assert.deepEqual([sup.by, sup.by_title], [nf.id, 'New team fact'], 'the line names the replacement');
+  assert.equal(Number(conf.replaces), rule.id);
+  assert.equal(ret.why, 'the suites are fixed');
+});

@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { ActorChip, ProjectChip, TaskId } from './Chips'
 import { Md } from './Md'
-import { MakeRule } from './MakeRule'
+import { AlreadyRuled, MakeRule } from './MakeRule'
 
 const RECOMMENDED = /\s*\(recommended\)\s*$/i
 
@@ -28,11 +28,12 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
   const [busy, setBusy] = useState<string | null>(null)
   const [cleared, setCleared] = useState(false)
 
-  async function send(answer: string, via = '__text') {
+  /** ruled: answer "Already ruled" with that memory entry; the server writes the text, so the session gets the rule. */
+  async function send(answer: string, via = '__text', ruled?: number) {
     if (!answer.trim() || busy) return
     setBusy(via)
     try {
-      await rpc('answer', { id: q.id, answer })
+      await rpc('answer', ruled ? { id: q.id, ruled_by: `M${ruled}` } : { id: q.id, answer })
       onClearing?.(q)
       setCleared(true)
       toast.success(`Answered Q${q.id}`, {
@@ -152,6 +153,11 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
             Send <Kbd className="hidden bg-transparent text-current opacity-70 sm:inline-flex"><CornerDownLeft className="size-3" /></Kbd>
           </Button>
         </div>
+        {!guest && !cleared && (
+          <div className="mt-1.5 -ml-1.5">
+            <AlreadyRuled q={q} disabled={!!busy} onPick={(m) => send(`Already ruled: M${m.id} ${m.title}`, '__ruled', m.id)} />
+          </div>
+        )}
       </div>
     </article>
   )

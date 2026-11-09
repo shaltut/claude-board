@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { BookMarked, Plus, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
-import { MEM_KINDS, rpc, useMemories, useProjects, type Memory as Mem } from '@/lib/api'
+import { MEM_KINDS, rpc, useMemories, useMemStats, useProjects, type Memory as Mem } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { go, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
@@ -59,6 +59,7 @@ export function Memory({ route }: { route: Route }) {
         <Button className="ml-auto" onClick={() => setAdding(true)}><Plus /> New entry</Button>
       </header>
       <NewEntry key={route.project ?? ''} open={adding} onOpenChange={setAdding} project={route.project} />
+      <Metric project={route.project} />
 
       <div className="mb-6 flex flex-wrap items-center gap-2">
         <div className="flex rounded-md border bg-card p-0.5" role="group" aria-label="Filter by kind">
@@ -104,6 +105,25 @@ export function Memory({ route }: { route: Route }) {
           </div>
         )}
     </div>
+  )
+}
+
+/** How we'd know it works (#553), last 7 days: repeat questions you closed with a rule, corrections sessions noted,
+ *  and how much of what sessions are told as fact has gone stale (target under 15%). */
+function Metric({ project }: { project?: string }) {
+  const { data: m } = useMemStats(project)
+  if (!m) return null
+  const over = (m.stale_pct ?? 0) >= 15
+  return (
+    <p className="mb-6 flex flex-wrap gap-x-5 gap-y-1 rounded-lg border bg-card px-4 py-2.5 text-sm text-muted-foreground" aria-label="Last 7 days">
+      <span className="font-medium text-foreground">Last 7 days</span>
+      <span><span className="callsign text-foreground">{m.already_ruled}</span> answered "Already ruled"</span>
+      <span title="cb log notes saying correction, stale or was wrong"><span className="callsign text-foreground">{m.corrections}</span> corrections noted</span>
+      <span>
+        <span className={cn('callsign', over ? 'text-st-blocked' : 'text-foreground')}>{m.stale_pct ?? 0}%</span> of {m.live_facts} live facts past review
+        <span className="text-xs"> (target under 15%)</span>
+      </span>
+    </p>
   )
 }
 

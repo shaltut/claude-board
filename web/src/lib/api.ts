@@ -24,6 +24,7 @@ export interface Question {
   answer: string | null; answered_at: string | null; delivered_at: string | null; delivered_to: string | null
   reply_to: { machine?: string; pane?: string } | null; created_at: string
   assigned_to: string | null; answered_by: string | null
+  ruled_by: number | null // answered "Already ruled" with this memory entry (#553)
   // follow-ups (#472): a dormant question waits for parent_id's answer (if_answer: one label, null = any)
   parent_id: number | null; if_answer: string | null; parent_answer?: string | null
   branches?: { id: number; if_answer: string | null; body: string }[] | null // this question's dormant follow-ups
@@ -88,4 +89,12 @@ export const useEpic = (id: number) =>
   useQuery({ queryKey: ['epic', id], queryFn: () => get<{ epic: Epic; steps: Task[] }>(`/api/epics/${id}`) })
 export const useMemories = (project?: string, all?: boolean) =>
   useQuery({ queryKey: ['memories', project, !!all], queryFn: () => get<Memory[]>(`/api/memories${qs({ project, all: all ? '1' : undefined })}`) })
+/** The weekly memory metric (last 7 days) and the Today card's counts (#553). stale_pct: null when nothing is live. */
+export interface MemStats { proposed: number; past_review: number; live_facts: number; stale_pct: number | null; already_ruled: number; corrections: number }
+export const useMemStats = (project?: string) =>
+  useQuery({ queryKey: ['memories', 'stats', project], queryFn: () => get<MemStats>(`/api/memory/stats${qs({ project })}`) })
+/** Live entries matching words (full text, best first), for the "Already ruled" picker. */
+export const useMemFind = (term: string, project?: string) =>
+  useQuery({ queryKey: ['memories', 'find', project, term], enabled: term.trim().length > 1,
+    queryFn: async () => (await get<Memory[]>(`/api/memories${qs({ project, q: term.trim() })}`)).filter((m) => m.status === 'active') })
 export { qs }

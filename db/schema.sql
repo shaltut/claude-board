@@ -770,19 +770,25 @@ begin
   return qid;
 end $$;
 
--- Editable until delivered.
-create function cb.answer(id text, answer text, actor text default 'ahmed')
+-- Editable until delivered. ruled_by (M12): "Already ruled" (#553): the answer is that live memory entry, so the asking
+-- session gets the rule itself; questions.ruled_by keeps the link for the weekly metric. A typed answer clears it.
+create function cb.answer(id text, answer text default null, actor text default 'ahmed', ruled_by text default null)
 returns void language plpgsql as $$
 #variable_conflict use_variable
-declare qid bigint := cb.norm_id(id); cur text; a text; par bigint;
+declare qid bigint := cb.norm_id(id); cur text; a text; par bigint; rid bigint; rst text;  -- no cb.memories type: it is created further down
 begin
   a := cb.set_actor(actor);
+  if nullif(trim(ruled_by), '') is not null then
+    select x.id, x.status, 'Already ruled: M' || x.id || ' ' || x.title || coalesce(' — ' || nullif(left(x.body, 500), ''), '')
+      into rid, rst, answer from cb.memories x where x.id = cb.norm_mem(ruled_by);
+    if rst <> 'active' then raise exception 'M% is %: only a live entry answers a question', rid, rst; end if;
+  end if;
   if coalesce(trim(answer), '') = '' then raise exception 'answer is required'; end if;
   select q.status, q.parent_id into cur, par from cb.questions q where q.id = qid for update;
   if cur is null then raise exception 'question Q% not found', qid; end if;
   if cur in ('delivered', 'withdrawn') then raise exception 'question Q% is already %', qid, cur; end if;
   if cur = 'dormant' then raise exception 'Q% waits on Q%: it opens when that one is answered', qid, par; end if;
-  update cb.questions q set status = 'answered', answer = trim(answer), answered_at = now(), answered_by = a where q.id = qid;
+  update cb.questions q set status = 'answered', answer = trim(answer), answered_at = now(), answered_by = a, ruled_by = rid where q.id = qid;
   perform cb._followups_route(qid);  -- first answer or a change: the follow-ups follow it
 end $$;
 
@@ -1077,6 +1083,19 @@ begin
                                             and ((e.kind = 'task_created' and e.data ->> 'status' = 'next')
                                                  or (e.kind = 'moved' and e.data ->> 'to' = 'next')))
                               and not exists (select 1 from cb.tasks w where w.assignee = me and w.status = 'in_progress')), '[]'),
+    -- Shared memory changes (#553), same audience as broadcasts: bound sessions on the entry's project, every bound
+    -- session for a global one, only that machine's for a machine-scoped one. Live on add, Ahmed's confirm, a
+    -- supersede (one line naming the replacement: its add is skipped), a retire with its why. Never a proposal, a
+    -- reject or a renew (none of those changed what sessions are told), and never back to the session that made it.
+    'memory', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'action', e.data ->> 'action', 'actor', e.actor, 'memory', x.id,
+                                                            'kind', x.kind, 'title', x.title, 'why', e.data ->> 'why',
+                                                            'replaces', x.source ->> 'supersedes', 'by', n.id, 'by_title', n.title) order by e.id)
+                          from cb.events e join cb.memories x on x.id = (e.data ->> 'memory')::bigint
+                          left join cb.memories n on n.id = x.superseded_by
+                         where e.kind = 'memory' and me is not null and proj is not null and e.id > after_event and e.actor <> me
+                           and e.data ->> 'action' in ('add', 'confirm', 'supersede', 'retire')
+                           and not (e.data ->> 'action' = 'add' and x.source ? 'supersedes')
+                           and (x.project is null or x.project = proj) and (x.machine is null or x.machine = m)), '[]'),
     'last_event', (select coalesce(max(e.id), 0) from cb.events e));
 end $$;
 
@@ -1840,6 +1859,9 @@ create index if not exists memories_tsv on cb.memories using gin (tsv);
 create index if not exists memories_scope on cb.memories (project, status, kind);
 create or replace trigger memories_notify after insert or update or delete on cb.memories
   for each statement execute function cb.notify();
+-- "Already ruled" (#553): the memory entry Ahmed answered a question with (cb.answer ruled_by). Here, not with the
+-- other questions columns: cb.memories must exist first.
+alter table cb.questions add column if not exists ruled_by bigint references cb.memories(id);
 
 drop function if exists cb._is_dashboard cascade;
 drop function if exists cb.norm_mem cascade;
@@ -1860,6 +1882,7 @@ drop function if exists cb.mem_find cascade;
 drop function if exists cb.mem_list cascade;
 drop function if exists cb.mem_show cascade;
 drop function if exists cb.mem_pack cascade;
+drop function if exists cb.mem_stats cascade;
 
 create function cb._is_dashboard() returns boolean language sql stable as $$ select current_setting('application_name') = 'cb-web' $$;
 
@@ -1922,9 +1945,10 @@ begin
 end $$;
 
 -- One audit row per change (kind memory, data.action: add propose confirm renew supersede retire reject).
-create function cb._mem_event(m cb.memories, action text, summary text, a text) returns void language sql as $$
+-- extra: more data for the relay push (a retire's why).
+create function cb._mem_event(m cb.memories, action text, summary text, a text, extra jsonb default '{}') returns void language sql as $$
   insert into cb.events (actor, project, kind, summary, data)
-  values ($4, $1.project, 'memory', $3, jsonb_build_object('memory', $1.id, 'action', $2, 'kind', $1.kind))
+  values ($4, $1.project, 'memory', $3, jsonb_build_object('memory', $1.id, 'action', $2, 'kind', $1.kind) || $5)
 $$;
 
 -- A flagged proposal (reads like an order, claims Ahmed's say-so, carries a URL) is for Ahmed's eyes only: no
@@ -2069,7 +2093,8 @@ begin
   update cb.memories x set status = 'retired', updated_at = now() where x.id = m.id returning * into m;
   perform cb._mem_event(m, case when was = 'proposed' then 'reject' else 'retire' end,
     'M' || m.id || case when was = 'proposed' then ' rejected: ' else ' retired: ' end || m.title
-      || coalesce(' (' || nullif(trim(why), '') || ')', ''), a);
+      || coalesce(' (' || nullif(trim(why), '') || ')', ''), a,
+    jsonb_build_object('why', nullif(trim(why), '')));
 end $$;
 
 -- Replace a live entry; the old one stays readable with a pointer. A session replacing Ahmed's entry only proposes:
@@ -2144,4 +2169,27 @@ begin
   ), s as (select c.*, sum(length(c.title)) over (order by c.n) as chars from c)
   select jsonb_build_object('project', p, 'total', (select count(*) from c),
     'entries', coalesce((select jsonb_agg(to_jsonb(s) - 'chars' - 'n' order by s.n) from s where s.n <= 20 and s.chars <= 2000), '[]')));
+end $$;
+
+-- How we'd know memory works (#553), last 7 days: questions answered "Already ruled", notes (cb log) reporting a
+-- correction or a stale finding, and the share of live facts and gotchas past review (target under 15%). Plus the
+-- Today card: proposals waiting and live entries past review. Counts only, so flagged proposals count too.
+-- A project includes the global entries (as mem_list); no project = everything.
+create function cb.mem_stats(project text default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb._mem_scope(project); r jsonb;
+begin
+  select jsonb_build_object(
+      'proposed', count(*) filter (where m.status = 'proposed'),
+      'past_review', count(*) filter (where m.status = 'active' and m.review_after < current_date),
+      'live_facts', count(*) filter (where m.status = 'active' and m.kind in ('fact', 'gotcha')),
+      'stale_pct', round(100.0 * count(*) filter (where m.status = 'active' and m.kind in ('fact', 'gotcha') and m.review_after < current_date)
+                         / nullif(count(*) filter (where m.status = 'active' and m.kind in ('fact', 'gotcha')), 0)))
+    into r from cb.memories m where p is null or m.project = p or m.project is null;
+  return r || jsonb_build_object(
+    'already_ruled', (select count(*) from cb.questions q
+                       where q.ruled_by is not null and q.answered_at > now() - interval '7 days' and (p is null or q.project = p)),
+    'corrections', (select count(*) from cb.events e
+                     where e.kind = 'note' and e.at > now() - interval '7 days' and e.summary ~* '(correction|stale|was wrong)'
+                       and (p is null or e.project = p)));
 end $$;

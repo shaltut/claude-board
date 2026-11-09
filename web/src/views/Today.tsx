@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Search } from 'lucide-react'
-import { get, qs, rpc, useQuestions, useUsers, type CbEvent, type Question } from '@/lib/api'
+import { ArrowLeft, BookMarked, Search } from 'lucide-react'
+import { get, qs, rpc, useMemStats, useQuestions, useUsers, type CbEvent, type Question } from '@/lib/api'
 import { ago, clock, day } from '@/lib/format'
 import { go, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
@@ -137,6 +137,8 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
           </section>
         )}
 
+        <MemoryCard project={route.project} />
+
         <a href="#/questions" onClick={(e) => { e.preventDefault(); go({ view: 'questions' }) }}
           className="mt-6 inline-block text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
           Every question, including delivered ones
@@ -168,6 +170,23 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
         )}
       </section>
     </div>
+  )
+}
+
+/** Shared memory waiting on you (#553): proposals to confirm and live entries past their review date. Hidden at 0 and 0. */
+function MemoryCard({ project }: { project?: string }) {
+  const { data: m } = useMemStats(project)
+  if (!m || (m.proposed === 0 && m.past_review === 0)) return null
+  return (
+    <a href="#/memory" onClick={(e) => { e.preventDefault(); go({ view: 'memory' }) }}
+      className="mt-6 flex items-center gap-3 rounded-lg border bg-card px-4 py-3 text-sm transition-colors hover:border-foreground/35">
+      <BookMarked className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="font-medium">Memory</span>
+      <span className="text-muted-foreground">
+        <span className={cn('callsign', m.proposed > 0 && 'text-lamp')}>{m.proposed}</span> proposed
+        {' · '}<span className={cn('callsign', m.past_review > 0 && 'text-st-blocked')}>{m.past_review}</span> past review
+      </span>
+    </a>
   )
 }
 
