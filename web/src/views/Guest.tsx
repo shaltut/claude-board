@@ -7,10 +7,13 @@ import { QuestionCard } from '@/components/QuestionCard'
 import { Priority, TaskId } from '@/components/Chips'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { Mark, ThemeToggle } from '@/components/TopBar'
+
+type GuestTask = Task & { my_notes: { summary: string; at: string }[] }
 
 /** What a guest (Omar, Iman) sees through their link: only what Ahmed handed to them. */
 export function Guest({ user }: { user: User }) {
-  const { data, isLoading } = useQuery({ queryKey: ['me'], queryFn: () => get<{ questions: Question[]; tasks: Task[] }>('/api/me') })
+  const { data, isLoading } = useQuery({ queryKey: ['me'], queryFn: () => get<{ questions: Question[]; tasks: GuestTask[] }>('/api/me') })
   const open = data?.questions.filter((q) => q.status === 'open') ?? []
   const done = data?.questions.filter((q) => q.status !== 'open') ?? []
 
@@ -18,9 +21,10 @@ export function Guest({ user }: { user: User }) {
     <div className="min-h-dvh">
       <header className="border-b">
         <div className="mx-auto flex max-w-3xl items-center gap-2 px-4 py-3">
-          <img src="/favicon.svg" alt="" className="size-5" />
+          <Mark />
           <span className="font-semibold tracking-tight">Claude Board</span>
           <span className="ml-auto text-sm text-muted-foreground">Signed in as {user.display}</span>
+          <ThemeToggle />
         </div>
       </header>
       <main className="mx-auto max-w-3xl px-4 py-6">
@@ -62,7 +66,7 @@ export function Guest({ user }: { user: User }) {
   )
 }
 
-function GuestTask({ t }: { t: Task }) {
+function GuestTask({ t }: { t: GuestTask }) {
   const qc = useQueryClient()
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
@@ -87,10 +91,15 @@ function GuestTask({ t }: { t: Task }) {
       </div>
       <p className="mt-1.5 font-medium text-pretty">{t.title}</p>
       {t.body && <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{t.body}</p>}
+      {t.my_notes.length > 0 && (
+        <ul className="mt-3 space-y-1 border-l-2 pl-3 text-sm" aria-label="Your notes">
+          {t.my_notes.map((n, i) => <li key={i}>{n.summary} <span className="text-xs text-muted-foreground">· {ago(n.at)}</span></li>)}
+        </ul>
+      )}
       <div className="mt-3 flex items-end gap-2">
-        <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="Add a note or your decision"
-          aria-label={`Note on #${t.id}`} className="min-h-0" />
-        <Button onClick={send} disabled={busy || !note.trim()}>Add note</Button>
+        <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={1} placeholder="Add a note or your decision"
+          aria-label={`Note on #${t.id}`} className="min-h-9 resize-y bg-background/60 text-sm" />
+        <Button onClick={send} disabled={busy || !note.trim()} className="shrink-0">Add note</Button>
       </div>
     </li>
   )

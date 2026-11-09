@@ -265,6 +265,9 @@ create function cb.ensure_project(project text) returns text language plpgsql as
 declare slug text := cb.resolve(project);
 begin
   if slug = '' then raise exception 'project is required'; end if;
+  if slug ~ '^#?[0-9]+$' then
+    raise exception '"%" looks like a task number, not a project: use cb log <project> "..." -t %', project, ltrim(project, '#');
+  end if;
   insert into cb.projects (slug, name) values (slug, initcap(replace(slug, '-', ' ')))
   on conflict do nothing;
   return slug;

@@ -56,7 +56,7 @@ export function QuestionCard({ q, onAnswered, guest }: { q: Question; onAnswered
         <ActorChip actor={q.asked_by} />
         <span>{ago(q.created_at)}</span>
         {q.task_id && (
-          <button onClick={() => go({ task: q.task_id! })} className="hover:text-foreground">
+          <button onClick={() => go({ task: q.task_id! })} disabled={guest} className="enabled:hover:text-foreground">
             on <TaskId id={q.task_id} />
           </button>
         )}
@@ -145,7 +145,9 @@ export function AnsweredRow({ q, editing, onEdit }: { q: Question; editing: bool
       ) : (
         <p className="mt-1 pl-7 text-sm">
           <span className="text-dawn">→</span> {q.answer}
-          <span className="ml-2 text-xs text-muted-foreground">for {q.asked_by}, waiting for the orchestrator</span>
+          <span className="ml-2 text-xs text-muted-foreground">
+            {q.answered_by && q.answered_by !== 'ahmed' && `${q.answered_by} answered, `}for {q.asked_by}, waiting for the orchestrator
+          </span>
         </p>
       )}
     </li>

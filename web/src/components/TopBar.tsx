@@ -16,7 +16,6 @@ const TABS: { view: View; label: string; key: string }[] = [
 ]
 
 export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' | 'reconnecting'; onSearch: () => void }) {
-  const { theme, toggle } = useTheme()
   const { data: all = [] } = useQuestions(route.project, 'open')
   const open = all.filter((q) => !q.assigned_to) // questions handed to Omar/Iman aren't waiting on Ahmed
 
@@ -49,10 +48,7 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
             <span className={cn('size-1.5 rounded-full', live === 'live' ? 'bg-st-done' : 'animate-pulse bg-st-blocked')} />
             {live === 'live' ? 'Live' : 'Reconnecting'}
           </span>
-          <button onClick={toggle} className="grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>
-            {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
-          </button>
+          <ThemeToggle />
           <button onClick={onSearch}
             className="flex h-8 items-center gap-2 rounded-md border bg-card px-2.5 text-sm text-muted-foreground hover:text-foreground">
             <Search className="size-3.5" /> <span className="hidden lg:inline">Jump to</span> <Kbd>Ctrl K</Kbd>
@@ -63,8 +59,18 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
   )
 }
 
+export function ThemeToggle() {
+  const { theme, toggle } = useTheme()
+  return (
+    <button onClick={toggle} className="grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>
+      {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
+    </button>
+  )
+}
+
 /** A half-lit circle: night above, dawn below. */
-function Mark() {
+export function Mark() {
   return (
     <svg viewBox="0 0 20 20" className="size-5" aria-hidden>
       <circle cx="10" cy="10" r="8.5" fill="none" stroke="currentColor" strokeOpacity=".35" />
