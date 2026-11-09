@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync, readdirSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { freshDb, TEST_URL } from './helpers.ts';
@@ -212,17 +212,22 @@ const PRS = {
   14: { state: 'MERGED', headRefOid: '1'.repeat(40), mergeable: 'UNKNOWN' },
   15: { state: 'OPEN', headRefOid: '2'.repeat(40), mergeable: 'MERGEABLE' },
 };
+// every open PR's mergeability known: all of it is cacheable (an open PR's UNKNOWN never is)
+const KNOWN = { ...PRS, 11: { ...PRS[11], mergeable: 'MERGEABLE' } };
 
 test('tick: ready to merge compares the PR head with the reviewed commit; board vs GitHub', async () => {
   const sql = await db();
   await seedReviews(sql);
   const r = cb(['tick', 'demo'], { ...fakeGh(PRS), GITHUB_REPO_DEMO: 'acme/app' });
   assert.equal(r.code, 0, r.err);
-  assert.match(r.out, /READY TO MERGE/);
-  // the merge only goes through if the head is still the reviewed commit
-  assert.match(r.out, /#10 GO@aaa1111 = head \(review #2\) → gh pr merge 10 -R acme\/app --match-head-commit aaa11110{33}$/m);
-  assert.match(r.out, /#11 GO@bbb2222, HEAD MOVED to fff9999000 → cb add demo 'Delta review #11 bbb2222\.\.fff9999000' -s next -l review --link pr=https:\/\/github\.com\/acme\/app\/pull\/11/);
-  assert.match(r.out, /#12 GO@ccc3333 CONFLICTING → cb tell W4@m '#12 conflicts with its base: rebase it, then ask for a delta review'/);
+  // READY holds merge commands only, each with what the reviewer wrote; the merge only goes through if the head is still the reviewed commit
+  const ready = r.out.split(/\n(?=\S)/).find((s) => s.startsWith('READY TO MERGE'))!;
+  assert.equal(ready.split('\n').length, 2, ready);
+  assert.match(ready, /#10 GO@aaa1111 = head \(review #2\): "GO @ aaa1111: holds" → gh pr merge 10 -R acme\/app --match-head-commit aaa11110{33}$/m);
+  // a moved head or a conflict is work, not a merge: STUCK
+  const stuck = r.out.split(/\n(?=\S)/).find((s) => s.startsWith('STUCK'))!;
+  assert.match(stuck, /#11 GO@bbb2222, HEAD MOVED to fff9999000 → cb add demo 'Delta review #11 bbb2222\.\.fff9999000' -s next -l review --link pr=https:\/\/github\.com\/acme\/app\/pull\/11/);
+  assert.match(stuck, /#12 GO@ccc3333 CONFLICTING → cb tell W4@m '#12 conflicts with its base: rebase it, then ask for a delta review'/);
   assert.doesNotMatch(r.out, /#13 GO/);
   assert.match(r.out, /BOARD VS GITHUB\n\s+#8 in_progress but PR #14 merged → cb done 8 'PR #14 merged'/);
   // the bare "#15" link resolves through GITHUB_REPO_DEMO
@@ -237,10 +242,80 @@ test('tick: ready to merge compares the PR head with the reviewed commit; board 
   assert.deepEqual(j.github.skipped, []);
 });
 
+test('tick: a GO with a condition after it is not a bare merge', async () => {
+  const sql = await db();
+  const head = (c: string) => c + '0'.repeat(40 - c.length);
+  const review = async (pr: number, summary: string, commit: string) => {
+    const [{ id }] = await sql`select cb.task_add(project => 'demo', title => ${'Review #' + pr}, status => 'in_progress', labels => '["review"]', assignee => 'W5@m', actor => 'W5@m') as id`;
+    await sql`select cb.task_done(${String(id)}, ${summary}, ${sql.json({ pr: URL + pr, commit })}, 'W5@m')`;
+  };
+  await review(30, 'GO @ aaa1111: tsc 0; merge after the DB suites run', 'aaa1111');
+  await review(31, 'R3 GO @bbb2222 but NOT merged: open owner Q36 (bare figures glue). Merge on the owner answer.', 'bbb2222');
+  await review(32, 'GO: tsc rc=0; conditions: owner-only records', 'ccc3333');
+  await review(33, 'Owner Q29 answered "merge now"; merging on the creator GO + W5 GO ddd4444', 'ddd4444'); // the Q is before the GO
+  const prs = Object.fromEntries([[30, 'aaa1111'], [31, 'bbb2222'], [32, 'ccc3333'], [33, 'ddd4444']]
+    .map(([n, c]) => [n, { state: 'OPEN', headRefOid: head(c as string), mergeable: 'MERGEABLE' }]));
+  const r = cb(['tick', 'demo'], fakeGh(prs));
+  assert.equal(r.code, 0, r.err);
+  const group = (t: string) => r.out.split(/\n(?=\S)/).find((s) => s.startsWith(t)) ?? '';
+  const cond = group('GO WITH CONDITIONS');
+  assert.match(cond, /#30 GO \(conditional\): "GO @ aaa1111: tsc 0; merge after the DB suites run" → check, then gh pr merge 30 -R acme\/app --match-head-commit aaa11110{33}/);
+  assert.match(cond, /#31 GO \(conditional\): "R3 GO @bbb2222 but NOT merged: open owner Q36 \(bare figures glue\)\. Me…" → check, then gh pr merge 31 /);
+  assert.match(cond, /#32 GO \(conditional\)/);
+  assert.doesNotMatch(cond, /#33/);
+  const ready = group('READY TO MERGE');
+  assert.match(ready, /#33 GO@ddd4444 = head \(review #4\): "Owner Q29 answered/);
+  assert.doesNotMatch(ready, /#3[012]/);
+  assert.ok(r.out.indexOf('READY TO MERGE') < r.out.indexOf('GO WITH CONDITIONS'));
+});
+
+test('tick: UNKNOWN mergeability is never a bare merge: re-asked once in the run, else "check first" (#2651)', async () => {
+  const sql = await db();
+  for (const pr of [40, 41]) {
+    const [{ id }] = await sql`select cb.task_add(project => 'demo', title => ${'Review #' + pr}, status => 'in_progress', labels => '["review"]', assignee => 'W5@m', actor => 'W5@m') as id`;
+    await sql`select cb.task_done(${String(id)}, 'GO: fine', ${sql.json({ pr: URL + pr, commit: 'aaa1111' })}, 'W5@m')`;
+  }
+  // GitHub answers UNKNOWN the first time (it computes mergeability lazily); asked again, #40 is CONFLICTING, #41 still UNKNOWN
+  const f = join(dir, `gh${++n}.mjs`), count = join(dir, `count${n}`);
+  writeFileSync(f, `import fs from 'node:fs';
+    const calls = (fs.existsSync(${JSON.stringify(count)}) ? +fs.readFileSync(${JSON.stringify(count)}, 'utf8') : 0) + 1;
+    fs.writeFileSync(${JSON.stringify(count)}, String(calls));
+    const q = process.argv.find((a) => a.startsWith('query='));
+    const repo = {};
+    for (const [, n] of q.matchAll(/p(\\d+): *pullRequest/g))
+      repo['p' + n] = { state: 'OPEN', headRefOid: 'aaa1111' + '0'.repeat(33), mergeable: calls > 1 && n === '40' ? 'CONFLICTING' : 'UNKNOWN' };
+    process.stdout.write(JSON.stringify({ data: { repository: repo } }));`);
+  const gh = { CB_GH: f, CB_GH_CACHE: join(dir, `cache${n}.json`) };
+  const r = cb(['tick', 'demo'], gh);
+  assert.equal(r.code, 0, r.err);
+  assert.doesNotMatch(r.out, /READY TO MERGE/);
+  assert.match(r.out, /STUCK\n\s+#40 GO@aaa1111 CONFLICTING/);
+  assert.match(r.out, /GO WITH CONDITIONS \(check first\)\n\s+#41 GO@aaa1111 = head, GitHub has not computed mergeability yet: "GO: fine" → check, then gh pr merge 41 /);
+  // UNKNOWN isn't cached: the next tick asks GitHub again
+  const before = +readFileSync(count, 'utf8');
+  cb(['tick', 'demo'], gh);
+  assert.ok(+readFileSync(count, 'utf8') > before);
+});
+
+test('tick: board vs GitHub uses only the task\'s current links.pr, never PR numbers in its title or history (#233)', async () => {
+  const sql = await db();
+  // a follow-up created pointing at its parent PR, then relinked to its own PR
+  await sql`select cb.task_add(project => 'demo', title => 'Follow-up to #2792: money-shaped figures only', body => 'see PR #2792', status => 'in_progress',
+    assignee => 'W7@m', links => ${sql.json({ pr: URL + '2792' })}, actor => 'orch@test')`;
+  const gh = { 2792: { state: 'MERGED', headRefOid: '1'.repeat(40), mergeable: 'UNKNOWN' }, 2816: { state: 'OPEN', headRefOid: '2'.repeat(40), mergeable: 'MERGEABLE' } };
+  assert.match(cb(['tick', 'demo'], fakeGh(gh)).out, /#1 in_progress but PR #2792 merged/); // what the orchestrator saw before the relink
+  await sql`select cb.task_update('1', ${sql.json({ links: { pr: URL + '2816' } })}, 'W7@m')`;
+  await sql`select cb.task_move('1', 'review', 'PR #2816 up', 'W7@m')`;
+  const r = cb(['tick', 'demo'], fakeGh(gh));
+  assert.equal(r.code, 0, r.err);
+  assert.doesNotMatch(r.out, /PR #2792/); // the title still says #2792; only links.pr (2816, open) is checked
+  assert.doesNotMatch(r.out, /BOARD VS GITHUB/);
+});
+
 test('tick: GitHub results are cached for 5 minutes', async () => {
   const sql = await db();
   await seedReviews(sql);
-  const gh = fakeGh(PRS);
+  const gh = fakeGh(KNOWN);
   cb(['tick', 'demo'], { ...gh, GITHUB_REPO_DEMO: 'acme/app' });
   writeFileSync(gh.CB_GH, `process.exit(9)`); // gh now fails: the cache answers
   const r = cb(['tick', 'demo'], { ...gh, GITHUB_REPO_DEMO: 'acme/app' });
@@ -264,7 +339,7 @@ test('tick: one failing repo skips only that repo, and its failure is cached for
   const sql = await db();
   await seedReviews(sql);
   await sql`select cb.task_add(project => 'demo', title => 'other repo', status => 'in_progress', assignee => 'W6@m', links => ${sql.json({ pr: 'https://github.com/acme/bad/pull/14' })}, actor => 'W6@m')`;
-  const gh = fakeGh(PRS, 'bad');
+  const gh = fakeGh(KNOWN, 'bad');
   let r = cb(['tick', 'demo'], { ...gh, GITHUB_REPO_DEMO: 'acme/app' });
   assert.match(r.out, /#10 GO@aaa1111 = head/);
   assert.match(r.out, /^GitHub checks skipped for acme\/bad: gh failed \(GraphQL: Could not resolve to a Repository\)$/m);

@@ -19,9 +19,13 @@ type Item = { section: string; who: string; text: string; cmd: string | null; de
 type Pr = { state: string; head: string; mergeable: string };
 
 const SECTIONS: [string, string][] = [
-  ['answers', 'ANSWERS NOT ACTED ON'], ['questions', 'YOUR OPEN QUESTIONS'], ['ready', 'READY TO MERGE'], ['stuck', 'STUCK'],
+  ['answers', 'ANSWERS NOT ACTED ON'], ['questions', 'YOUR OPEN QUESTIONS'], ['ready', 'READY TO MERGE'],
+  ['conditional', 'GO WITH CONDITIONS (check first)'], ['stuck', 'STUCK'],
   ['idle', 'IDLE'], ['github', 'BOARD VS GITHUB'], ['locks', 'LOCKS'], ['huddles', 'HUDDLES'],
 ];
+// ponytail: wording heuristic until Ahmed sets a GO policy (e.g. a GO-IF marker): a condition word or a Q<n> after the GO
+const CONDITION = /\b(if|after|once|until|pending|conditional|conditions?|waits?|blocked on)\b|\bQ\d+\b/i;
+const conditional = (verdict: string) => { const i = verdict.search(/\bGO\b/); return i >= 0 && CONDITION.test(verdict.slice(i + 2)); };
 const REPO = /^[\w.-]+\/[\w.-]+$/;
 const SHA = /^[0-9a-f]{40}$/;
 
@@ -67,11 +71,11 @@ function github(refs: { repo: string; n: string }[], ttl: (key: string) => numbe
         break;
       }
       for (const [k, v] of Object.entries<any>(data)) {
-        // mergeable is often UNKNOWN (GitHub computes it lazily): it reads as not conflicting; gh pr merge says if it is
         const pr = { state: v?.state, head: String(v?.headRefOid ?? '').toLowerCase(), mergeable: v?.mergeable };
         if (!isPr(pr)) continue;
         prs[`${repo}#${k.slice(1)}`] = pr;
-        cache[`${repo}#${k.slice(1)}`] = { ...pr, at: Date.now() };
+        // GitHub computes mergeability lazily: an open PR's UNKNOWN is asked again next time, never cached
+        if (!(pr.state === 'OPEN' && pr.mergeable === 'UNKNOWN')) cache[`${repo}#${k.slice(1)}`] = { ...pr, at: Date.now() };
       }
     }
   }
@@ -114,22 +118,34 @@ export async function tick(project: string, actor: string) {
   const soon = new Set(ready.map(prKey));
   const gh = refs.length ? github(refs, (k) => (soon.has(k) ? 60_000 : 5 * 60_000)) : { prs: {} as Record<string, Pr>, skipped: [] };
   const stateOf = (t: any) => (t.ref ? gh.prs[prKey(t)] : undefined);
+  // A merge candidate GitHub hasn't computed mergeability for: our query just triggered it, so ask once more shortly.
+  const unknown = ready.filter((t: any) => stateOf(t)?.state === 'OPEN' && stateOf(t)?.mergeable === 'UNKNOWN').map((t: any) => t.ref);
+  if (unknown.length) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+    Object.assign(gh.prs, github(unknown, () => 0).prs);
+  }
 
   for (const last of ready) {
     const pr = stateOf(last);
     if (pr?.state !== 'OPEN') continue;
     const n = last.ref.n, c = String(last.commit).toLowerCase();
     const author = prs.filter((t: any) => !t.review && prKey(t) === prKey(last) && t.assignee).pop()?.assignee;
+    // only a real merge command goes in READY; a conflict or a moved head is work (STUCK)
+    const merge = `gh pr merge ${n} ${R(last)} --match-head-commit ${pr.head}`;  // gh refuses if the head moved after this check
+    const said = `"${cut(last.verdict, 70)}"`;
     if (pr.mergeable === 'CONFLICTING')
-      add('ready', author ?? actor, `#${n} GO@${last.commit} CONFLICTING`,
+      add('stuck', author ?? actor, `#${n} GO@${last.commit} CONFLICTING`,
         author ? `cb tell ${q(author)} ${q(`#${n} conflicts with its base: rebase it, then ask for a delta review`)}`
           : `cb add ${P} ${q(`Rebase #${n} (conflicts with its base)`)} -s next ${link(last)}`);
-    else if (/^[0-9a-f]{7,40}$/.test(c) && pr.head.startsWith(c))
-      // --match-head-commit: gh refuses if the head moved after this check
-      add('ready', actor, `#${n} GO@${last.commit} = head (review #${last.id})`, `gh pr merge ${n} ${R(last)} --match-head-commit ${pr.head}`);
-    else
-      add('ready', actor, `#${n} GO@${last.commit}, HEAD MOVED to ${pr.head.slice(0, 10)}`,
+    else if (!(/^[0-9a-f]{7,40}$/.test(c) && pr.head.startsWith(c)))
+      add('stuck', actor, `#${n} GO@${last.commit}, HEAD MOVED to ${pr.head.slice(0, 10)}`,
         `cb add ${P} ${q(`Delta review #${n} ${last.commit}..${pr.head.slice(0, 10)}`)} -s next -l review ${link(last)}`);
+    else if (conditional(last.verdict ?? ''))
+      add('conditional', actor, `#${n} GO (conditional): ${said}`, `check, then ${merge}`);
+    else if (pr.mergeable === 'UNKNOWN')
+      add('conditional', actor, `#${n} GO@${last.commit} = head, GitHub has not computed mergeability yet: ${said}`, `check, then ${merge}`);
+    else
+      add('ready', actor, `#${n} GO@${last.commit} = head (review #${last.id}): ${said}`, merge);
   }
 
   for (const t of b.silent)

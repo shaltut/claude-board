@@ -1,45 +1,14 @@
 // cb — Claude Board CLI. Talks to Postgres directly (works without the web server).
 import { parseArgs } from 'node:util';
-import { hostname } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { callFn } from '../server/rpc.ts';
 import { tick, dur } from './tick.ts';
 import { sql, databaseUrl, machine, dotenv } from '../server/db.ts';
-
-const HELP = `cb — Claude Board (http://localhost:4747)
-
-  cb broadcast "<message>" [--project p]     a message to every session (or one project's), pushed by relays
-  cb relay [--restart]                       push answers, task changes, broadcasts and new work into this session
-  cb iam <name> [project]                    name this session once (e.g. W1@macbook ihop); later commands act as it, in that project
-  cb tag <id> <tag>... [-<tag>]...           tag work streams (ocr, tawuniya); -tag removes
-  cb brief [project] [--tag t] [--type bug]  what's in progress / next / blocked / waiting
-  cb next [project]                          claim the top task in Next (sets in_progress + you)
-  cb mine                                    your tasks (re-check between steps; obey moves/cancels)
-  cb add <project> "<title>" [-s next] [-p P1] [-b body] [-l a,b] [--link k=v] [--type bug|feature|change|chore|research]
-  cb bug <project> "<title>" -b "what happened, repro, expected vs actual" [-p P1]   file a bug (project claude-board = the board itself); its orchestrator assigns it
-  cb move <id> <status> ["note"]             status: backlog next in_progress blocked review done cancelled
-  cb done <id> "summary" [--pr x] [--commit x] [--branch x] [--link k=v]
-  cb edit <id> [--title x] [--body x] [--priority P1] [--assignee x] [--project x] [--type bug]
-  cb log <project|task id> "what happened" [-t id]   (cb log 130 "..." logs on task #130)
-  cb ask <project> "question" -o "Label (Recommended)=why" -o "Label=tradeoff"... [--multi] [-c "context"] [--blocking -t id] [--free: no options]
-  cb tell <session> "<msg>"                  message one session; it arrives in that session by itself
-  cb huddle open "<topic>" <session>... [-t id]   discussion group with other sessions (same project)
-  cb huddle say|add|close|show <id> ...      talk / add members / close "summary" / read the thread
-  cb huddles [project]                       open huddles (and the last week's closed ones)
-  cb user add <name> ["Display"] / cb users   people who answer through a link (Omar, Iman)
-  cb assign <Q12|#34> <user|ahmed>           hand a question or task to a user; ask --to <user> does it at ask time
-  cb sessions [project]                      every session: relay, what it holds, who went quiet (orchestrator)
-  cb session <name>                          one session: open tasks, questions, last 10 actions
-  cb pending [project]                       answered questions to deliver (orchestrator)
-  cb tick [project]                          the actions due now, ranked, one command each; silent when nothing is (orchestrator)
-  cb lock take|release <name> / cb lock queue [name]   shared locks (the DB test lock): take queues you; release hands it on
-  cb lock release <name> --force             take a lock off a dead holder (logged; the holder is told)
-  cb delivered <qid> [session]               mark an answer delivered (unblocks its task)
-  cb withdraw <qid>
-  ask on behalf of a worker (orchestrator): add --as <worker> --reply-to <machine>:<pane>
-
-  --as <name>   actor (default: $CB_ACTOR, else <pane>@<host>)     --json   raw JSON output`;
+import { help, unknownHelp, COMMANDS } from './help.ts';
 
 const OPTIONS = {
   as: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
@@ -63,7 +32,8 @@ try {
     args: process.argv.slice(2).map((a) => a.startsWith('-') && a !== '--' && !isFlag(a) ? TEXT + a : a) });
 } catch (e: any) {
   const name = /Unknown option '([^']+)'/.exec(e?.message)?.[1];
-  console.error(`cb: ${name ? `unknown option ${name}` : e?.message}. Run \`cb help\` for valid options.`);
+  const first = process.argv[2] && !process.argv[2].startsWith('-') ? ` ${process.argv[2]}` : '';
+  console.error(`cb: ${name ? `unknown option ${name}` : e?.message}. Run: cb help${first} (it lists the valid options)`);
   process.exit(1);
 }
 const o: any = Object.fromEntries(Object.entries(parsed.values).map(([k, v]) => [k, unmark(v)]));
@@ -100,7 +70,7 @@ function replyTo() {
 }
 
 function need(n: number, usage: string) {
-  if (args.length < n) throw new Error(`usage: cb ${usage}`);
+  if (args.length < n) throw new Error(`usage: cb ${usage}. Details: cb help ${cmd}`);
 }
 
 function links(): Record<string, string> {
@@ -145,12 +115,77 @@ async function guard(id: string | undefined) {
   if (!sessionProject || !Number.isInteger(n)) return;
   const [t] = await sql`select project from cb.tasks where id = ${n}`;
   if (t && t.project !== sessionProject)
-    throw new Error(`#${n} is in ${t.project}; this session works in ${sessionProject}. Check the id; only ${t.project}'s own sessions change it.`);
+    throw new Error(`#${n} is in ${t.project}; this session works in ${sessionProject}. Check the id: cb mine lists yours, cb brief your project's. Only ${t.project}'s own sessions change it.`);
+}
+
+/** Is this session's relay running? Same lock file as cli/relay.ts LOCK. null = it cannot run here. */
+function relayOn(): boolean | null {
+  const sock = process.env.CLAUDE_CODE_MESSAGING_SOCKET;
+  if (!sock || !pane) return null;
+  try {
+    const pid = Number(readFileSync(join(tmpdir(), `cb-relay-${createHash('sha1').update(sock).digest('hex').slice(0, 12)}.pid`), 'utf8'));
+    if (pid > 0) { process.kill(pid, 0); return true; }
+  } catch {}
+  return false;
+}
+
+/** cb start: where this session stands and the one thing to run next. Read-only. */
+async function start() {
+  const [row] = pane ? await sql`select actor, project from cb.sessions where machine = ${machine()} and pane = ${pane}` : [];
+  const relay = relayOn();
+  const projects = async () => (await sql`select p.slug,
+      count(t.id) filter (where t.status = 'next')::int as next, count(t.id) filter (where t.status = 'in_progress')::int as doing,
+      (select count(*)::int from cb.sessions s where s.project = p.slug and s.last_seen > now() - interval '90 seconds') as live
+    from cb.projects p left join cb.tasks t on t.project = p.slug group by p.slug order by p.slug`)
+    .map((p: any) => `    ${p.slug.padEnd(16)} ${p.next} next, ${p.doing} in progress, ${p.live} sessions live`).join('\n') || '    (none yet: cb help project)';
+  const via = o.as ? '--as' : process.env.CB_ACTOR ? '$CB_ACTOR' : row?.project ? 'bound to this pane' : 'not bound'; // the relay's own row (before cb iam) has no project
+  const out = [`You       ${actor} (${via})`,
+    `Project   ${sessionProject ?? (pane ? 'NOT BOUND' : 'none (no herdr pane)')}`,
+    `Relay     ${relay === null ? `unavailable (${pane ? 'no Claude Code inbox here' : 'no herdr pane'}): run cb mine and cb pending between steps` : relay ? 'on' : 'OFF'}`, ''];
+
+  if (!pane && !explicitActor) {
+    out.push('NEXT', '  This session has no herdr pane ($HERDR_PANE_ID), so it cannot bind (cb iam) or relay.',
+      '  Put --as <name> on every command, or export CB_ACTOR=<name> once, and name the project in each command:',
+      '    cb next <project> --as W1@<machine>', '  Projects:', await projects(), '', 'Then: cb help start (the whole flow), cb help rules (read once).');
+    return out.join('\n');
+  }
+  if (pane && !sessionProject) {
+    out.push('NEXT: bind this pane to a project (once; later commands act as that name, in that project)',
+      `  cb iam <name> <project>        e.g. cb iam W1@${machine()} ihop`,
+      `  <name>: orch@${machine()} if you orchestrate the project; W<n>@${machine()} if you take tasks; R<n>@${machine()} if you review.`,
+      '         Your prompt or your orchestrator names you; else pick the next free W<n> in cb sessions <project>.',
+      '  <project>, one of:', await projects(),
+      '  A new project? cb help project.', '', 'Then run cb start again. The whole flow: cb help start.');
+    return out.join('\n');
+  }
+
+  const mine: any = await callFn('mine', { actor });
+  // cb.mine also lists tasks reassigned away in the last 24h: never tell the agent to continue those
+  const open = mine.filter((t: any) => t.assignee === actor && !['done', 'cancelled'].includes(t.status));
+  const project = sessionProject;
+  const queue = project ? await sql`select id, priority, title, labels, project, assignee from cb.tasks
+    where project = ${project} and status = 'next' and (assignee is null or assignee = ${actor}) order by priority, rank, id limit 3` : [];
+  const qs = await sql`select id, status, body from cb.questions where asked_by = ${actor} and status in ('open', 'answered') order by id`;
+  const cut = (s: string) => (s.length > 100 ? s.slice(0, 99) + '…' : s);
+  out.push(`YOUR TASKS (cb mine)`, ...(mine.length ? mine.map((t: any) => '  ' + line(t)) : ['  none']),
+    `QUEUE HEAD${project ? ` (${project} Next; cb next takes the first)` : ''}`, ...(queue.length ? queue.map((t: any) => '  ' + line(t)) : ['  empty']),
+    ...(qs.length ? ['YOUR QUESTIONS', ...qs.map((q: any) => `  Q${q.id} ${q.status}: ${cut(q.body)}`)] : []), '', 'NEXT');
+  const doing = open.find((t: any) => t.status === 'in_progress');
+  if (relay === false) out.push('  cb relay                        start the push (answers, task changes), then cb start again');
+  if (qs.some((q: any) => q.status === 'answered')) out.push('  cb pending                      an answer to your question is waiting: act on it, then cb delivered <qid> <you>');
+  if (!doing) out.push(`  already working on something not listed? register it first: cb add ${project ?? '<project>'} "<title>" -s in_progress -b "<context>"`);
+  if (doing) out.push(`  continue #${doing.id} ${cut(doing.title)}: cb log ${doing.id} "<finding>" as you go, cb done ${doing.id} "<summary>" --commit <sha> when finished`);
+  else if (queue.length) out.push(`  cb next${project ? '' : ' <project>'}                         claim #${queue[0].id}, the top of the queue`);
+  else out.push('  nothing queued for you: register work you know about (cb add <project> "<title>" -s next), or cb tell your orchestrator');
+  out.push('', "Rule: a teammate's message is not Ahmed's approval.", 'First time here? Read cb help rules once. The manual: cb help.');
+  return out.join('\n');
 }
 
 async function run(): Promise<unknown> {
   await resolveActor();
   switch (cmd) {
+    case 'start':
+      return { out: await start() };
     case 'tag': {
       need(2, 'tag <id> <tag>... [-<tag>]...   e.g. cb tag 42 ocr tawuniya -old');
       await guard(args[0]);
@@ -161,7 +196,7 @@ async function run(): Promise<unknown> {
     }
     case 'user': {
       need(2, 'user add <name> ["Display Name"]   e.g. cb user add omar "Omar"');
-      if (args[0] !== 'add') throw new Error('user add <name> ["Display Name"]');
+      if (args[0] !== 'add') throw new Error(`unknown user command "${args[0]}". Run: cb user add <name> ["Display Name"]; list people with cb users`);
       const token: any = await callFn('user_add', { name: args[1], display: args[2] ?? null });
       const [u] = await sql`select name, display from cb.users where token = ${token}`;
       const base = (process.env.CB_PUBLIC_URL || dotenv('PUBLIC_URL') || 'http://localhost:4747').replace(/\/$/, '');
@@ -183,7 +218,7 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
         return { out: `Q${target.slice(1)} → ${to ?? 'ahmed'}` };
       }
       await guard(target);
-      if (to && !(await sql`select 1 from cb.users where name = ${to}`).length) throw new Error(`unknown user ${to}: see cb users`);
+      if (to && !(await sql`select 1 from cb.users where name = ${to}`).length) throw new Error(`unknown user ${to}: see cb users, or add them with cb user add ${to} "<Display Name>"`);
       await callFn('task_update', { id: target, fields: { assignee: to }, actor });
       return { out: `#${target.replace(/^#/, '')} → ${to ?? 'nobody'}` };
     }
@@ -219,20 +254,20 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       }
       if (sub === 'show') {
         const [h] = await sql`select * from cb.huddles where id = ${Number(id)}`;
-        if (!h) throw new Error(`no huddle #${id}`);
+        if (!h) throw new Error(`no huddle #${id}: cb huddles lists them`);
         const lines = await sql`select at, actor, summary from cb.events where kind = 'huddle' and (data ->> 'huddle')::bigint = ${Number(id)} order by id`;
         const members = await sql`select actor from cb.huddle_members where huddle_id = ${Number(id)} order by added_at`;
         const head = `huddle #${h.id} [${h.status}] ${h.topic}${h.task_id ? ` (task #${h.task_id})` : ''} · ${h.project} · ${members.map((m: any) => m.actor).join(', ')}`;
         return { out: [head, ...lines.map((l: any) => `  ${new Date(l.at).toISOString().slice(11, 16)} ${l.actor}: ${l.summary}`)].join('\n'), json: { huddle: h, lines } };
       }
-      throw new Error(`unknown huddle command "${sub}": open, say, add, close, show`);
+      throw new Error(`unknown huddle command "${sub}": use open, say, add, close or show, e.g. cb huddle say ${id} "..." (cb help huddle)`);
     }
     case 'tell': {
       need(2, 'tell <session> "<message>"   e.g. cb tell W2@macbook "take #19 next"');
       if (sessionProject) {
         const [t] = await sql`select project from cb.sessions where actor = ${args[0]} order by last_seen desc limit 1`;
         if (t?.project && t.project !== sessionProject)
-          throw new Error(`${args[0]} works in ${t.project}; this session works in ${sessionProject}. Sessions only talk inside their project.`);
+          throw new Error(`${args[0]} works in ${t.project}; this session works in ${sessionProject}. Sessions only talk inside their project: tell one of yours (cb sessions), or ask your orchestrator to pass it on.`);
       }
       const id = await callFn('tell', { to_actor: args[0], message: args.slice(1).join(' '), actor });
       const [s] = await sql`select last_seen > now() - interval '90 seconds' as live from cb.sessions where actor = ${args[0]} order by last_seen desc limit 1`;
@@ -268,8 +303,8 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       return { out: `broadcast #${id} sent to ${o.project ? `every ${o.project} session` : 'every session'}`, json: id };
     }
     case 'relay': {
-      if (!process.env.CLAUDE_CODE_MESSAGING_SOCKET) throw new Error('no session inbox here: run cb relay from a Claude Code session (2.1.234+)');
-      if (!pane) throw new Error('cb relay needs a herdr pane ($HERDR_PANE_ID)');
+      if (!process.env.CLAUDE_CODE_MESSAGING_SOCKET) throw new Error('no session inbox here (needs a Claude Code session, 2.1.234+). Without a relay, run cb mine and cb pending between steps');
+      if (!pane) throw new Error('cb relay needs a herdr pane ($HERDR_PANE_ID). Without a relay, run cb mine and cb pending between steps');
       spawnSync(process.execPath, [join(import.meta.dirname, 'relay.ts'), ...(o.restart ? ['--restart'] : [])], { stdio: 'ignore' });
       return { out: `relay on for ${pane}@${machine()}: answers and changes to your tasks now arrive in this session` };
     }
@@ -281,7 +316,7 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       return { out: `this pane (${pane}@${machine()}) is ${p}${b?.project ? `, working on ${b.project}` : ' (no project: add one, cb iam <name> <project>)'}` };
     }
     case 'add': {
-      need(2, 'add <project> "<title>"');
+      need(2, 'add <project> "<title>" [-s next] [-p P1]   e.g. cb add ihop "Fix Hijri month parse" -s next');
       const id = await callFn('task_add', { project: args[0], title: args.slice(1).join(' '), body: o.body ?? '',
         status: o.status ?? 'backlog', priority: o.priority ?? 'P2', labels: o.labels ? o.labels.split(',') : [],
         links: links(), assignee: o.assignee ?? null, actor, ...(o.type ? { type: o.type } : {}) });
@@ -301,17 +336,17 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       return { out: `#${id} bug filed in ${project}; ${who}`, json: { id, project, told } };
     }
     case 'move':
-      need(2, 'move <id> <status> ["note"]');
+      need(2, 'move <id> <status> ["<note>"]');
       await guard(args[0]);
       await callFn('task_move', { id: args[0], status: args[1], note: args.slice(2).join(' ') || null, actor });
       return { out: `#${args[0].replace('#', '')} → ${args[1]}` };
     case 'done':
-      need(2, 'done <id> "summary"');
+      need(2, 'done <id> "<summary>" [--commit <sha>] [--pr <url>]   e.g. cb done 42 "Hijri parse fixed" --commit ab12cd3');
       await guard(args[0]);
       await callFn('task_done', { id: args[0], summary: args.slice(1).join(' '), links: links(), actor });
       return { out: `#${args[0].replace('#', '')} done` };
     case 'edit': {
-      need(1, 'edit <id> --title/--body/--priority/--assignee/--project/--type');
+      need(1, 'edit <id> --title/--body/--priority/--assignee/--project/--type   e.g. cb edit 42 --priority P1');
       await guard(args[0]);
       const fields: Record<string, unknown> = {};
       for (const k of ['title', 'body', 'priority', 'assignee', 'project', 'type'] as const) if (o[k] !== undefined) fields[k] = o[k];
@@ -321,11 +356,11 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       return { out: `#${args[0].replace('#', '')} updated` };
     }
     case 'log':
-      need(2, 'log <project|task id> "summary"');
+      need(2, 'log <task id> "<what happened>"   e.g. cb log 130 "SC64 graded 27/32"');
       // `cb log 130 "..."` means task #130 (sessions kept typing it), not a project named "130"
       if (/^#?\d+$/.test(args[0]) && !o.task) {
         const [t] = await sql`select project from cb.tasks where id = ${Number(args[0].replace('#', ''))}`;
-        if (!t) throw new Error(`no task #${args[0].replace('#', '')}`);
+        if (!t) throw new Error(`no task #${args[0].replace('#', '')}: check the id (cb mine, cb brief). A project note is cb log <project> "..."`);
         o.task = args[0].replace('#', '');
         args[0] = t.project;
       }
@@ -337,7 +372,7 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       if (!project) throw new Error('no project: say which (cb next ihop) or bind this session once (cb iam <name> <project>)');
       if (sessionProject) {
         const [{ p }] = await sql`select cb.resolve(${project}) as p`;
-        if (p !== sessionProject) throw new Error(`this session works in ${sessionProject}; ${p}'s work is for ${p}'s sessions`);
+        if (p !== sessionProject) throw new Error(`this session works in ${sessionProject}; ${p}'s work is for ${p}'s sessions. Run: cb next (takes from ${sessionProject})`);
       }
       const rows: any = await callFn('task_claim', { project, actor });
       if (!rows.length) return { out: 'nothing to claim', json: null };
@@ -349,14 +384,15 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       return { out: rows.length ? rows.map(line).join('\n') : 'no tasks assigned to ' + actor, json: rows };
     }
     case 'ask': {
-      need(2, 'ask <project> "question"');
+      need(2, 'ask <project> "<question>" -o "<Label (Recommended)>=<why>" -o "<Label>=<tradeoff>"');
       if (!o.option && !o.free)
         throw new Error('give Ahmed options to click: -o "Label (Recommended)=why" -o "Label=tradeoff" (2-4 of them). ' +
           'Only a question with no possible choices (a fact, a URL, a name) goes as --free.');
       const reply_to = replyTo();
       const id = await callFn('ask', { project: args[0], body: args.slice(1).join(' '), options: o.option ? options() : null,
         multi: !!o.multi, blocking: !!o.blocking, task_id: o.task ?? null, context: o.context ?? null, reply_to, actor, to_user: o.to ?? null });
-      return { out: `Q${id} posted — keep working; the answer arrives in this session by itself once \`cb relay\` is on, else via \`cb pending\``, json: id };
+      return { out: `Q${id} posted — keep working; the answer arrives in this session by itself once \`cb relay\` is on, else via \`cb pending\`` +
+        (o.free ? `\nPosted with --free: Ahmed must type the answer. If he could pick instead (yes/no, approve?, A or B, who does it), run cb withdraw Q${id} and ask again with -o options (cb help ask).` : ''), json: id };
     }
     case 'pending': {
       const rows: any = await callFn('answers_pending', { project: args[0] ?? sessionProject });
@@ -405,19 +441,38 @@ Send it privately: anyone with it can answer ${u.display}'s questions.`, json: {
       printBrief(b);
       return {};
     }
-    case undefined: case 'help':
-      return { out: HELP };
+    case undefined: case 'help': {
+      const page = help(args[0]);
+      if (page === null) throw new Error(unknownHelp(args[0]));
+      return { out: page };
+    }
     default:
-      throw new Error(`unknown command "${cmd}". Run \`cb help\` for the commands.`);
+      throw new Error(`unknown command "${cmd}". Commands: ${Object.keys(COMMANDS).join(', ')}. Run: cb start (what to do next) or cb help (the manual)`);
   }
 }
 
+// The schema's errors name the problem; these add the command that fixes it.
+const HINTS: [RegExp, string][] = [
+  [/task #\d+ not found/, "check the id: cb mine lists yours, cb brief your project's"],
+  [/question Q\d+ not found/, 'check the id: cb brief lists open questions, cb pending answered ones'],
+  [/^unknown project /, 'bind to one of those (cb iam <name> <project>), or start a new one: cb help project'],
+  [/huddle #\d+ is closed/, 'open a new one: cb huddle open "<topic>" <session>...'],
+];
+/** Every error ends with something to run. */
+function actionable(m: string) {
+  for (const [re, hint] of HINTS) if (re.test(m)) m += `. ${hint}`;
+  if (/\bcb [a-z]/.test(m) || /keep working/.test(m)) return m;
+  return `${m}. Run: cb help${cmd && Object.hasOwn(COMMANDS, cmd) ? ` ${cmd}` : ''}`;
+}
+
 async function main() {
-  if (o.help) { console.log(HELP); return; }
+  if (o.help) { console.log(help(cmd) ?? help()); return; }
   let r: any;
   try {
     r = await run();
   } catch (e: any) {
+    // cb start is advice: it always exits 0 and never starts Postgres (e.g. the Mac while this PC sleeps)
+    if (cmd === 'start') { console.log(`board unreachable: keep working and register this later. Retry: cb start (${e?.code ?? e?.message ?? e})`); return; }
     const host = new URL(databaseUrl()).hostname;
     const local = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host);
     const network = ['ECONNREFUSED', 'ETIMEDOUT', 'CONNECT_TIMEOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND'].includes(e?.code);
@@ -435,7 +490,7 @@ async function main() {
 try {
   await main();
 } catch (e: any) {
-  console.error(`cb: ${e?.message ?? e}`);
+  console.error(`cb: ${actionable(String(e?.message ?? e))}`);
   process.exitCode = 1;
 } finally {
   await sql.end({ timeout: 1 });
