@@ -68,8 +68,9 @@ Stop the tunnel: `Stop-Service cloudflared` from an admin shell (`Start-Service 
 it back). Nothing is reachable from outside while it's stopped, but anyone who has a link gets in
 again once the tunnel is up.
 
-- **A link leaked:** People (key 7) → **New link**. The old link stops working at once, also in a
-  browser already signed in with it. Send the new one.
+- **A link leaked:** People (key 7) → **New link**. The old link stops working at once, and every
+  browser signed in as that person is signed out, by link or by password (the password itself still
+  works: they sign in again with it, or with the new link). Send the new one.
 - **Done with someone:** People → **Remove**. Their link stops working, their open questions come
   back to you, and their open tasks become unassigned: status kept, so work held on one of those
   questions stays held, except a task in progress goes back to Next, since nobody is working it.
@@ -88,3 +89,6 @@ New links and removals are Ahmed's: only the dashboard can make them (`cb user r
 - **Don't put a tunnel or proxy in front that strips those headers** (`cf-connecting-ip`,
   `X-Forwarded-For`, `X-Forwarded-Host`) and sends a `localhost` host header: every visitor would
   get the full board.
+- **Don't set `httpHostHeader`** in the cloudflared config. The tunnel must pass the public Host
+  through: a guest's answer, note or sign-in is checked against it (Origin must match Host), so a
+  rewritten Host refuses every one of them as cross-site.

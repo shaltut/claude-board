@@ -171,7 +171,7 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
             className={cn('rounded-md p-3 text-sm', confirm === 'remove' ? 'bg-destructive/8' : 'bg-raised')}>
             <p className="text-pretty">
               {confirm === 'rotate'
-                ? <>{p.display}'s current link stops working, also in a browser already signed in with it. You'll need to send the new one.</>
+                ? <>{p.display}'s current link stops working, and every browser signed in as {p.display} is signed out, by link or by password{p.has_password && '; the password itself still works'}. You'll need to send the new link.</>
                 : <>Remove {p.display}? Their link stops working.{' '}
                   {p.questions.length > 0 && <>Their {plural(p.questions.length, 'open question')} come{p.questions.length === 1 && 's'} back to you{holding > 0 && ', and work held on them stays held'}. </>}
                   {p.tasks.length > 0 && <>Their {plural(p.tasks.length, 'open task')} become{p.tasks.length === 1 && 's'} unassigned{working > 0 && ` (${working} in progress go${working === 1 ? 'es' : ''} back to Next)`}. </>}
