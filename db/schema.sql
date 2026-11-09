@@ -1391,7 +1391,9 @@ begin
       left join cb.questions q on q.id = t.blocked_on
       left join lateral (select e.at, e.summary from cb.events e where e.task_id = t.id and e.kind = 'moved' and e.data ->> 'to' = 'blocked'
                           order by e.id desc limit 1) b on true
-     where t.status = 'blocked' and (p is null or t.project = p) and coalesce(b.at, t.updated_at) < now() - interval '1 hour'), '[]'),
+     where t.status = 'blocked' and (p is null or t.project = p) and coalesce(b.at, t.updated_at) < now() - interval '1 hour'
+       -- waiting on an open task blocker is by design, not stuck (a question it also holds on still shows)
+       and (t.blocked_on is not null or cardinality(cb._waits_on(t.id)) = 0)), '[]'),
     'unreviewed', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'assignee', t.assignee, 'pr', t.links ->> 'pr') order by t.id)
       from cb.tasks t where t.status = 'review' and (p is null or t.project = p)
        and not cb._is_review(t.labels, t.title) and not cb._has_reviewer(t)

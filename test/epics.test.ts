@@ -259,3 +259,15 @@ test('cli: cb block / unblock, --epic on add and edit, cb epics; done says what 
   assert.equal(r.code, 0, r.err);
   assert.equal((await task(web, 2)).epic_id, null);
 });
+
+test('tick: a task waiting on an open blocker is not stuck; with nothing holding it, it is', async () => {
+  const sql = await db();
+  const a = await add(sql, 'a', { status: 'in_progress', assignee: 'W1@pc' }), t = await add(sql, 'waits');
+  await sql`select cb.task_block(${String(t)}, ${String(a)}, 'W1@pc')`;
+  await sql`update cb.events set at = now() - interval '2 hours'`;
+  await sql`update cb.tasks set updated_at = now() - interval '2 hours'`;
+  const blocked = async () => (await sql`select cb.tick('demo', 'orch@pc') as t`)[0].t.blocked.map((x: any) => x.id);
+  assert.deepEqual(await blocked(), [], 'it waits on #a by design');
+  await sql`delete from cb.task_blockers`; // a blocker gone without the release (e.g. its row removed by hand)
+  assert.deepEqual(await blocked(), [t]);
+});
