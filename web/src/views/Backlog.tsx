@@ -15,25 +15,29 @@ import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ActorChip, Priority, ProjectChip, TaskId } from '@/components/Chips'
+import { ActorChip, PriorityPicker, ProjectChip, TagChip, TaskId } from '@/components/Chips'
 import { moveTask } from './Board'
 
-function Row({ t, showProject, selected, onSelect }: { t: Task; showProject: boolean; selected?: boolean; onSelect?: (on: boolean) => void }) {
+function Row({ t, showProject, place, selected, onSelect }: { t: Task; showProject: boolean; place?: number; selected?: boolean; onSelect?: (on: boolean) => void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: t.id, data: { status: t.status } })
   return (
     <li ref={setNodeRef} style={{ transform: CSS.Translate.toString(transform), transition }}
-      className={cn('group flex items-center gap-3 border-b bg-background px-2 py-2 last:border-b-0', isDragging && 'relative z-10 opacity-60 shadow-lg')}>
-      <button {...attributes} {...listeners} className="cursor-grab text-muted-foreground/50 hover:text-foreground active:cursor-grabbing" aria-label={`Reorder #${t.id}`}>
+      className={cn('group flex min-h-11 items-center gap-2.5 border-b bg-card px-2 py-1.5 last:border-b-0 sm:gap-3',
+        selected && 'bg-raised/70', isDragging && 'relative z-10 rounded-md border opacity-90 shadow-[0_12px_30px_-10px_rgb(0_0_0/0.4)]')}>
+      <button {...attributes} {...listeners} className="grid h-7 w-5 shrink-0 cursor-grab touch-none place-items-center rounded text-muted-foreground/45 hover:bg-raised hover:text-foreground active:cursor-grabbing" aria-label={`Reorder #${t.id}`}>
         <GripVertical className="size-4" />
       </button>
+      {place != null && <span className="callsign w-5 shrink-0 text-right text-[13px] text-muted-foreground/70" title={`Number ${place} in the queue`}>{place}</span>}
       {onSelect && <Checkbox checked={selected} onCheckedChange={(v) => onSelect(!!v)} aria-label={`Select #${t.id}`} />}
-      <TaskId id={t.id} className="w-10 shrink-0" />
-      <Priority p={t.priority} />
-      <button onClick={() => go({ task: t.id })} className="min-w-0 flex-1 truncate text-left text-sm hover:underline">{t.title}</button>
+      <TaskId id={t.id} className="w-9 shrink-0" />
+      <PriorityPicker t={t} className="shrink-0" />
+      <a href={`#/backlog?t=${t.id}`} onClick={(e) => { e.preventDefault(); go({ task: t.id }) }}
+        className="min-w-0 flex-1 truncate text-sm font-medium hover:underline hover:underline-offset-4">{t.title}</a>
+      <span className="hidden shrink-0 items-center gap-1 md:flex">{t.labels.slice(0, 3).map((g) => <TagChip key={g} tag={g} />)}</span>
       <span className="hidden shrink-0 items-center gap-3 text-xs text-muted-foreground sm:flex">
-        {showProject && <ProjectChip slug={t.project} />}
+        {showProject && <span className="w-28 overflow-hidden"><ProjectChip slug={t.project} /></span>}
         {t.assignee && <ActorChip actor={t.assignee} />}
-        <span className="w-16 text-right">{ago(t.created_at)}</span>
+        <span className="w-14 text-right tabular-nums">{ago(t.created_at)}</span>
       </span>
     </li>
   )
@@ -42,9 +46,9 @@ function Row({ t, showProject, selected, onSelect }: { t: Task; showProject: boo
 function List({ status, tasks, children, empty }: { status: Status; tasks: Task[]; children: React.ReactNode; empty: string }) {
   const { setNodeRef, isOver } = useDroppable({ id: `list:${status}`, data: { status } })
   return (
-    <ul ref={setNodeRef} className={cn('rounded-lg border', isOver && 'ring-2 ring-ring/40')}>
+    <ul ref={setNodeRef} className={cn('overflow-hidden rounded-lg border bg-card transition-shadow', isOver && 'ring-2 ring-ring/40')}>
       <SortableContext items={tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>{children}</SortableContext>
-      {tasks.length === 0 && <li className="px-4 py-6 text-center text-sm text-muted-foreground">{empty}</li>}
+      {tasks.length === 0 && <li className="px-4 py-8 text-center text-sm text-muted-foreground">{empty}</li>}
     </ul>
   )
 }
@@ -106,19 +110,19 @@ export function Backlog({ route }: { route: Route }) {
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onEnd}>
-      <div className="mx-auto grid max-w-4xl gap-8">
+      <div className="mx-auto grid max-w-5xl gap-12">
         <section aria-labelledby="nextup">
-          <h2 id="nextup" className="text-xl font-semibold tracking-tight">Next up</h2>
-          <p className="mb-3 text-sm text-muted-foreground">Sessions take from the top with <code className="font-mono text-xs">cb next</code>. Drag to set the order.</p>
+          <h1 id="nextup" className="text-[28px] leading-tight font-semibold tracking-[-0.015em]">Next up</h1>
+          <p className="mt-1 mb-4 text-sm text-muted-foreground">Sessions take from the top with <code className="font-mono text-xs">cb next</code>. Drag to set the order; priority comes first.</p>
           <List status="next" tasks={next} empty="Nothing queued. Drag tasks up from the backlog.">
-            {next.map((t) => <Row key={t.id} t={t} showProject={showProject} />)}
+            {next.map((t, i) => <Row key={t.id} t={t} showProject={showProject} place={i + 1} />)}
           </List>
         </section>
 
         <section aria-labelledby="backlog">
           <div className="mb-3 flex items-end justify-between gap-4">
             <div>
-              <h2 id="backlog" className="text-xl font-semibold tracking-tight">Backlog</h2>
+              <h2 id="backlog" className="text-xl leading-tight font-semibold tracking-[-0.01em]">Backlog</h2>
               <p className="text-sm text-muted-foreground">{backlog.length} {backlog.length === 1 ? 'task' : 'tasks'} not yet queued.</p>
             </div>
             {selected.size > 0 && (
@@ -129,10 +133,10 @@ export function Backlog({ route }: { route: Route }) {
               </div>
             )}
           </div>
-          <form onSubmit={quickAdd} className="mb-2 flex gap-2">
+          <form onSubmit={quickAdd} className="mb-3 flex gap-2">
             <div className="relative flex-1">
               <Plus className="absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
-              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Add to the backlog and press Enter" className="pl-8" aria-label="New backlog task" />
+              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Add to the backlog and press Enter…" className="pl-8" aria-label="New backlog task" />
             </div>
             {!route.project && (
               <>
