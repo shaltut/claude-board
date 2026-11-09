@@ -130,9 +130,18 @@ const h = await callFn('huddle_open', { topic: 'Where should duplicate detection
 const say = (m: string, a: string) => callFn('huddle_say', { id: String(h), message: m, actor: a });
 await say('Intake is cheaper: we reject before OCR and save the attachment storage.', W3);
 await say('But at intake we don\'t have the coded procedures yet, only the header. We\'d miss duplicates that differ only in line items.', W1);
+// Ahmed speaks through the dashboard: only a cb-web connection may act as him (see cb.ahmed_like).
+const asAhmed = (fn: string, args: Record<string, unknown>) =>
+  sql.begin(async (tx) => { await tx`set local application_name = 'cb-web'`; return callFn(fn, { ...args, actor: 'ahmed' }, tx); });
 await say('Reviewers mostly see line-item duplicates. Header-only matching would catch maybe a third of what they flag by hand.', R1);
+await asAhmed('huddle_say', { id: String(h), message: 'Whatever we pick has to beat the manual flags, not just match them. Reviewers lose an hour a day to these.' });
 await say('Then two passes: a cheap header check at intake, full check at adjudication. Intake only blocks exact matches.', W3);
 await say('Agreed. I\'ll keep the adjudication check behind a flag until we\'ve compared it with the manual flags for a week.', W1);
+const flag = await add(core, 'Adjudication duplicate check behind a flag, compared with manual flags for a week', { status: 'next', priority: 'P1', labels: ['rules'], links: { huddle: `#${h}` } });
+const w1ev = (await sql`select id from cb.events where kind = 'huddle' and actor = ${W1} order by id desc limit 1`)[0].id;
+await asAhmed('huddle_say', { id: String(h), message: `created #${flag} from W1's line at 00:00` }); // time fixed below, once events are spread
+const madeEv = (await sql`select id from cb.events where kind = 'huddle' and actor = 'ahmed' order by id desc limit 1`)[0].id;
+await asAhmed('huddle_say', { id: String(h), message: "Good. Post the week's comparison here before we turn it on.\nIf it misses more than the manual flags, we keep intake-only." });
 const h2 = await callFn('huddle_open', { topic: 'GPU sizing for nightly scoring', members: [V, OR], task: String(T.gpu), actor: V, project: ml });
 await callFn('huddle_say', { id: String(h2), message: 'Two L4s finish the nightly batch in 3h10m with room to spare.', actor: V });
 await callFn('huddle_say', { id: String(h2), message: 'Go with two. Revisit when the provider count doubles.', actor: OR });
@@ -146,6 +155,9 @@ await sql`update cb.sessions set last_seen = now() - interval '25 minutes' where
 
 // Spread history over the last ~20 hours, keeping order.
 await sql`update cb.events set at = now() - ((select max(id) from cb.events) - id) * interval '14 minutes'`;
+const w1at = (await sql`select at from cb.events where id = ${w1ev}`)[0].at as Date;
+const hhmm = `${String(w1at.getHours()).padStart(2, '0')}:${String(w1at.getMinutes()).padStart(2, '0')}`;
+await sql`update cb.events set summary = ${`created #${flag} from W1's line at ${hhmm}`} where id = ${madeEv}`;
 await sql`update cb.tasks t set updated_at = coalesce((select max(e.at) from cb.events e where e.task_id = t.id), t.updated_at),
   created_at = coalesce((select min(e.at) from cb.events e where e.task_id = t.id), t.created_at),
   done_at = case when t.status = 'done' then (select max(e.at) from cb.events e where e.task_id = t.id) end`;
