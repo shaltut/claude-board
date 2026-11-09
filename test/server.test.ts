@@ -219,6 +219,15 @@ test('a guest answers a follow-up once it opens, and sees what comes next on the
   assert.equal((await rpc('answer', { id: '2', answer: 'SIT' })).status, 200);
   const local = await (await app.request('/api/questions?status=answered')).json();
   assert.deepEqual(local.map((q: any) => [q.id, q.parent_answer ?? null]), [[1, null], [2, 'Yes']]);
+
+  // a follow-up handed to him on a parent he never had: he does not see Ahmed's answer (or its note)
+  await sql`select cb.ask(project => 'ihop', body => 'Budget OK?', options => ${sql.json(['Yes', 'No'])}, actor => 'orch@shaltoot')`;
+  await sql`select cb.ask(project => 'ihop', body => 'Sign the PO?', options => ${sql.json(['Sign', 'Hold'])}, parent => '4', to_user => 'omar', actor => 'orch@shaltoot')`;
+  await sql`select cb.answer('4', 'Yes — but only 40k, the rest is for Tawuniya')`;
+  me = await (await remote('/api/me', { cookie: token })).json();
+  const g = me.questions.find((q: any) => q.id === 5);
+  assert.deepEqual([g.status, g.parent_id, g.parent_answer], ['open', 4, null]);
+  assert.equal(JSON.stringify(me).includes('40k'), false);
 });
 
 test('a web page on another site cannot drive the board through the browser (CSRF)', async () => {

@@ -91,7 +91,7 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
 
         {q.parent_id && (
           <p className="mt-2.5 truncate text-xs text-muted-foreground">
-            Follow-up to <span className="callsign">Q{q.parent_id}</span>{q.parent_answer && <> — you answered {q.parent_answer}</>}
+            Follow-up to <span className="callsign">Q{q.parent_id}</span>{q.parent_answer && <> — Q{q.parent_id} was answered {q.parent_answer}</>}
           </p>
         )}
         <p id={`q${q.id}-body`} className={cn('max-w-[68ch] text-base leading-normal text-pretty', q.parent_id ? 'mt-1' : 'mt-2.5')}>{q.body}</p>

@@ -29,6 +29,7 @@ const ask = async (sql: any, o: Ask) => Number((await sql`select cb.ask(project 
 const q = async (sql: any, id: number) => (await sql`select * from cb.questions where id = ${id}`)[0];
 const status = async (sql: any, ...ids: number[]) => Promise.all(ids.map(async (id) => (await q(sql, id)).status));
 const answer = (sql: any, id: number, a: string) => sql`select cb.answer(${String(id)}, ${a})`;
+const deliver = (sql: any, id: number) => sql`select cb.answer_delivered(${String(id)}, 'W1')`;
 const yesNo = (sql: any, extra: Partial<Ask> = {}) => ask(sql, { body: 'Ship today?', options: ['Yes (Recommended)', 'No'], ...extra });
 
 test('a follow-up waits dormant: not open, not waiting on Ahmed, not pending, no asked event', async () => {
@@ -48,7 +49,7 @@ test('a follow-up waits dormant: not open, not waiting on Ahmed, not pending, no
   await assert.rejects(answer(sql, f, 'SIT'), /Q2 waits on Q1/, 'a dormant follow-up cannot be answered');
 });
 
-test('the Yes branch opens fresh with an asked event; the No branch is skipped', async () => {
+test('the Yes branch opens fresh with an asked event; the No branch waits until delivery, then is skipped', async () => {
   const sql = await db();
   const p = await yesNo(sql);
   const yes = await ask(sql, { body: 'Which env first?', options: ['SIT', 'UAT'], parent: String(p), if: 'Yes' });
@@ -56,15 +57,78 @@ test('the Yes branch opens fresh with an asked event; the No branch is skipped',
   const before = (await q(sql, yes)).created_at;
   await new Promise((r) => setTimeout(r, 20));
   await answer(sql, p, 'Yes — ship it after lunch'); // the dashboard sends the label without (Recommended), plus a note
-  assert.deepEqual(await status(sql, p, yes, no), ['answered', 'open', 'withdrawn']);
+  assert.deepEqual(await status(sql, p, yes, no), ['answered', 'open', 'dormant'], 'the answer can still change: No waits');
   assert.ok((await q(sql, yes)).created_at > before, 'asked time is when it opened, so it sorts fresh');
   const [asked] = await sql`select actor from cb.events where kind = 'asked' and question_id = ${yes}`;
   assert.equal(asked.actor, 'W1', 'the asker asked it, not whoever answered the parent');
+  // nothing about the waiting branch leaks while the parent is answered but not delivered
+  assert.deepEqual((await sql`select id from cb.questions where status in ('open', 'answered') order by id`).map((r: any) => Number(r.id)), [p, yes]);
+  const [{ t }] = await sql`select cb.tick('demo', 'W1') as t`;
+  assert.deepEqual(t.my_questions.map((x: any) => Number(x.id)), [yes]);
+  await deliver(sql, p);
+  assert.deepEqual(await status(sql, p, yes, no), ['delivered', 'open', 'withdrawn']);
   const [skip] = await sql`select summary from cb.events where kind = 'withdrawn' and question_id = ${no}`;
-  assert.match(skip.summary, /^skipped: Q1 answered Yes/);
-  // editing the answer later does not re-route the branches (fired once, on the first answer)
+  assert.match(skip.summary, /^skipped: Q1 answered Yes — ship it after lunch/);
+});
+
+test('changing the answer before delivery re-routes: Yes then No puts A back to wait and opens B; delivery skips A', async () => {
+  const sql = await db();
+  const p = await yesNo(sql);
+  const a = await ask(sql, { body: 'Which env first?', options: ['SIT', 'UAT'], parent: String(p), if: 'Yes' });
+  const b = await ask(sql, { body: 'What blocks it?', parent: String(p), if: 'No' });
+  const any = await ask(sql, { body: 'Anything else?', parent: String(p) });
+  await answer(sql, p, 'Yes');
+  assert.deepEqual(await status(sql, a, b, any), ['open', 'dormant', 'open']);
+  const anyAt = (await q(sql, any)).created_at;
+  await answer(sql, p, 'No — not before the audit');
+  assert.deepEqual(await status(sql, a, b, any), ['dormant', 'open', 'open']);
+  assert.deepEqual((await q(sql, any)).created_at, anyAt, 'a branch both answers pick stays as it was');
+  const [back] = await sql`select summary from cb.events where kind = 'withdrawn' and question_id = ${a}`;
+  assert.match(back.summary, /^waiting again: Q1 now answered No/);
+  await answer(sql, p, 'Yes'); // and back again
+  assert.deepEqual(await status(sql, a, b), ['open', 'dormant']);
   await answer(sql, p, 'No');
-  assert.deepEqual(await status(sql, yes, no), ['open', 'withdrawn']);
+  await deliver(sql, p);
+  assert.deepEqual(await status(sql, a, b, any), ['withdrawn', 'open', 'open']);
+});
+
+test('a changed answer that would close an answered follow-up is refused', async () => {
+  const sql = await db();
+  const p = await yesNo(sql);
+  const a = await ask(sql, { body: 'Which env first?', options: ['SIT', 'UAT'], parent: String(p), if: 'Yes' });
+  await answer(sql, p, 'Yes');
+  await answer(sql, a, 'SIT');
+  await assert.rejects(answer(sql, p, 'No'), /Q2 \(the "Yes \(Recommended\)" follow-up\) is already answered; withdraw it first \(cb withdraw Q2\)/);
+  assert.equal((await q(sql, p)).answer, 'Yes', 'nothing changed');
+  await answer(sql, p, 'Yes — after lunch'); // the same branch: fine
+  await sql`select cb.withdraw(${String(a)})`;
+  await answer(sql, p, 'No');
+  assert.equal((await q(sql, p)).answer, 'No');
+});
+
+test('re-routing undoes the task hold a blocking follow-up took, exactly', async () => {
+  const sql = await db();
+  const task = async (id: number) => { const [t] = await sql`select status, blocked_on from cb.tasks where id = ${id}`; return [t.status, t.blocked_on && Number(t.blocked_on)]; };
+  // 1. the parent held the task: back to the parent's hold, and its delivery then releases the task
+  await sql`select cb.task_add(project => 'demo', title => 'Deploy', status => 'in_progress', assignee => 'W1', actor => 'W1')`;
+  const p = await yesNo(sql, { task: '1', blocking: true });
+  const a = await ask(sql, { body: 'Which env?', options: ['SIT', 'UAT'], parent: String(p), if: 'Yes', blocking: true });
+  await answer(sql, p, 'Yes');
+  assert.deepEqual(await task(1), ['blocked', a]);
+  await answer(sql, p, 'No');
+  assert.deepEqual(await task(1), ['blocked', p]);
+  await deliver(sql, p);
+  assert.deepEqual(await task(1), ['in_progress', null]);
+  // 2. nothing held the task: it goes back to where it was
+  await sql`select cb.task_add(project => 'demo', title => 'Docs', status => 'review', actor => 'W1')`;
+  const p2 = await yesNo(sql, { task: '2' });
+  const a2 = await ask(sql, { body: 'Who reviews?', options: ['R1', 'R2'], parent: String(p2), if: 'Yes', blocking: true });
+  await answer(sql, p2, 'Yes');
+  assert.deepEqual(await task(2), ['blocked', a2]);
+  await answer(sql, p2, 'No');
+  assert.deepEqual(await task(2), ['review', null]);
+  await answer(sql, p2, 'Yes'); // opens again and holds again
+  assert.deepEqual(await task(2), ['blocked', a2]);
 });
 
 test('multi-select: every chosen label opens its branch', async () => {
@@ -74,7 +138,30 @@ test('multi-select: every chosen label opens its branch', async () => {
     await ask(sql, { body: 'd?', parent: String(p), if: 'db', options: ['a', 'b'] }),
     await ask(sql, { body: 'e?', parent: String(p), if: 'e2e', options: ['a', 'b'] })];
   await answer(sql, p, 'Unit (Recommended); E2E — before Friday');
+  assert.deepEqual(await status(sql, u, d, e), ['open', 'dormant', 'open']);
+  await deliver(sql, p);
   assert.deepEqual(await status(sql, u, d, e), ['open', 'withdrawn', 'open']);
+});
+
+test('labels match as the parent spells them: the longest label wins, a note rides after " — ", ";" inside a label', async () => {
+  const sql = await db();
+  const p = await ask(sql, { body: 'Merge?', options: ['Keep', 'Keep — both'] });
+  const k = await ask(sql, { body: 'k?', parent: String(p), if: 'Keep' });
+  const kb = await ask(sql, { body: 'kb?', parent: String(p), if: 'Keep — both' });
+  await answer(sql, p, 'Keep — both');
+  assert.deepEqual(await status(sql, k, kb), ['dormant', 'open'], '"Keep — both" is that label, not Keep plus a note');
+  await answer(sql, p, 'Keep — both — tidy later');
+  assert.deepEqual(await status(sql, k, kb), ['dormant', 'open']);
+  await answer(sql, p, 'Keep — tidy later');
+  assert.deepEqual(await status(sql, k, kb), ['open', 'dormant']);
+  await answer(sql, p, 'keep');
+  assert.deepEqual(await status(sql, k, kb), ['open', 'dormant']);
+
+  const m = await ask(sql, { body: 'Which?', options: ['A; B', 'C', 'B'], multi: true });
+  const [ab, c, b] = [await ask(sql, { body: 'ab?', parent: String(m), if: 'A; B' }),
+    await ask(sql, { body: 'c?', parent: String(m), if: 'C' }), await ask(sql, { body: 'b?', parent: String(m), if: 'B' })];
+  await answer(sql, m, 'A; B; C — both today');
+  assert.deepEqual(await status(sql, ab, c, b), ['open', 'open', 'dormant']);
 });
 
 test('a free-text answer opens only the follow-ups without --if; --if on a --free parent is refused', async () => {
@@ -89,6 +176,8 @@ test('a free-text answer opens only the follow-ups without --if; --if on a --fre
   const always = await ask(sql, { body: 'Anything else?', parent: String(p) });
   const yes = await ask(sql, { body: 'Which env?', parent: String(p), if: 'Yes' });
   await answer(sql, p, 'Maybe next week'); // typed over the options: no label chosen
+  assert.deepEqual(await status(sql, always, yes), ['open', 'dormant']);
+  await deliver(sql, p);
   assert.deepEqual(await status(sql, always, yes), ['open', 'withdrawn']);
 });
 
@@ -131,6 +220,8 @@ test('a chain of two: each answer fires the next; a skipped link skips the rest'
   const f2 = await ask(sql, { body: 'Which env?', options: ['SIT', 'UAT'], parent: String(p2), if: 'Yes' });
   const g2 = await ask(sql, { body: 'Who deploys?', parent: String(f2) });
   await answer(sql, p2, 'No');
+  assert.deepEqual(await status(sql, f2, g2), ['dormant', 'dormant']);
+  await deliver(sql, p2);
   assert.deepEqual(await status(sql, f2, g2), ['withdrawn', 'withdrawn']);
   const skipped = await sql`select summary from cb.events where kind = 'withdrawn' and question_id in (${f2}, ${g2}) order by question_id`;
   assert.deepEqual(skipped.map((e: any) => e.summary), [`skipped: Q${p2} answered No`, `skipped: Q${p2} answered No`]);
@@ -158,6 +249,16 @@ test('a follow-up inherits task, reply_to and recipient; --blocking takes the ta
   assert.equal(t.status, 'in_progress');
 });
 
+test('removing a person hands back their dormant follow-ups too, counting only the open ones', async () => {
+  const sql = await db();
+  await sql`select cb.user_add('omar', 'Omar'), cb.ensure_project('demo'), cb.user_project_add('omar', 'demo', 'ahmed')`;
+  const p = await yesNo(sql, { to: 'omar' });
+  const f = await ask(sql, { body: 'Which env?', parent: String(p) });
+  const [{ r }] = await sql`select cb.user_remove('omar', 'ahmed') as r`;
+  assert.equal(r.questions, 1);
+  assert.deepEqual([(await q(sql, f)).assigned_to, (await q(sql, f)).status], [null, 'dormant']);
+});
+
 test('a blocking parent hands its task to a blocking follow-up', async () => {
   const sql = await db();
   await sql`select cb.task_add(project => 'demo', title => 'Deploy', status => 'in_progress', actor => 'W1')`;
@@ -178,8 +279,8 @@ test('the follow-up\'s answer is its own delivery, quoting the parent question a
   await sql`select cb.answer_delivered(${String(p)}, 'W1')`;
   await answer(sql, f, 'UAT');
   const [{ i }] = await sql`select cb.inbox('mac', 'p3', 0) as i`;
-  assert.deepEqual(i.answers.map((a: any) => [Number(a.id), a.answer, Number(a.parent_id), a.parent_body, a.parent_answer]),
-    [[f, 'UAT', p, 'Ship today?', 'Yes']]);
+  assert.deepEqual(i.answers.map((a: any) => [Number(a.id), a.answer, Number(a.parent_id), a.parent_body, a.parent_answer, a.parent_answered_by]),
+    [[f, 'UAT', p, 'Ship today?', 'Yes', 'ahmed']]);
   const r = cb(['pending', 'demo']);
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /Q2 → W1[\s\S]*follow-up to Q1 \(answered Yes\): Ship today\?[\s\S]*asked: Which env first\?[\s\S]*answer: UAT/);
@@ -222,7 +323,7 @@ test('the relay pushes a follow-up\'s answer with the parent quoted', { timeout:
     await answer(sql, f, 'UAT');
     for (let i = 0; i < 50 && !inbox.got.length; i++) await new Promise((r) => setTimeout(r, 100));
     assert.equal(inbox.got.length, 1);
-    assert.match(inbox.got[0].message.content, /answered Q2: UAT\n  Follow-up to Q1 \(answered Yes\): Ship today\?\n  You asked: Which env first\?/);
+    assert.match(inbox.got[0].message.content, /answered Q2: UAT\n  Follow-up to Q1 \(Ahmed answered Yes\): Ship today\?\n  You asked: Which env first\?/);
   } finally {
     relay.kill();
     await exited;

@@ -43,9 +43,10 @@ export async function epic(id: number) {
   return { epic: e, steps };
 }
 
-/** Follow-ups (#472): what the parent was answered, and the dormant branches still to come (a guest sees only theirs). */
+/** Follow-ups (#472): what the parent was answered, and the dormant branches still to come. A guest sees only their
+ *  own branches, and the parent's answer only when the parent was theirs too (Ahmed's answer and note are his). */
 const followups = (user?: string) => sql`
-  (select p.answer from cb.questions p where p.id = q.parent_id) as parent_answer,
+  (select p.answer from cb.questions p where p.id = q.parent_id ${user ? sql`and p.assigned_to = ${user}` : sql``}) as parent_answer,
   (select jsonb_agg(jsonb_build_object('id', c.id, 'if_answer', c.if_answer, 'body', c.body) order by c.id) from cb.questions c
     where c.parent_id = q.id and c.status = 'dormant' ${user ? sql`and c.assigned_to = ${user}` : sql``}) as branches`;
 

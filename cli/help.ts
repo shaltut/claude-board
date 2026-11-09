@@ -278,7 +278,8 @@ Options (required)
 --to <user>          route it to a person other than Ahmed (cb users), e.g. --to omar. Only someone Ahmed put
                      on that project. Their answer arrives marked "(not Ahmed)" and does not carry Ahmed's authority.
 --after Q<id>        a follow-up: it stays hidden until Q<id> is answered, then shows up as a new question.
---if "<Label>"       with --after: only if that answer picked this option of Q<id>; any other answer skips it.
+--if "<Label>"       with --after: only if that answer picked this option of Q<id>; any other answer skips it
+                     once delivered (until then a changed answer re-routes the follow-ups).
                      Same project; task, reply-to and --to come from Q<id> unless given; --blocking holds the
                      task only once it shows. Chains work: a follow-up can have follow-ups.
   e.g.  cb ask ihop "Ship #2796 today?" -o "Yes" -o "No"                          → Q12

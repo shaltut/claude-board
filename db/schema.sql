@@ -93,9 +93,13 @@ alter table cb.questions add column if not exists multi boolean not null default
 
 -- Follow-up questions (#472): a question asked --after another (parent_id) waits 'dormant' until that one is
 -- answered. Then it opens if the answer chose if_answer (one of the parent's option labels; null = any answer),
--- else it is skipped (withdrawn). Dormant is invisible: not open, not pending, no asked event, no task held.
+-- else it waits on: until the parent's answer is delivered (the answer may still change and re-route it), then it
+-- is skipped (withdrawn). Dormant is invisible: not open, not pending, no asked event, no task held.
 alter table cb.questions add column if not exists parent_id bigint references cb.questions(id);
 alter table cb.questions add column if not exists if_answer text;
+-- A blocking follow-up that opened: its task's {task, status, blocked_on} before it took the task, so a changed
+-- parent answer that sends it back to dormant can put the task back exactly.
+alter table cb.questions add column if not exists hold_before jsonb;
 alter table cb.questions drop constraint if exists questions_status_check;
 alter table cb.questions add constraint questions_status_check check (status in ('open','answered','delivered','withdrawn','dormant'));
 create index if not exists questions_parent on cb.questions (parent_id) where parent_id is not null;
@@ -660,7 +664,8 @@ drop function if exists cb.answer cascade;
 drop function if exists cb.withdraw cascade;
 drop function if exists cb._label cascade;
 drop function if exists cb._dormant_withdraw cascade;
-drop function if exists cb._followups_fire cascade;
+drop function if exists cb._followups_route cascade;
+drop function if exists cb._picked cascade;
 drop function if exists cb.answers_pending cascade;
 drop function if exists cb.answer_delivered cascade;
 drop function if exists cb.brief cascade;
@@ -681,9 +686,10 @@ begin
     insert into cb.events (actor, project, task_id, question_id, kind, summary, data)
     values (a, new.project, new.task_id, new.id, 'answered', left(new.answer, 120),
             jsonb_build_object('edited', old.status = 'answered'));
-  elsif new.status is distinct from old.status and new.status in ('delivered', 'withdrawn') then
+  elsif new.status is distinct from old.status and (new.status in ('delivered', 'withdrawn') or old.status = 'open') then
+    -- open → dormant (the parent's answer changed) reads as a withdrawal: the question left the board
     insert into cb.events (actor, project, task_id, question_id, kind, summary, data)
-    values (a, new.project, new.task_id, new.id, new.status,
+    values (a, new.project, new.task_id, new.id, case when new.status = 'dormant' then 'withdrawn' else new.status end,
             case when new.status = 'delivered' then 'delivered to ' || coalesce(new.delivered_to, '?')
                  else coalesce(nullif(current_setting('cb.note', true), ''), 'withdrew: ' || left(new.body, 100)) end, '{}');
   end if;
@@ -777,8 +783,33 @@ begin
   if cur in ('delivered', 'withdrawn') then raise exception 'question Q% is already %', qid, cur; end if;
   if cur = 'dormant' then raise exception 'Q% waits on Q%: it opens when that one is answered', qid, par; end if;
   update cb.questions q set status = 'answered', answer = trim(answer), answered_at = now(), answered_by = a where q.id = qid;
-  -- ponytail: follow-ups go one way, on the first answer; a changed answer does not re-route them (withdraw and re-ask)
-  if cur = 'open' then perform cb._followups_fire(qid); end if;
+  perform cb._followups_route(qid);  -- first answer or a change: the follow-ups follow it
+end $$;
+
+-- The option labels (as the parent spells them) an answer picked. The dashboard sends "Label — note" (label without
+-- "(Recommended)") and, for --multi, the raw labels joined by "; " plus the note. Labels may hold " — " or ";", so the
+-- answer is read against the known labels: at each step the longest label that ends at the end, "; " or " — ".
+-- A typed answer that starts with no label picks nothing.
+create function cb._picked(options jsonb, answer text, multi boolean) returns text[] language plpgsql immutable as $$
+#variable_conflict use_variable
+declare s text := lower(trim(coalesce(answer, ''))); got text[] := '{}'; best text; n int; rest text; c record;
+begin
+  loop
+    best := null; n := 0;
+    for c in select o ->> 'label' as l, f from jsonb_array_elements(coalesce(options, '[]')) o,
+                    unnest(array[lower(trim(o ->> 'label')), cb._label(o ->> 'label')]) f loop
+      rest := substr(s, length(c.f) + 1);
+      if c.f <> '' and length(c.f) > n and left(s, length(c.f)) = c.f and (rest = '' or left(rest, 1) = ';' or left(rest, 3) = ' — ') then
+        best := c.l; n := length(c.f);
+      end if;
+    end loop;
+    exit when best is null;
+    got := got || best;
+    s := substr(s, n + 1);
+    exit when not coalesce(multi, false) or left(s, 1) <> ';';
+    s := ltrim(substr(s, 2));
+  end loop;
+  return got;
 end $$;
 
 -- An option label as answers compare it: case, spaces and the "(Recommended)" marker don't count.
@@ -787,37 +818,73 @@ create function cb._label(x text) returns text language sql immutable as $$
 $$;
 
 -- Withdraw dormant follow-ups and, down the chain, theirs. why is the history line ("skipped: Q12 answered No").
+-- One level per statement, until a level finds nothing: each statement sees follow-ups committed meanwhile (a
+-- cb.ask that held the parent's lock), and a cb.ask after this sees its parent withdrawn and refuses.
 create function cb._dormant_withdraw(ids bigint[], why text) returns void language plpgsql as $$
 #variable_conflict use_variable
+declare lv bigint[] := ids; done bigint[];
 begin
   perform set_config('cb.note', why, true);
-  with recursive d(id) as (
-    select q.id from cb.questions q where q.id = any(ids) and q.status = 'dormant'
-    union all
-    select q.id from cb.questions q join d on q.parent_id = d.id where q.status = 'dormant')
-  update cb.questions q set status = 'withdrawn' from d where q.id = d.id;
+  while cardinality(lv) > 0 loop
+    with w as (update cb.questions q set status = 'withdrawn' where q.id = any(lv) and q.status = 'dormant' returning q.id)
+    select array(select w.id from w) into done;
+    lv := array(select q.id from cb.questions q where q.parent_id = any(done) and q.status = 'dormant');
+  end loop;
   perform set_config('cb.note', '', true);
 end $$;
 
--- Q pid was just answered: its dormant follow-ups open (asked now, so they sort fresh) when the answer chose their
--- if_answer or they have none; the rest are skipped. The dashboard sends "Label — note", and "A; B" for --multi;
--- a typed answer that is no label opens only the follow-ups without one.
-create function cb._followups_fire(pid bigint) returns void language plpgsql as $$
+-- Q pid's answer is new or changed (not delivered yet): its follow-ups follow it.
+--  - open, unanswered follow-ups it no longer picks go back to dormant, and give back the task they held;
+--  - dormant follow-ups it picks (or with no if_answer) open, asked now so they sort fresh; blocking ones hold the task;
+--  - a follow-up it no longer picks that is already answered refuses the change (withdraw it first).
+-- The rest stay dormant until the answer is delivered (cb.answer_delivered skips them).
+create function cb._followups_route(pid bigint) returns void language plpgsql as $$
 #variable_conflict use_variable
-declare ans text := (select q.answer from cb.questions q where q.id = pid); picked text[]; c record;
+declare par cb.questions; picked text[]; c record; t cb.tasks; h jsonb; live bigint;
 begin
-  picked := array(select cb._label(x) from regexp_split_to_table(split_part(ans, ' — ', 1), ';') x) || cb._label(ans);
-  for c in update cb.questions q set status = 'open', created_at = now()
-            where q.parent_id = pid and q.status = 'dormant' and (q.if_answer is null or cb._label(q.if_answer) = any(picked))
+  select * into par from cb.questions q where q.id = pid;
+  picked := cb._picked(par.options, par.answer, par.multi);
+  select q.id, q.if_answer, q.status into c from cb.questions q
+   where q.parent_id = pid and q.status in ('answered', 'delivered') and q.if_answer is not null and q.if_answer <> all(picked)
+   order by q.id limit 1;
+  if found then
+    raise exception 'Q% (the "%" follow-up) is already %; %', c.id, c.if_answer, c.status,
+      case when c.status = 'answered' then 'withdraw it first (cb withdraw Q' || c.id || ') to change the answer to Q' || pid
+           else 'the answer to Q' || pid || ' can no longer change' end;
+  end if;
+
+  perform set_config('cb.note', 'waiting again: Q' || pid || ' now answered ' || left(par.answer, 100), true);
+  for c in update cb.questions q set status = 'dormant'
+            where q.parent_id = pid and q.status = 'open' and q.if_answer is not null and q.if_answer <> all(picked)
+            returning q.id, q.hold_before loop
+    h := c.hold_before;
+    continue when h is null;
+    -- put the task back as it was before this follow-up took it; a question that held it then and has since been
+    -- delivered or withdrawn no longer holds it (released as its delivery would have)
+    live := (select x.id from cb.questions x where x.id = (h ->> 'blocked_on')::bigint and x.status in ('open', 'answered'));
+    perform set_config('cb.note', 'Q' || c.id || ' waits again: back as before it asked', true);
+    update cb.tasks x set blocked_on = live,
+           status = case when live is not null then 'blocked'
+                         when h ->> 'blocked_on' is null then h ->> 'status'
+                         when cardinality(cb._waits_on(x.id)) > 0 then 'blocked'
+                         when x.assignee is null then 'next' else 'in_progress' end
+     where x.id = (h ->> 'task')::bigint and x.blocked_on = c.id and x.status = 'blocked';
+  end loop;
+  perform set_config('cb.note', '', true);
+
+  for c in update cb.questions q set status = 'open', created_at = now(), hold_before = null
+            where q.parent_id = pid and q.status = 'dormant' and (q.if_answer is null or q.if_answer = any(picked))
             returning q.id, q.blocking, q.task_id loop
     if c.blocking and c.task_id is not null then  -- as cb.ask does, unless the task finished while it waited
-      perform set_config('cb.note', 'blocked on Q' || c.id, true);
-      update cb.tasks t set status = 'blocked', blocked_on = c.id where t.id = c.task_id and t.status not in ('done', 'cancelled');
-      perform set_config('cb.note', '', true);
+      select * into t from cb.tasks x where x.id = c.task_id for update;
+      if found and t.status not in ('done', 'cancelled') then
+        update cb.questions q set hold_before = jsonb_build_object('task', t.id, 'status', t.status, 'blocked_on', t.blocked_on) where q.id = c.id;
+        perform set_config('cb.note', 'blocked on Q' || c.id, true);
+        update cb.tasks x set status = 'blocked', blocked_on = c.id where x.id = t.id;
+        perform set_config('cb.note', '', true);
+      end if;
     end if;
   end loop;
-  perform cb._dormant_withdraw(array(select q.id from cb.questions q where q.parent_id = pid and q.status = 'dormant'),
-                               'skipped: Q' || pid || ' answered ' || left(ans, 100));
 end $$;
 
 create function cb.withdraw(id text, actor text default null)
@@ -856,14 +923,17 @@ end $$;
 create function cb.answer_delivered(id text, delivered_to text default null, actor text default null)
 returns void language plpgsql as $$
 #variable_conflict use_variable
-declare qid bigint := cb.norm_id(id); cur text;
+declare qid bigint := cb.norm_id(id); cur text; ans text;
 begin
   perform cb.set_actor(actor);
-  select q.status into cur from cb.questions q where q.id = qid for update;
+  select q.status, q.answer into cur, ans from cb.questions q where q.id = qid for update;
   if cur is null then raise exception 'question Q% not found', qid; end if;
   if cur = 'delivered' then return; end if;
   if cur <> 'answered' then raise exception 'question Q% is %, not answered', qid, cur; end if;
   update cb.questions q set status = 'delivered', delivered_at = now(), delivered_to = delivered_to where q.id = qid;
+  -- the answer is final now: follow-ups it did not pick are skipped, down the chain
+  perform cb._dormant_withdraw(array(select q.id from cb.questions q where q.parent_id = qid and q.status = 'dormant'),
+                               'skipped: Q' || qid || ' answered ' || left(ans, 100));
   -- the blockers lock (see cb.tasks_unblock) before deciding: a blocker finishing at the same moment either has
   -- committed (the statements below see it) or waits for this transaction and then sees blocked_on cleared
   perform pg_advisory_xact_lock(hashtext('cb.blockers:' || x.project))
@@ -986,7 +1056,8 @@ begin
                             and e.at > now() - interval '24 hours'), '[]'),
     'answers', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'task_id', q.task_id, 'project', q.project,
                                                              'body', q.body, 'answer', q.answer, 'answered_by', q.answered_by,
-                                                             'parent_id', q.parent_id, 'parent_body', pq.body, 'parent_answer', pq.answer) order by q.id)
+                                                             'parent_id', q.parent_id, 'parent_body', pq.body, 'parent_answer', pq.answer,
+                                                             'parent_answered_by', pq.answered_by) order by q.id)
                            from cb.questions q left join cb.questions pq on pq.id = q.parent_id  -- a follow-up quotes what it followed
                           where q.status = 'answered' and ((lower(q.reply_to ->> 'machine') = m and q.reply_to ->> 'pane' = pane)
                                  or (coalesce(q.reply_to ->> 'pane', '') = '' and q.asked_by = me))), '[]'),
@@ -1254,8 +1325,10 @@ create function cb._user_hand_back(n text, why text, project text default null) 
 #variable_conflict use_variable
 declare nq int; nt int; nt2 int;
 begin
-  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status in ('open', 'dormant') and (project is null or q.project = project);
+  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status = 'open' and (project is null or q.project = project);
   get diagnostics nq = row_count;
+  -- follow-ups not asked yet go back too, uncounted: nobody has seen them
+  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status = 'dormant' and (project is null or q.project = project);
   perform set_config('cb.note', 'unassigned and back to Next: ' || why, true);
   update cb.tasks t set assignee = null, status = 'next' where t.assignee = n and t.status = 'in_progress' and (project is null or t.project = project);
   get diagnostics nt = row_count;

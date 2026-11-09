@@ -99,7 +99,7 @@ function format(raw: any): string {
   if (otherIds.length) lines.push(`  (reply: cb huddle say ${otherIds[0]} "..."; whole thread: cb huddle show ${otherIds[0]})`);
   for (const a of i.answers)
     lines.push(`${who(a)} answered Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: ${a.answer}`,
-      ...(a.parent_id ? [`  Follow-up to Q${a.parent_id} (answered ${cut(a.parent_answer, 120)}): ${cut(a.parent_body, 200)}`] : []),
+      ...(a.parent_id ? [`  Follow-up to Q${a.parent_id} (${who({ answered_by: a.parent_answered_by })} answered ${cut(a.parent_answer, 120)}): ${cut(a.parent_body, 200)}`] : []),
       `  You asked: ${cut(a.body, 200)}`);
   for (const c of i.answer_copies ?? [])
     lines.push(`${who(c)} answered ${c.asked_by}'s Q${c.id}${c.task_id ? ` (task #${c.task_id})` : ''}: ${c.answer}`,
