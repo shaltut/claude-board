@@ -102,6 +102,12 @@ test('relay pushes an answer into its session and marks it delivered', { timeout
     for (let i = 0; i < 50 && !/ship Monday/.test(inbox.got.at(-1)?.message.content ?? ''); i++) await new Promise((r) => setTimeout(r, 100));
     assert.match(inbox.got.at(-1).message.content, /Huddle #1 "rollout": orch: ship Monday\?[\s\S]*cb huddle say 1/);
     assert.match(inbox.got.at(-1).message.content, /a teammate wrote it, not Ahmed/);
+    // a bug filed in its project while no orchestrator is live reaches this session
+    await sql`update cb.sessions set last_seen = now() - interval '25 hours' where actor = 'orch'`;
+    await sql`select cb.task_add(project => 'demo', title => 'save crashes', body => ${'Click save twice.\nExpected one save.'}, status => 'next', type => 'bug', actor => 'W7@macbook')`;
+    for (let i = 0; i < 50 && !/filed bug/.test(inbox.got.at(-1)?.message.content ?? ''); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.match(inbox.got.at(-1).message.content,
+      /W7@macbook filed bug #2 'save crashes' in demo: Click save twice\. Assign it: cb edit 2 --assignee <worker> \(or take it\)\./);
     // Ahmed opens a huddle from the dashboard: the session hears it's him, and is waiting for a reply
     const seen = inbox.got.length;
     await sql`select cb.huddle_open('Rollout plan', ${sql.json([me])}, null, 'ahmed', 'demo')`;
@@ -385,4 +391,43 @@ test('an answer with no reply address reaches the session that asked it', async 
   const box = async (m: string, p: string) => (await sql`select cb.inbox(${m}, ${p}, 0) as i`)[0].i;
   assert.deepEqual((await box('pc', 'w2:p2')).answers.map((a: any) => a.answer), ['Merge it']);
   assert.equal((await box('mac', 'w1:p3')).answers.length, 0);
+});
+
+test('a new bug goes to its project\'s orchestrator (seen today), else to the project\'s recent sessions; never as next_work', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
+  await sql`select cb.task_add(project => 'claude-board', title => 'seed2')`;
+  for (const [m, p, a, pr] of [['pc', 'w2:p2', 'orch@shaltoot', 'ihop'], ['mac', 'w1:p3', 'W2@macbook', 'ihop'],
+                               ['mac', 'w1:p7', 'W7@macbook', 'ihop'], ['pc', 'w3:pA', 'board-dev@shaltoot', 'claude-board']]) {
+    await sql`select cb.iam(${m}, ${p}, ${a}, ${pr})`; await sql`select cb.inbox(${m}, ${p}, 0)`;
+  }
+  const [{ start }] = await sql`select max(id) as start from cb.events`;
+  const box = async (m: string, p: string) => (await sql`select cb.inbox(${m}, ${p}, ${start}) as i`)[0].i;
+  await sql`select cb.task_add(project => 'ihop', title => 'claims page blank', body => ${'Open /claims.\nExpected list.'}, status => 'next', type => 'bug', actor => 'W7@macbook')`;
+  await sql`select cb.task_add(project => 'claude-board', title => 'brief hangs', body => 'slow', status => 'next', type => 'bug', actor => 'W7@macbook')`;
+  await sql`select cb.task_add(project => 'ihop', title => 'already handed out', status => 'next', type => 'bug', assignee => 'W2@macbook', actor => 'W7@macbook')`;
+
+  const orch = await box('pc', 'w2:p2');
+  assert.deepEqual(orch.bugs.map((b: any) => [b.id, b.actor, b.title, b.body, b.project]),
+    [[3, 'W7@macbook', 'claims page blank', 'Open /claims.\nExpected list.', 'ihop']], 'unassigned ihop bugs only');
+  const w2 = await box('mac', 'w1:p3');
+  assert.equal(w2.bugs.length, 0, 'workers leave triage to the orchestrator');
+  assert.deepEqual(w2.next_work.map((t: any) => t.title), ['already handed out'], 'the unassigned bug is not next_work noise');
+  assert.deepEqual(w2.events.map((e: any) => e.title), ['already handed out'], 'an assigned bug reaches its assignee as usual');
+  assert.equal((await box('mac', 'w1:p7')).bugs.length, 0, 'the filer');
+  assert.deepEqual((await box('pc', 'w3:pA')).bugs.map((b: any) => b.title), ['brief hangs'], 'no orchestrator in claude-board: board-dev hears it');
+
+  // a relay restart or a sleeping Mac (quiet for minutes) keeps the orchestrator as the triager: no worker race
+  await sql`update cb.sessions set last_seen = now() - interval '2 hours' where actor = 'orch@shaltoot'`;
+  assert.equal((await box('mac', 'w1:p3')).bugs.length, 0);
+  // orchestrator gone for a day: the project's recently seen sessions hear the bug instead
+  await sql`update cb.sessions set last_seen = now() - interval '25 hours' where actor = 'orch@shaltoot'`;
+  assert.deepEqual((await box('mac', 'w1:p3')).bugs.map((b: any) => b.id), [3]);
+
+  // read once: the relay acknowledges through the broadcast_seen watermark
+  await sql`select cb.broadcast_seen('pc', 'w2:p2', ${orch.bugs[0].event_id})`;
+  assert.equal((await box('pc', 'w2:p2')).bugs.length, 0);
+  // assigned before the orchestrator read it: nothing left to triage
+  await sql`select cb.task_update('4', '{"assignee": "board-dev@shaltoot"}', 'ahmed')`;
+  assert.equal((await box('pc', 'w3:pA')).bugs.length, 0);
 });

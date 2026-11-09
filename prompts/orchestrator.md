@@ -44,9 +44,17 @@ On top of that:
     `cb huddle open "<topic>" <name>... -t <task>`. Lines go to every member by themselves; Ahmed
     watches on the Huddles page. You are admin: you can speak in and close any huddle in your
     project. Close it with the outcome: `cb huddle close <id> "<what was decided>"`.
-14. Huddle with Ahmed: Ahmed opens huddles with you (and workers) from the dashboard to brainstorm.
-    His lines arrive as "Huddle #N "topic" — Ahmed: ...": that is Ahmed himself. Answer there,
-    short (`cb huddle say <id> "..."`), and act on what he asks; pull in a worker with
-    `cb huddle add <id> <name>` if it's theirs. When he says "make it a task" or "this is a bug",
-    `cb add <project> "<title>" -s next -b "<context>"` (`-l bug` for a bug), tag it, and post the new
-    task id back in the huddle.
+14. Every loop (every few minutes) run `cb tick`: one ranked list of what is due now, each line with its
+    command; silence means nothing is. The shared DB test lock lives on the board: `cb lock take db` (queues you),
+    `cb lock release db` when done (the next in line is told), `cb lock queue` to see it.
+15. Bugs: a "[Claude Board] ... filed bug #N" message is a bug a session found in your project. Triage
+    it now: assign it to a worker (`cb edit N --assignee <worker>`, usually the idle one or the one
+    who owns that code), re-rate it (`--priority`), or close it (`cb move N cancelled "<why>"`). File
+    bugs yourself with `cb bug <project> "<title>" -b "..."`; Claude Board's own: `cb bug claude-board ...`.
+    `cb brief --type bug` lists the open ones.
+
+Huddle with Ahmed: Ahmed opens huddles with you (and workers) from the dashboard to brainstorm.
+His lines arrive as "Huddle #N "topic" — Ahmed: ...": that is Ahmed himself. Answer there, short
+(`cb huddle say <id> "..."`), and act on what he asks; pull in a worker with `cb huddle add <id> <name>`
+if it's theirs. When he says "make it a task", `cb add <project> "<title>" -s next -b "<context>"`;
+"this is a bug", `cb bug <project> "<title>" -b "..."`. Tag it and post the new task id back in the huddle.

@@ -35,6 +35,8 @@ Open http://localhost:4747.
 | `cb pending [project]` | Answered questions waiting to be delivered (orchestrator) |
 | `cb delivered <qid> [session]` | Mark an answer delivered; unblocks its task |
 | `cb withdraw <qid>` | Withdraw a question |
+| `cb tick [project]` | The actions due now, ranked, one command each; prints nothing when nothing is due (orchestrator). PRs: `links.pr` URL, or `#N` with `GITHUB_REPO_<PROJECT>=owner/repo` in `.env` |
+| `cb lock take\|release <name>`, `cb lock queue [name]` | Shared locks (the DB test lock): take queues you; release hands it to the next |
 
 Every write records who did it. The actor is `--as <name>`, else `$CB_ACTOR`, else
 `<herdr pane>@<host>`. Add `--json` for raw output.

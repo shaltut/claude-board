@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { rpc, useTask, type Status, type Task } from '@/lib/api'
+import { rpc, useTask, useUsers, type Status, type Task } from '@/lib/api'
 import { ago, STATUS } from '@/lib/format'
 import { go } from '@/lib/route'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -36,6 +36,7 @@ function PanelBody({ data }: { data: NonNullable<ReturnType<typeof useTask>['dat
   const [body, setBody] = useState(t.body)
   const [editBody, setEditBody] = useState(false)
   const [assignee, setAssignee] = useState(t.assignee ?? '')
+  const { data: users = [] } = useUsers()
   useEffect(() => { setTitle(t.title); setAssignee(t.assignee ?? '') }, [t.title, t.assignee])
   useEffect(() => { if (!editBody) setBody(t.body) }, [t.body, editBody])
 
@@ -74,7 +75,8 @@ function PanelBody({ data }: { data: NonNullable<ReturnType<typeof useTask>['dat
             </Select>
           </Field>
           <Field label="Assignee">
-            <Input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder="nobody" className="h-8"
+            <datalist id="cb-users">{users.map((u) => <option key={u.name} value={u.name}>{u.display}</option>)}</datalist>
+            <Input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder="nobody" className="h-8" list="cb-users"
               onBlur={() => assignee !== (t.assignee ?? '') && update({ assignee: assignee.trim() || null })}
               onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />
           </Field>

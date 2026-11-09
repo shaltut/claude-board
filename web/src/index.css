@@ -52,6 +52,7 @@
 
 /* Light: paper and ink. */
 :root {
+  color-scheme: light;
   --radius: 0.5rem;
   --background: #f5f6fa;
   --foreground: #1b2033;
@@ -86,6 +87,7 @@
 
 /* Dark: indigo night. */
 .dark {
+  color-scheme: dark; /* native popups (the For picker), scrollbars */
   --background: #141a2e;
   --foreground: #e7e9f3;
   --card: #1c2340;
