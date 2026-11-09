@@ -11,7 +11,8 @@ session learns the board from three places, and they all point at the same comma
 
 ## A new agent joins a project
 
-1. Start a Claude Code session in a herdr pane. The SessionStart hook starts its relay.
+1. Start a Claude Code session in a herdr pane. The SessionStart hooks start its relay and tell it
+   "run `cb start`" (`hooks/session-start.mjs`).
 2. Give it `prompts/session.md` (with `<project>` filled in), or let the repo's CLAUDE.md snippet send it to `cb start`.
 3. It runs `cb start`, which checks one thing at a time and prints the next command:
    - **not bound** → `cb iam W<n>@<machine> <project>`, with the list of projects

@@ -47,6 +47,17 @@ Every write records who did it. The actor is `--as <name>`, else `$CB_ACTOR`, el
 denies the tool and tells Claude to use `cb ask` and keep working, so no session stalls on a
 dialog. Set `CB_ALLOW_ASK=1` in a session's environment to allow the native tool there.
 
+## New sessions are pointed at the board
+
+`hooks/session-start.mjs` is a SessionStart hook. In a herdr pane it adds one line to the session's
+context: "Claude Board: if this session takes work from the board, run `cb start` first". It is its own
+hook entry, next to the relay's (`cli/relay.ts`), so editing it never restarts live relays. Add it to
+`~/.claude/settings.json` under `hooks.SessionStart` (and on the MacBook, with its path):
+
+```json
+{ "hooks": [ { "type": "command", "command": "node F:/Work/claude-board/hooks/session-start.mjs", "timeout": 5 } ] }
+```
+
 ## From psql
 
 All logic is SQL functions in schema `cb`, so psql gets the same history and rules as the CLI.
