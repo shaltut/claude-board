@@ -44,38 +44,40 @@ export function History({ route }: { route: Route }) {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <h2 className="text-xl font-semibold tracking-tight">History</h2>
-      <p className="text-sm text-muted-foreground">Everything Claude and you changed, newest first.</p>
+      <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em]">History</h1>
+      <p className="mt-1 text-sm text-muted-foreground">Everything Claude and you changed, newest first.</p>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
+      <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute top-2.5 left-2.5 size-3.5 text-muted-foreground" />
+          <Input value={term} onChange={(e) => setTerm(e.target.value)} placeholder="Search what happened…" className="h-8 pl-8" aria-label="Search history" />
+        </div>
+        <Input list="cb-actors" value={actor} onChange={(e) => setActor(e.target.value)} placeholder="Who, e.g. W1@macbook…" className="h-8 sm:w-52" aria-label="Filter by actor" spellCheck={false} />
+        <datalist id="cb-actors">{actors.map((x) => <option key={x} value={x} />)}</datalist>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1" role="group" aria-label="Filter by kind">
         {KINDS.map((k) => {
           const on = kinds.includes(k.key)
           return (
             <button key={k.key} onClick={() => setKinds((s) => on ? s.filter((x) => x !== k.key) : [...s, k.key])} aria-pressed={on}
-              className={cn('rounded-full border px-2.5 py-0.5 text-xs', on ? 'border-primary bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}>
+              className={cn('h-7 rounded-md border px-2.5 text-xs transition-colors duration-150',
+                on ? 'border-foreground bg-foreground text-background' : 'bg-card text-muted-foreground hover:border-input hover:text-foreground')}>
               {k.label}
             </button>
           )
         })}
-      </div>
-      <div className="mt-3 flex gap-2">
-        <div className="relative flex-1">
-          <Search className="absolute top-2.5 left-2.5 size-3.5 text-muted-foreground" />
-          <Input value={term} onChange={(e) => setTerm(e.target.value)} placeholder="Search what happened" className="h-8 pl-8" />
-        </div>
-        <Input list="cb-actors" value={actor} onChange={(e) => setActor(e.target.value)} placeholder="Who (e.g. W1@macbook)" className="h-8 w-52" aria-label="Filter by actor" />
-        <datalist id="cb-actors">{actors.map((x) => <option key={x} value={x} />)}</datalist>
+        {kinds.length > 0 && <button onClick={() => setKinds([])} className="ml-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Clear</button>}
       </div>
 
-      <div className="mt-6 space-y-6">
+      <div className="mt-8 space-y-8">
         {days.map((d) => (
           <section key={d.label}>
-            <h3 className="sticky top-14 z-10 border-b bg-background/95 py-1.5 text-sm font-semibold backdrop-blur">{d.label}</h3>
-            <ol className="divide-y divide-border/60">{d.items.map((e) => <EventRow key={e.id} e={e} showProject={!route.project} />)}</ol>
+            <h2 className="sticky top-(--hdr) z-10 -mx-1 mb-1 border-b bg-background/90 px-1 py-2 text-sm font-semibold backdrop-blur-sm">{d.label}</h2>
+            <ol>{d.items.map((e) => <EventRow key={e.id} e={e} showProject={!route.project} />)}</ol>
           </section>
         ))}
         {feed.isLoading && <p className="text-sm text-muted-foreground">Loading history…</p>}
-        {!feed.isLoading && events.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">No events match these filters.</p>}
+        {!feed.isLoading && events.length === 0 && <p className="py-10 text-center text-sm text-muted-foreground">No events match these filters.</p>}
         {feed.hasNextPage && (
           <Button variant="outline" className="w-full" disabled={feed.isFetchingNextPage} onClick={() => feed.fetchNextPage()}>
             {feed.isFetchingNextPage ? 'Loading…' : 'Show older'}
