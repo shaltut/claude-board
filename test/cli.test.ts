@@ -251,3 +251,33 @@ test('cb ask warns when no relay listens on the asking name (#550)', async () =>
   await sql`update cb.sessions set last_seen = now() - interval '5 minutes'`; // relay gone quiet
   assert.match(ask('--as', 'board-dev@shaltoot').err, /^warning: no relay listens on board-dev@shaltoot, so the answer will wait in cb pending --as board-dev@shaltoot$/);
 });
+
+test('cb mem find: nothing in the bound project searches every project and says so (#660)', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'seed')`;
+  await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
+  await sql`select cb.iam('pc', 'w1:p2', 'W1@test', 'demo')`;
+  const env = { HERDR_PANE_ID: 'w1:p2', CB_MACHINE: 'pc', CB_ACTOR: '' };
+  assert.equal(cb(['mem', 'add', 'ihop', 'Pipeline 495: the last GitOps bump wins', '-k', 'gotcha', '--as', 'W2@test']).code, 0);
+  const r = cb(['mem', 'find', 'pipeline'], env);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^nothing about "pipeline" in demo; in other projects:\n.*M\d+ Pipeline 495/);
+  assert.match(cb(['mem', 'find', 'nothing-like-this'], env).out, /^nothing about "nothing-like-this" in demo or any other project/);
+  assert.match(cb(['mem', 'find', 'pipeline', '--project', 'demo'], env).out, /^nothing about "pipeline" in demo \(/, 'an explicit --project stays put');
+});
+
+test('bin/cb passes quotes, < > | and newlines through untouched (#660)', async (t) => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'seed')`;
+  const probe = spawnSync('sh', ['-c', 'exit 0']);
+  if (probe.error) return t.skip('no sh on this machine');
+  const arg = '"<words>" a | b\nline2';
+  // A node Volta started puts Volta's real node first on PATH; an agent's shell has only Volta's shim. Drop it.
+  const key = Object.keys(process.env).find((k) => k.toLowerCase() === 'path') ?? 'PATH';
+  const path = (process.env[key] ?? '').split(';').filter((p) => !/volta[\\/]tools[\\/]image/i.test(p)).join(';');
+  const r = spawnSync('sh', ['bin/cb', 'mem', 'find', arg, '--project', 'demo'], {
+    encoding: 'utf8', env: { ...process.env, [key]: path, CB_DATABASE_URL: TEST_URL, CB_ACTOR: 'W1@test', HERDR_PANE_ID: '' },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes('"<words>" a | b\nline2'), r.stdout);
+});

@@ -1,2 +1,6 @@
 #!/bin/sh
-exec node "$(dirname "$0")/../cli/cb.ts" "$@"
+# Volta's node shim mangles arguments with quotes, < > | or newlines (#660), so run the node Volta pins for this
+# repo directly when Volta is here; anywhere else (the Mac) plain node.
+d=$(dirname "$0")/..
+n=$(cd "$d" && volta which node 2>/dev/null) || n=node
+exec "${n:-node}" "$d/cli/cb.ts" "$@"

@@ -241,8 +241,16 @@ async function mem(): Promise<{ out?: string; json?: unknown }> {
     }
     if (sub === 'find') {
       if (!a.length) throw new Error('usage: cb mem find "<words>" [--project <p>] [--all]');
-      const rows: any = await callFn('mem_find', { q: a.join(' '), project: o.project ?? sessionProject ?? null, include_old: !!o.all });
-      return { out: rows.map(memLine).join('\n') || `nothing about "${a.join(' ')}"${o.all ? '' : ' (--all adds retired and replaced entries)'}`, json: rows };
+      const q = a.join(' '), scope = o.project ?? sessionProject ?? null, include_old = !!o.all;
+      const oldHint = include_old ? '' : ' (--all adds retired and replaced entries)';
+      const rows: any = await callFn('mem_find', { q, project: scope, include_old });
+      if (rows.length || !scope) return { out: rows.map(memLine).join('\n') || `nothing about "${q}"${oldHint}`, json: rows };
+      if (o.project) return { out: `nothing about "${q}" in ${scope} (drop --project to search every project${include_old ? '' : '; --all adds retired and replaced entries'})`, json: [] };
+      // #660: a session that inherited a pane binding searches that project without knowing it: widen once, and say so
+      const wide = (await callFn('mem_find', { q, project: null, include_old }) as any[]).filter((m) => m.project && m.project !== scope);
+      return wide.length
+        ? { out: [`nothing about "${q}" in ${scope}; in other projects:`, ...wide.map(memLine)].join('\n'), json: wide }
+        : { out: `nothing about "${q}" in ${scope} or any other project${oldHint}`, json: [] };
     }
     if (sub === 'list') {
       const rows: any = await callFn('mem_list', { project: a[0] ?? sessionProject ?? null, kind: o.kind ?? null, include_old: !!o.all });
