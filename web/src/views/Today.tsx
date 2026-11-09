@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, BookMarked, Search } from 'lucide-react'
 import { get, qs, rpc, useMemStats, useQuestions, useUsers, type CbEvent, type Question } from '@/lib/api'
 import { ago, clock, day } from '@/lib/format'
-import { go, type Route } from '@/lib/route'
+import { go, href, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -178,7 +178,7 @@ function MemoryCard({ project }: { project?: string }) {
   const { data: m } = useMemStats(project)
   if (!m || (m.proposed === 0 && m.past_review === 0)) return null
   return (
-    <a href="#/memory" onClick={(e) => { e.preventDefault(); go({ view: 'memory' }) }}
+    <a href={href({ view: 'memory', project })} onClick={(e) => { e.preventDefault(); go({ view: 'memory', project, task: undefined }) }}
       className="mt-6 flex items-center gap-3 rounded-lg border bg-card px-4 py-3 text-sm transition-colors hover:border-foreground/35">
       <BookMarked className="size-4 shrink-0 text-muted-foreground" aria-hidden />
       <span className="font-medium">Memory</span>

@@ -251,7 +251,8 @@ async function mem(): Promise<{ out?: string; json?: unknown }> {
       const src = Object.entries(m.source ?? {}).map(([k, v]) => `${k}=${v}`).join(' ');
       const lk = Object.entries(m.links ?? {}).map(([k, v]) => `${k}=${v}`).join(' ');
       return { out: [memLine(m), m.body, `${m.project ?? 'global'}${m.machine ? `, ${m.machine} only` : ''} · by ${m.created_by} ${String(m.created_at).slice(0, 10)}` +
-        `${m.confirmed_by ? ` · confirmed by ${m.confirmed_by}` : ''}${src ? ` · ${src}` : ''}${lk ? ` · ${lk}` : ''}`].filter(Boolean).join('\n'), json: m };
+        `${m.confirmed_by ? ` · confirmed by ${m.confirmed_by}` : ''}${src ? ` · ${src}` : ''}${lk ? ` · ${lk}` : ''}`,
+        m.retired_why && `why retired: ${m.retired_why}`].filter(Boolean).join('\n'), json: m };
     }
     if (sub === 'supersede') {
       if (a.length < 2) throw new Error('usage: cb mem supersede M<id> "<new title>" [-b "<body>"]');

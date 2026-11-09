@@ -118,7 +118,9 @@ function format(raw: any): string {
   for (const x of i.memory ?? []) {
     const team = x.actor !== 'ahmed', by = team ? x.actor : 'Ahmed', note = team ? ' (team, not Ahmed)' : '';
     if (x.action === 'supersede') lines.push(`M${x.memory} superseded by M${x.by} (${team ? `${x.actor}, team, not Ahmed` : 'Ahmed'}): ${x.by_title}`);
-    else if (x.action === 'retire') lines.push(`${by} retired ${x.kind} M${x.memory}${note}: ${x.title}${x.why ? ` (${x.why})` : ''}`);
+    // an order-shaped reason stays on the board (why_hidden); the 200 cut repeats the database's cap
+    else if (x.action === 'retire') lines.push(`${by} retired ${x.kind} M${x.memory}${note}: ${x.title}` +
+      (x.why_hidden ? ` (reason: see cb mem show M${x.memory})` : x.why ? ` (${cut(x.why, 200)})` : ''));
     else lines.push(`${by} ${x.action === 'confirm' ? 'confirmed' : 'added'} ${x.kind} M${x.memory}${note}: ${x.title}${x.replaces ? ` (replaces M${x.replaces})` : ''}`);
   }
   if (i.next_work.length) {

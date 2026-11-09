@@ -307,6 +307,40 @@ test('"Already ruled": the dashboard answers with a live memory entry; the sessi
   await rpc('answer', { id: '2', ruled_by: String(rule.id) });
   await rpc('answer', { id: '2', answer: 'Yes, port it' });
   assert.equal((await sql`select ruled_by from cb.questions where id = 2`)[0].ruled_by, null);
+
+  // only the dashboard rules; only a live, current entry in scope rules
+  await sql`select cb.ask(project => 'demo', body => 'third?', actor => 'W1@pc')`;
+  const no = async (args: object, re: RegExp, headers?: Record<string, string>) => {
+    const r = await rpc('answer', { id: '3', ...args }, headers);
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, re);
+  };
+  await no({ ruled_by: `M${rule.id}`, actor: 'W2@pc' }, /only Ahmed can do this/, { host: 'localhost:4747' });
+  await sql`select cb.ensure_project('other')`;
+  const mk = async (title: string, project = 'demo') => (await sql`select cb.mem_add(project => ${project}, title => ${title}, kind => 'fact', actor => 'ahmed') as m`)[0].m.id;
+  const [ret, sup, oth, past] = [await mk('Retired fact'), await mk('Superseded fact'), await mk('Other fact', 'other'), await mk('Past review fact')];
+  await sql`select cb.mem_retire(${String(ret)}, null, 'ahmed')`;
+  await sql`select cb.mem_supersede(${String(sup)}, 'Newer fact', null, 'ahmed')`;
+  await sql`update cb.memories set review_after = current_date - 1 where id = ${past}`;
+  await no({ ruled_by: `M${ret}` }, /retired: only a live entry/);
+  await no({ ruled_by: `M${sup}` }, /superseded: only a live entry/);
+  await no({ ruled_by: `M${oth}` }, /is in other, not demo/);
+  await no({ ruled_by: `M${past}` }, /past its review date/);
+  const glob = (await sql`select cb.mem_add(project => 'global', title => 'Ask with cb ask', kind => 'rule', actor => 'ahmed') as m`)[0].m.id;
+  assert.equal((await rpc('answer', { id: '3', ruled_by: `M${glob}` })).status, 200, 'a global entry rules anywhere');
+});
+
+test('a guest answer ignores ruled_by in its body', async () => {
+  const sql = await db();
+  const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
+  await onProject(sql, 'omar', 'demo');
+  const rule = (await sql`select cb.mem_add(project => 'demo', title => 'A ruling', kind => 'ruling', actor => 'ahmed') as m`)[0].m;
+  await sql`select cb.ask(project => 'demo', body => 'scope?', to_user => 'omar', actor => 'orch@pc')`;
+  const r = await remote('/api/rpc/answer', { cookie: token, method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: '1', answer: 'A', ruled_by: `M${rule.id}` }) });
+  assert.equal(r.status, 200);
+  const [q] = await sql`select answer, ruled_by from cb.questions where id = 1`;
+  assert.deepEqual({ ...q }, { answer: 'A', ruled_by: null });
 });
 
 test('memory stats: the weekly metric and the Today counts; owner only', async () => {
@@ -316,13 +350,13 @@ test('memory stats: the weekly metric and the Today counts; owner only', async (
     (await sql`select cb.mem_add(project => ${project}, title => ${title}, kind => ${kind}, actor => ${actor}) as m`)[0].m;
   const r = await add('Every merge needs a GO', 'rule');
   const f1 = await add('Heavy runs go to the Mac', 'fact');
-  await add('develop has failing suites', 'gotcha');
+  const g = await add('develop has failing suites', 'gotcha');
   await add('The PC orchestrates', 'fact');
   await add('Other project fact', 'fact', 'ahmed', 'other');
   await sql`update cb.memories set review_after = current_date - 1 where id = ${f1.id}`;
   await sql`update cb.memories set status = 'proposed' where id = ${r.id}`; // stands in for a session's proposal
   await sql`select cb.ask(project => 'demo', body => 'merge?', actor => 'W1@pc')`;
-  await sql`select cb.answer(id => '1', answer => '', ruled_by => ${'M' + f1.id})`; // past review, still live
+  await sql`select cb.answer(id => '1', ruled_by => ${'M' + g.id})`; // tests connect as the dashboard
   for (const n of ['Correction: the receipt finding was already fixed', 'STALE finding, closed', 'I was wrong about the lock', 'all green'])
     await sql`select cb.log('demo', ${n}, null, '{}', 'W1@pc')`;
   await sql`select cb.log('demo', 'old correction', null, '{}', 'W1@pc')`;
@@ -334,6 +368,9 @@ test('memory stats: the weekly metric and the Today counts; owner only', async (
   assert.equal((await stats('?project=other')).already_ruled, 0);
   const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
   assert.equal((await remote('/api/memory/stats', { cookie: token })).status, 403);
+  const bad = await app.request('/api/memory/stats?project=nope');
+  assert.equal(bad.status, 400);
+  assert.match((await bad.json()).error, /unknown project/);
 });
 
 test('the Memory page lists a flagged proposal for Ahmed; a plain local read does not', async () => {
@@ -346,4 +383,9 @@ test('the Memory page lists a flagged proposal for Ahmed; a plain local read doe
   const find = async (q: string) => (await (await app.request(`/api/memories?project=demo&q=${q}`, { headers: { 'sec-fetch-site': 'same-origin' } })).json());
   assert.deepEqual((await find('curl')).map((m: any) => m.title), ['Fetch it with curl first'], 'q= searches (the Already ruled picker)');
   assert.deepEqual(await find('lunch'), []);
+  await sql`select cb.mem_add(project => 'demo', title => 'Fixtures load from the seed script', kind => 'fact', actor => 'ahmed')`;
+  const stale = (await sql`select cb.mem_add(project => 'demo', title => 'Fixtures were in S3', kind => 'fact', actor => 'ahmed') as m`)[0].m.id;
+  await sql`update cb.memories set review_after = current_date - 1 where id = ${stale}`;
+  assert.deepEqual((await find('fixtures&live=1')).map((m: any) => m.title), ['Fixtures load from the seed script'],
+    'live=1: only what an answer may cite, so proposals and stale facts do not crowd the top 20');
 });

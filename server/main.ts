@@ -167,10 +167,10 @@ app.get('/api/epics', async (c) => c.json(await q.epics(opt(c.req.query('project
 // The dashboard page (a browser's own fetch says Sec-Fetch-Site: same-origin, as on /api/people) reads as Ahmed, so
 // his "Waiting for you" includes flagged proposals; any other local read is a session's and doesn't see them.
 // ponytail: a deterrent like /api/people, not auth.
-// q= searches instead (mem_find: full text, best first), as the "Already ruled" picker does.
+// q= searches instead (mem_find: full text, best first); live=1 keeps live entries not past review (the "Already ruled" picker).
 app.get('/api/memories', async (c) => {
   const q = opt(c.req.query('q')), project = opt(c.req.query('project')) ?? null, include_old = c.req.query('all') === '1';
-  const [fn, args] = q ? ['mem_find', { q, project, include_old }] : ['mem_list', { project, include_old }];
+  const [fn, args] = q ? ['mem_find', { q, project, include_old, live_only: c.req.query('live') === '1' }] : ['mem_list', { project, include_old }];
   return c.json(c.req.header('sec-fetch-site') === 'same-origin'
     ? await sql.begin(async (tx) => { await tx`set local application_name = 'cb-web'`; return callFn(fn, args, tx); })
     : await callFn(fn, args));

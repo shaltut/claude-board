@@ -775,17 +775,22 @@ end $$;
 create function cb.answer(id text, answer text default null, actor text default 'ahmed', ruled_by text default null)
 returns void language plpgsql as $$
 #variable_conflict use_variable
-declare qid bigint := cb.norm_id(id); cur text; a text; par bigint; rid bigint; rst text;  -- no cb.memories type: it is created further down
+-- no cb.memories row type: it is created further down
+declare qid bigint := cb.norm_id(id); cur text; a text; par bigint; qp text; rid bigint; rst text; rp text; stale boolean;
 begin
   a := cb.set_actor(actor);
+  select q.status, q.parent_id, q.project into cur, par, qp from cb.questions q where q.id = qid for update;
+  if cur is null then raise exception 'question Q% not found', qid; end if;
   if nullif(trim(ruled_by), '') is not null then
-    select x.id, x.status, 'Already ruled: M' || x.id || ' ' || x.title || coalesce(' — ' || nullif(left(x.body, 500), ''), '')
-      into rid, rst, answer from cb.memories x where x.id = cb.norm_mem(ruled_by);
+    perform cb.dashboard_only('Today');  -- the metric counts Ahmed's "Already ruled", and the answer carries his authority
+    select x.id, x.status, x.project, coalesce(x.review_after < current_date, false),
+           'Already ruled: M' || x.id || ' ' || x.title || coalesce(' — ' || nullif(left(x.body, 500), ''), '')
+      into rid, rst, rp, stale, answer from cb.memories x where x.id = cb.norm_mem(ruled_by);
     if rst <> 'active' then raise exception 'M% is %: only a live entry answers a question', rid, rst; end if;
+    if stale then raise exception 'M% is past its review date: renew it on the Memory page first', rid; end if;
+    if rp is not null and rp <> qp then raise exception 'M% is in %, not %: only a global entry or one in Q%''s project', rid, rp, qp, qid; end if;
   end if;
   if coalesce(trim(answer), '') = '' then raise exception 'answer is required'; end if;
-  select q.status, q.parent_id into cur, par from cb.questions q where q.id = qid for update;
-  if cur is null then raise exception 'question Q% not found', qid; end if;
   if cur in ('delivered', 'withdrawn') then raise exception 'question Q% is already %', qid, cur; end if;
   if cur = 'dormant' then raise exception 'Q% waits on Q%: it opens when that one is answered', qid, par; end if;
   update cb.questions q set status = 'answered', answer = trim(answer), answered_at = now(), answered_by = a, ruled_by = rid where q.id = qid;
@@ -1088,13 +1093,16 @@ begin
     -- supersede (one line naming the replacement: its add is skipped), a retire with its why. Never a proposal, a
     -- reject or a renew (none of those changed what sessions are told), and never back to the session that made it.
     'memory', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'action', e.data ->> 'action', 'actor', e.actor, 'memory', x.id,
-                                                            'kind', x.kind, 'title', x.title, 'why', e.data ->> 'why',
+                                                            'kind', x.kind, 'title', x.title,
+                                                            'why', case when e.data ? 'why_flagged' then null else e.data ->> 'why' end,
+                                                            'why_hidden', e.data ? 'why_flagged',
                                                             'replaces', x.source ->> 'supersedes', 'by', n.id, 'by_title', n.title) order by e.id)
                           from cb.events e join cb.memories x on x.id = (e.data ->> 'memory')::bigint
                           left join cb.memories n on n.id = x.superseded_by
                          where e.kind = 'memory' and me is not null and proj is not null and e.id > after_event and e.actor <> me
                            and e.data ->> 'action' in ('add', 'confirm', 'supersede', 'retire')
                            and not (e.data ->> 'action' = 'add' and x.source ? 'supersedes')
+                           and (e.data ->> 'action' not in ('add', 'confirm') or x.status = 'active')  -- retired since: old news
                            and (x.project is null or x.project = proj) and (x.machine is null or x.machine = m)), '[]'),
     'last_event', (select coalesce(max(e.id), 0) from cb.events e));
 end $$;
@@ -1868,6 +1876,7 @@ drop function if exists cb.norm_mem cascade;
 drop function if exists cb._mem_scope cascade;
 drop function if exists cb._mem_check cascade;
 drop function if exists cb._mem_text cascade;
+drop function if exists cb._mem_flagged cascade;
 drop function if exists cb._mem_event cascade;
 drop function if exists cb._mem_json cascade;
 drop function if exists cb._mem_visible cascade;
@@ -1932,6 +1941,14 @@ begin
   end if;
 end $$;
 
+-- Reads like an order to the agent, claims Ahmed's say-so, or points somewhere to fetch: Ahmed sees it before any
+-- session does (a new entry waits as a flagged proposal; a retire reason is kept but not pushed).
+create function cb._mem_flagged(t text) returns boolean language sql immutable as $$
+  select coalesce($1, '') ~* ('(\mignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above|earlier)\M|\mdisregard\M|\malways\s+run\M|\mrun\s+this\M'
+    || '|\mcurl\M|\mwget\M|(https?|ftp)://|\mahmed\s+(said|says|approved|agreed|wants)\M|\mfrom\s+now\s+on\M|--no-verify|\mforce[- ]?push'
+    || '|\myou\s+(must|should|need\s+to)\M|\mbypass\M|\mskip(ping)?\s+(the\s+)?(tests?|review|hooks?|ci)\M)')
+$$;
+
 -- One-line title (≤ 200), body ≤ 500 unless a runbook, no secrets. Returns {title, body} cleaned.
 create function cb._mem_text(k text, t text, b text) returns text[] language plpgsql immutable as $$
 begin
@@ -1993,9 +2010,7 @@ begin
   mach := nullif(lower(trim(mach)), '');
   if mach !~ '^[a-z0-9][a-z0-9_.-]{0,31}$' then raise exception 'machine "%" is not a machine name like macbook', mach; end if;
   -- reads like an order to the agent, claims Ahmed's say-so, or points somewhere to fetch: Ahmed sees it before any session does
-  flagged := (tb[1] || ' ' || tb[2] || ' ' || lk::text) ~* ('(\mignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above|earlier)\M|\mdisregard\M|\malways\s+run\M|\mrun\s+this\M'
-    || '|\mcurl\M|\mwget\M|(https?|ftp)://|\mahmed\s+(said|says|approved|agreed|wants)\M|\mfrom\s+now\s+on\M|--no-verify|\mforce[- ]?push'
-    || '|\myou\s+(must|should|need\s+to)\M|\mbypass\M|\mskip(ping)?\s+(the\s+)?(tests?|review|hooks?|ci)\M)');
+  flagged := cb._mem_flagged(tb[1] || ' ' || tb[2] || ' ' || lk::text);
   live := dash or (k in ('fact', 'gotcha') and p is not null and not flagged and not hold);
   insert into cb.memories (project, machine, kind, title, body, status, authority, source, links, tags, created_by,
                            confirmed_by, confirmed_at, review_after)
@@ -2084,6 +2099,9 @@ create function cb.mem_retire(id text, why text default null, actor text default
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); m cb.memories; was text;
 begin
+  -- the reason is pushed to the project's sessions (#553): one line, ≤ 200, no secrets; order-shaped = kept, not pushed
+  why := nullif(left(regexp_replace(trim(coalesce(why, '')), '\s+', ' ', 'g'), 200), '');
+  perform cb._mem_check(coalesce(why, ''));
   select * into m from cb.memories x where x.id = cb.norm_mem(id) for update;
   was := m.status;
   if was in ('superseded', 'retired') then raise exception 'M% is already %', m.id, was; end if;
@@ -2093,8 +2111,8 @@ begin
   update cb.memories x set status = 'retired', updated_at = now() where x.id = m.id returning * into m;
   perform cb._mem_event(m, case when was = 'proposed' then 'reject' else 'retire' end,
     'M' || m.id || case when was = 'proposed' then ' rejected: ' else ' retired: ' end || m.title
-      || coalesce(' (' || nullif(trim(why), '') || ')', ''), a,
-    jsonb_build_object('why', nullif(trim(why), '')));
+      || coalesce(' (' || why || ')', ''), a,
+    jsonb_build_object('why', why) || case when cb._mem_flagged(why) then '{"why_flagged": true}'::jsonb else '{}' end);
 end $$;
 
 -- Replace a live entry; the old one stays readable with a pointer. A session replacing Ahmed's entry only proposes:
@@ -2115,8 +2133,9 @@ begin
 end $$;
 
 -- Search titles and bodies (full text, plus a plain substring match for words FTS drops). A project includes the
--- global entries; no project = everywhere. Live and proposed entries; include_old adds superseded and retired.
-create function cb.mem_find(q text, project text default null, include_old boolean default false) returns jsonb language plpgsql stable as $$
+-- global entries; no project = everywhere. Live and proposed entries; include_old adds superseded and retired;
+-- live_only keeps live entries not past review (the "Already ruled" picker: what an answer may cite).
+create function cb.mem_find(q text, project text default null, include_old boolean default false, live_only boolean default false) returns jsonb language plpgsql stable as $$
 #variable_conflict use_variable
 declare p text := cb._mem_scope(project); s text := trim(coalesce(q, '')); tq tsquery;
 begin
@@ -2127,7 +2146,8 @@ begin
       from cb.memories m
      where (m.tsv @@ tq or m.title ilike '%' || s || '%' or m.body ilike '%' || s || '%')
        and (p is null or m.project = p or m.project is null) and cb._mem_visible(m)
-       and (coalesce(include_old, false) or m.status in ('active', 'proposed'))) y
+       and (coalesce(include_old, false) or m.status in ('active', 'proposed'))
+       and (not coalesce(live_only, false) or (m.status = 'active' and not coalesce(m.review_after < current_date, false)))) y
    where y.n <= 20), '[]');
 end $$;
 
@@ -2149,7 +2169,9 @@ declare m cb.memories;
 begin
   select * into m from cb.memories x where x.id = cb.norm_mem(id);
   if not cb._mem_visible(m) then raise exception 'memory M% not found', m.id; end if;
-  return cb._mem_json(m);
+  -- why it was retired: the relay leaves an order-shaped reason out and points here
+  return cb._mem_json(m) || jsonb_build_object('retired_why', (select e.data ->> 'why' from cb.events e
+    where e.kind = 'memory' and e.data ->> 'memory' = m.id::text and e.data ->> 'action' in ('retire', 'reject') order by e.id desc limit 1));
 end $$;
 
 -- What a session is told when it binds (cb iam) and in cb brief: Ahmed's rules and rulings (global first), then live

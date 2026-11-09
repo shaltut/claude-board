@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { BookMarked } from 'lucide-react'
 import { toast } from 'sonner'
@@ -12,12 +12,14 @@ import { Button } from '@/components/ui/button'
  *  Once saved, the button becomes a link to the ruling. */
 export function MakeRule({ q }: { q: Question }) {
   const qc = useQueryClient()
-  const { data: mems = [] } = useMemories(q.project)
+  const { data: mems = [], isLoading } = useMemories(q.project)
   const [open, setOpen] = useState(false)
   const [title, setTitle] = useState('')
-  if (!q.answer || (q.status !== 'answered' && q.status !== 'delivered')) return null
-  // answered "Already ruled": it already is one
-  const has = q.ruled_by ? mems.find((m) => m.id === q.ruled_by) ?? { id: q.ruled_by, title: '', status: 'active' }
+  if (isLoading || !q.answer || (q.status !== 'answered' && q.status !== 'delivered')) return null
+  // answered "Already ruled": it already is one. Not in the live list = retired or replaced since: no live link.
+  if (q.ruled_by && !mems.some((m) => m.id === q.ruled_by && m.status === 'active'))
+    return <span className="inline-flex items-center gap-1 px-1.5 text-xs text-muted-foreground"><BookMarked className="size-3" /> Ruled by M{q.ruled_by}, no longer live</span>
+  const has = q.ruled_by ? mems.find((m) => m.id === q.ruled_by)
     : mems.find((m) => Number(m.source.question_id) === q.id && (m.status === 'active' || m.status === 'proposed'))
   if (has) return (
     <button onClick={() => go({ view: 'memory', project: q.project, task: undefined })} title={has.title}
@@ -66,7 +68,10 @@ export function MakeRule({ q }: { q: Question }) {
 export function AlreadyRuled({ q, disabled, onPick }: { q: Question; disabled?: boolean; onPick: (m: Memory) => void }) {
   const [open, setOpen] = useState(false)
   const [term, setTerm] = useState('')
-  const { data: found = [], isFetching } = useMemFind(term, q.project)
+  const [search, setSearch] = useState('') // term, 250 ms after the last keystroke
+  useEffect(() => { const t = setTimeout(() => setSearch(term), 250); return () => clearTimeout(t) }, [term])
+  const { data: found = [], isFetching } = useMemFind(search, q.project)
+  const branches = q.branches?.some((b) => b.if_answer)
   return (
     <>
       <button disabled={disabled} onClick={() => setOpen(true)}
@@ -82,9 +87,10 @@ export function AlreadyRuled({ q, disabled, onPick }: { q: Question; disabled?: 
             </DialogDescription>
           </DialogHeader>
           <p className="rounded-md border bg-raised/40 px-3 py-2 text-sm text-pretty text-muted-foreground">{q.body}</p>
+          {branches && <p className="text-xs text-st-blocked">A ruled answer picks no option: the if-branches will be skipped.</p>}
           <Input autoFocus value={term} onChange={(e) => setTerm(e.target.value)} placeholder="Search live rules, rulings, facts…" aria-label="Search memory" />
           <ul className="-mx-2 max-h-72 overflow-y-auto" aria-live="polite">
-            {term.trim().length > 1 && !isFetching && found.length === 0 && <li className="px-2 py-3 text-sm text-muted-foreground">No live entry matches.</li>}
+            {search.trim().length > 1 && !isFetching && found.length === 0 && <li className="px-2 py-3 text-sm text-muted-foreground">No live entry matches.</li>}
             {found.map((m) => (
               <li key={m.id}>
                 <button onClick={() => { setOpen(false); onPick(m) }}

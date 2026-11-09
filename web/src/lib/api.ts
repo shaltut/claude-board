@@ -93,8 +93,8 @@ export const useMemories = (project?: string, all?: boolean) =>
 export interface MemStats { proposed: number; past_review: number; live_facts: number; stale_pct: number | null; already_ruled: number; corrections: number }
 export const useMemStats = (project?: string) =>
   useQuery({ queryKey: ['memories', 'stats', project], queryFn: () => get<MemStats>(`/api/memory/stats${qs({ project })}`) })
-/** Live entries matching words (full text, best first), for the "Already ruled" picker. */
+/** Live entries not past review matching words (full text, best first), for the "Already ruled" picker. */
 export const useMemFind = (term: string, project?: string) =>
   useQuery({ queryKey: ['memories', 'find', project, term], enabled: term.trim().length > 1,
-    queryFn: async () => (await get<Memory[]>(`/api/memories${qs({ project, q: term.trim() })}`)).filter((m) => m.status === 'active') })
+    queryFn: () => get<Memory[]>(`/api/memories${qs({ project, q: term.trim(), live: '1' })}`) })
 export { qs }
