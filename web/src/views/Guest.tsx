@@ -9,8 +9,8 @@ import { QuestionCard } from '@/components/QuestionCard'
 import { PRIORITIES, ProjectChip } from '@/components/Chips'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { Mark, ThemeToggle } from '@/components/TopBar'
-import { useTabLamp } from '@/components/Mark'
+import { Mark, useTabLamp } from '@/components/Mark'
+import { ThemeToggle } from '@/components/ThemeToggle'
 
 type GuestTask = Task & { my_notes: { summary: string; at: string }[] }
 

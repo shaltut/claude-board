@@ -1,11 +1,11 @@
-import { Moon, Search, Sun } from 'lucide-react'
+import { Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useQuestions } from '@/lib/api'
 import { go, href, type Route, type View } from '@/lib/route'
-import { useTheme } from '@/lib/theme'
 import { Kbd } from '@/components/ui/kbd'
 import { ProjectSwitcher } from './ProjectSwitcher'
 import { Mark, useTabLamp } from './Mark'
+import { ThemeToggle } from './ThemeToggle'
 
 const TABS: { view: View; label: string; key: string }[] = [
   { view: 'today', label: 'Today', key: '1' },
@@ -70,14 +70,3 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
   )
 }
 
-export { Mark }
-
-export function ThemeToggle() {
-  const { theme, toggle } = useTheme()
-  return (
-    <button onClick={toggle} className="grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-raised hover:text-foreground"
-      aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>
-      {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
-    </button>
-  )
-}
