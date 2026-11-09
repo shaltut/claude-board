@@ -71,9 +71,9 @@ function TunnelNote({ publicUrl, loaded }: { publicUrl: string | null; loaded: b
   if (!loaded) return null
   return (
     <p className="mb-5 max-w-[80ch] text-[13px] text-muted-foreground text-pretty">
-      A link works from outside this PC once the board is shared through the tunnel. Opened here, it shows your own board.
+      A link works only from outside this PC, through the board's tunnel. Opened here, it shows your own board.
       {publicUrl ? <> Links point at <span className="font-mono text-xs text-foreground">{publicUrl}</span>.</>
-        : <> <span className="font-medium text-foreground">PUBLIC_URL isn't set</span>, so links point at this PC and won't reach anyone: put the tunnel's public URL in the board's <code className="font-mono text-xs">.env</code> (see docs/users.md).</>}
+        : <> <span className="font-medium text-foreground">PUBLIC_URL isn't set</span>, so links point at this PC: set it in the board's <code className="font-mono text-xs">.env</code> (see docs/users.md).</>}
     </p>
   )
 }

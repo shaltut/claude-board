@@ -14,37 +14,24 @@ board is readable through the tunnel. The link is the whole login, so send it pr
 
    It prints Omar's link. Running it again prints the same link.
 
-2. **Start the tunnel** to the board's port:
+2. **Check the tunnel is up.** The board is shared through a Cloudflare named tunnel,
+   `claude-board`, which runs as the `cloudflared` Windows service and forwards its https
+   hostname to the board on this PC (port 4747). As a service it runs without a terminal, so there
+   is nothing to start per session. Check it with `Get-Service cloudflared` (Status should be Running); the
+   team lead set it up, and `cloudflared tunnel info claude-board` shows its connections.
+
+3. **Set the public URL**, so links point at the tunnel and not at localhost. PUBLIC_URL is the
+   tunnel's https hostname. Add it to `.env` in the board's own checkout
+   (`F:\Work\claude-board\.env`; `cb` and the board read the repo's `.env`, not the current folder's):
 
    ```
-   ngrok http 4747
-   ```
-
-   Copy the `https://….ngrok-free.app` URL from the "Forwarding" line.
-
-   - **ngrok is broken on this PC right now (checked 2026-11-09).** The Chocolatey shim
-     `C:\ProgramData\chocolatey\bin\ngrok.exe` points at
-     `C:\ProgramData\chocolatey\lib\ngrok\tools\ngrok.exe`, and that file is missing. Reinstall it
-     from an admin shell with `choco install ngrok --force` (or `winget install ngrok.ngrok`), then
-     check with `ngrok version` and `ngrok config check`.
-   - **The authtoken is already set** in `%LOCALAPPDATA%\ngrok\ngrok.yml`. If `ngrok config check`
-     ever says it's missing, copy the token from dashboard.ngrok.com (Your Authtoken) and run
-     `ngrok config add-authtoken <token>`.
-   - A free URL changes each time ngrok restarts, unless you use your free static domain (see
-     `ngrok http --help` for the domain flag). If the URL changes, repeat steps 3 and 4.
-   - The first time Omar opens the link, ngrok's free plan shows a "You are about to visit…"
-     page. He clicks **Visit Site** and the link works from then on.
-
-3. **Set the public URL**, so the link points at the tunnel and not at localhost. Add it to
-   `.env` in the board's own checkout (`F:\Work\claude-board\.env`; `cb` reads the repo's `.env`,
-   not the current folder's):
-
-   ```
-   PUBLIC_URL=https://<your-subdomain>.ngrok-free.app
+   PUBLIC_URL=https://<the tunnel's hostname>
    ```
 
    Or set it for one command only: `$env:CB_PUBLIC_URL = "https://…"` (PowerShell).
-   Then run `cb user add omar` again to print the link with the new URL.
+   The hostname is fixed, so this is a one-time step, and the board picks it up without a restart
+   (it reads `.env` on each request). Then run `cb user add omar` again, or open
+   People (key 7) and **Copy link**, to get the link with the tunnel's URL.
 
 4. **Send Omar the link** in a direct message, not in a group chat. Opening it signs his browser
    in for 90 days.
@@ -69,8 +56,9 @@ never taken as your approval.
 
 ## Stop sharing
 
-Stop ngrok (Ctrl+C). Nothing is reachable from outside after that, but anyone who has a link gets
-in again the next time the tunnel is up.
+Stop the tunnel: `Stop-Service cloudflared` from an admin shell (`Start-Service cloudflared` brings
+it back). Nothing is reachable from outside while it's stopped, but anyone who has a link gets in
+again once the tunnel is up.
 
 - **A link leaked:** People (key 7) → **New link**, or `cb user rotate omar`. The old link stops
   working at once, also in a browser already signed in with it. Send the new one.
@@ -83,8 +71,10 @@ The People page also adds people and copies anyone's link again later.
 ## Don'ts
 
 - **Don't set `HOST`** (leave the server on 127.0.0.1). The board treats a request as yours when
-  it comes to `localhost` with no proxy headers. ngrok always adds `X-Forwarded-For`, so tunnel
-  traffic never counts as yours. A server bound to `0.0.0.0` lets anyone on the LAN who sends
+  it comes to `localhost` with no proxy headers. Requests through the Cloudflare tunnel carry
+  `cf-connecting-ip` and `X-Forwarded-For`, so `isLocal()` treats them as outside and they need a
+  link. A server bound to `0.0.0.0` lets anyone on the LAN who sends
   `Host: localhost` count as you.
-- **Don't use a tunnel or proxy that strips `X-Forwarded-For`** together with a `localhost` host
-  header: every visitor would get the full board.
+- **Don't put a tunnel or proxy in front that strips those headers** (`cf-connecting-ip`,
+  `X-Forwarded-For`, `X-Forwarded-Host`) and sends a `localhost` host header: every visitor would
+  get the full board.
