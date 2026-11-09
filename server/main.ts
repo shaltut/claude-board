@@ -217,7 +217,15 @@ app.get('/api/stream', async (c) => {
   });
 });
 
-// The built UI, with SPA fallback.
+// The built UI, with SPA fallback. index.html must revalidate or a release keeps serving the old bundle (#498);
+// /assets/* names are content-hashed, so they never change.
+// (serveStatic's onFound runs after the body is built, so a header set there is dropped.) /api routes answer
+// before this middleware, so they are untouched; a missing asset falls through to index.html and gets no-cache.
+app.use('/*', async (c, next) => {
+  await next();
+  if (c.res.headers.get('content-type')?.startsWith('text/html')) c.header('Cache-Control', 'no-cache');
+  else if (c.req.path.startsWith('/assets/') && c.res.ok) c.header('Cache-Control', 'public, max-age=31536000, immutable');
+});
 app.use('/*', serveStatic({ root: relative(process.cwd(), DIST) || '.' }));
 app.get('*', (c) =>
   existsSync(join(DIST, 'index.html'))

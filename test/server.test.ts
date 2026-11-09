@@ -390,3 +390,23 @@ test('the Memory page lists a flagged proposal for Ahmed; a plain local read doe
   assert.deepEqual((await find('fixtures&live=1')).map((m: any) => m.title), ['Fixtures load from the seed script'],
     'live=1: only what an answer may cite, so proposals and stale facts do not crowd the top 20');
 });
+
+test('#498 index.html is no-cache on every path; hashed assets are immutable; api untouched', async () => {
+  const { existsSync, readdirSync } = await import('node:fs');
+  const dist = new URL('../web/dist/', import.meta.url);
+  for (const path of ['/', '/index.html', '/board']) {
+    const res = await app.request(path);
+    if (res.status === 503) continue; // UI not built: the fallback text, nothing to cache
+    assert.equal(res.status, 200, path);
+    assert.equal(res.headers.get('cache-control'), 'no-cache', path);
+  }
+  const assets = new URL('assets/', dist);
+  const asset = existsSync(assets) && readdirSync(assets)[0];
+  if (asset) {
+    const res = await app.request(`/assets/${asset}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+  }
+  await db();
+  assert.equal((await app.request('/api/tasks/1')).headers.get('cache-control'), null);
+});
