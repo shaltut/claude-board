@@ -1135,9 +1135,11 @@ begin
     'prs', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'status', t.status, 'assignee', t.assignee, 'labels', t.labels,
         'pr', t.links ->> 'pr', 'commit', t.links ->> 'commit', 'done_at', t.done_at,
         'review', cb._is_review(t.labels, t.title), 'reviewed', cb._has_reviewer(t),
-        'go', (select e.summary ~ '\mGO\M' and e.summary !~ 'NO[- ]?GO' from cb.events e
-                where e.task_id = t.id and e.kind in ('done', 'note') and e.summary ~ '\mGO\M' order by e.id desc limit 1))
+        'go', v.summary ~ '\mGO\M' and v.summary !~ 'NO[- ]?GO', 'verdict', v.summary)
         order by t.id)
-      from cb.tasks t where (p is null or t.project = p) and cb._pr_no(t.links) is not null
+      from cb.tasks t
+      left join lateral (select e.summary from cb.events e where e.task_id = t.id and e.kind in ('done', 'note') and e.summary ~ '\mGO\M'
+                          order by e.id desc limit 1) v on true
+     where (p is null or t.project = p) and cb._pr_no(t.links) is not null
        and (t.status not in ('done', 'cancelled') or t.updated_at > now() - interval '7 days')), '[]'));
 end $$;
