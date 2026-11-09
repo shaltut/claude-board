@@ -507,6 +507,14 @@ async function run(): Promise<unknown> {
         multi: !!o.multi, blocking: !!o.blocking, task_id: o.task ?? null, context: o.context ?? null, reply_to, actor, to_user: o.to ?? null,
         parent: o.after ?? null, if_answer: o.if ?? null });
       const [f] = o.after ? await sql`select parent_id, if_answer from cb.questions where id = ${Number(id)}` : [];
+      // #550: without --reply-to the answer goes to the asking name; with no live relay on it, it waits in cb pending.
+      if (!o['reply-to']) {
+        const live = sql`last_seen > now() - interval '90 seconds'`; // same 90s as cb.sessions_overview
+        const [r] = await sql`select exists(select 1 from cb.sessions where actor = ${actor} and ${live}) as live,
+          (select actor from cb.sessions where machine = ${machine()} and pane = ${pane} and ${live}) as mine`;
+        if (!r.live) console.error(`warning: no relay listens on ${actor}, so the answer will wait in cb pending --as ${actor}` +
+          (r.mine && r.mine !== actor ? `. This pane's relay is ${r.mine}: ask without --as, or add --reply-to` : ''));
+      }
       return { out: (f ? `Q${id} posted as a follow-up to Q${f.parent_id}: ` +
           (f.if_answer ? `it opens only if Q${f.parent_id} is answered "${f.if_answer}", else it is skipped` : `it opens once Q${f.parent_id} is answered`) +
           ' — keep working; its answer arrives like any other'

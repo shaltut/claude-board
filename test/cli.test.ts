@@ -226,3 +226,28 @@ test('a task number is never a project: cb log 130 logs on task #130; numeric pr
   const [{ n }] = await sql`select count(*)::int as n from cb.projects where slug ~ '^[0-9]+$'`;
   assert.equal(n, 0);
 });
+
+test('cb ask warns when no relay listens on the asking name (#550)', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'seed')`;
+  await sql`select cb.iam('pc', 'w1:p2', 'board-dev@shaltoot', 'demo')`; // this pane's relay: live (last_seen = now)
+  const env = { HERDR_PANE_ID: 'w1:p2', CB_MACHINE: 'pc', CB_ACTOR: '' };
+  const ask = (...extra: string[]) => cb(['ask', 'demo', 'ship it?', '-o', 'Yes', '-o', 'No', ...extra], env);
+
+  const w = ask('--as', 'claude-board');
+  assert.equal(w.code, 0, w.err); // never refuses: asking on someone's behalf is legitimate
+  assert.match(w.out, /^Q\d+ posted/);
+  assert.equal(w.err, 'warning: no relay listens on claude-board, so the answer will wait in cb pending --as claude-board. ' +
+    "This pane's relay is board-dev@shaltoot: ask without --as, or add --reply-to");
+
+  assert.equal(ask('--as', 'claude-board', '--reply-to', 'pc:w1:p2').err, ''); // the answer has a pane to land in
+  assert.equal(ask('--as', 'board-dev@shaltoot').err, ''); // that name's relay is live
+  assert.equal(ask().err, ''); // the pane's own binding
+
+  // no pane of its own: the warning names the identity, with nothing to suggest
+  const n = cb(['ask', 'demo', 'ship it?', '-o', 'Yes', '-o', 'No'], { CB_ACTOR: 'W9@test' });
+  assert.equal(n.err, 'warning: no relay listens on W9@test, so the answer will wait in cb pending --as W9@test');
+
+  await sql`update cb.sessions set last_seen = now() - interval '5 minutes'`; // relay gone quiet
+  assert.match(ask('--as', 'board-dev@shaltoot').err, /^warning: no relay listens on board-dev@shaltoot, so the answer will wait in cb pending --as board-dev@shaltoot$/);
+});
