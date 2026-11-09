@@ -249,7 +249,7 @@ async function mem(): Promise<{ out?: string; json?: unknown }> {
       // #660: a session that inherited a pane binding searches that project without knowing it: widen once, and say so
       const wide = (await callFn('mem_find', { q, project: null, include_old }) as any[]).filter((m) => m.project && m.project !== scope);
       return wide.length
-        ? { out: [`nothing about "${q}" in ${scope}; in other projects:`, ...wide.map(memLine)].join('\n'), json: wide }
+        ? { out: [`nothing about "${q}" in ${scope}; in other projects:`, ...wide.map((m) => `  ${m.project}: ${memLine(m)}`)].join('\n'), json: wide }
         : { out: `nothing about "${q}" in ${scope} or any other project${oldHint}`, json: [] };
     }
     if (sub === 'list') {

@@ -261,7 +261,7 @@ test('cb mem find: nothing in the bound project searches every project and says 
   assert.equal(cb(['mem', 'add', 'ihop', 'Pipeline 495: the last GitOps bump wins', '-k', 'gotcha', '--as', 'W2@test']).code, 0);
   const r = cb(['mem', 'find', 'pipeline'], env);
   assert.equal(r.code, 0, r.err);
-  assert.match(r.out, /^nothing about "pipeline" in demo; in other projects:\n.*M\d+ Pipeline 495/);
+  assert.match(r.out, /^nothing about "pipeline" in demo; in other projects:\n {2}ihop: .*M\d+ Pipeline 495/);
   assert.match(cb(['mem', 'find', 'nothing-like-this'], env).out, /^nothing about "nothing-like-this" in demo or any other project/);
   assert.match(cb(['mem', 'find', 'pipeline', '--project', 'demo'], env).out, /^nothing about "pipeline" in demo \(/, 'an explicit --project stays put');
 });
