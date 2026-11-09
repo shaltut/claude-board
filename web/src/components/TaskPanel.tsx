@@ -70,7 +70,7 @@ function PanelBody({ data }: { data: NonNullable<ReturnType<typeof useTask>['dat
                 return (
                   <button key={p} role="radio" aria-checked={on} onClick={() => !on && update({ priority: p }, `#${t.id} is now ${p}: ${label.toLowerCase()}`)}
                     className={cn('flex min-h-11 flex-col items-start justify-center gap-0.5 rounded px-2 py-1 text-left transition-colors duration-150 sm:min-h-0 sm:py-1.5',
-                      on ? 'bg-foreground text-background [&_*]:text-background' : 'hover:bg-raised')}>
+                      on ? 'bg-foreground text-background [&>span:first-child]:text-background' : 'hover:bg-raised')}>
                     <Priority p={p} />
                     <span className={cn('text-[11px] leading-tight', on ? 'opacity-80' : 'text-muted-foreground')}>{label}</span>
                   </button>

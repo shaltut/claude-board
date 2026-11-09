@@ -32,8 +32,8 @@ export function CommandMenu({ open, onOpenChange, onNewTask }: { open: boolean; 
               <CommandItem key={t.id} value={`#${t.id} ${t.title} ${t.project}`} onSelect={() => run(() => go({ task: t.id }))}>
                 <StatusDot status={t.status} />
                 <TaskId id={t.id} className="w-9 shrink-0" />
-                <span className="truncate">{t.title}</span>
-                <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-muted-foreground">{t.project}</span>
+                <span className="min-w-0 flex-1 truncate">{t.title}</span>
+                <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">{t.project}</span>
               </CommandItem>
             ))}
           </CommandGroup>

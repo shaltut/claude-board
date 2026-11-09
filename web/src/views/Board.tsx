@@ -40,7 +40,7 @@ function Column({ status, tasks, showProject }: { status: Status; tasks: Task[];
   const { setNodeRef, isOver } = useDroppable({ id: `col:${status}`, data: { status } })
   const [collapsed, setCollapsed] = useState(false)
   return (
-    <section aria-label={STATUS[status].label} className="flex min-w-0 flex-col">
+    <section aria-label={STATUS[status].label} className="flex min-w-0 snap-start flex-col">
       <header className="mb-2 flex h-7 items-center gap-2 px-1">
         <StatusDot status={status} />
         <h2 className="callsign text-[15px]">{STATUS[status].label}</h2>
@@ -114,7 +114,7 @@ export function Board({ route }: { route: Route }) {
   return (
     <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={onStart} onDragEnd={onEnd} onDragCancel={() => setActive(null)}>
       <h1 className="sr-only">Board</h1>
-      <div className="-mx-4 grid auto-cols-[minmax(15.5rem,1fr)] grid-flow-col gap-3 overflow-x-auto px-4 pb-4 sm:-mx-6 sm:px-6 xl:auto-cols-[minmax(0,1fr)]">
+      <div className="-mx-4 grid auto-cols-[minmax(15.5rem,1fr)] grid-flow-col gap-3 overflow-x-auto px-4 pb-4 snap-x snap-mandatory scroll-px-4 xl:snap-none sm:-mx-6 sm:px-6 xl:auto-cols-[minmax(0,1fr)]">
         {COLUMNS.map((s) => <Column key={s} status={s} tasks={columns[s]} showProject={!route.project} />)}
       </div>
       <DragOverlay>{active && <TaskCard t={active} showProject={!route.project} overlay />}</DragOverlay>
