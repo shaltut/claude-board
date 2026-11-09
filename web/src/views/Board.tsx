@@ -32,7 +32,13 @@ function SortableCard({ t, showProject }: { t: Task; showProject: boolean }) {
       style={{ transform: CSS.Translate.toString(transform), transition }}
       {...attributes} {...listeners}
       onClick={() => go({ task: t.id })}
-      onKeyDown={(e) => { if (e.key === 'Enter') go({ task: t.id }); listeners?.onKeyDown?.(e) }} />
+      onKeyDown={(e) => {
+        // Only keys pressed on the card itself: Enter in a chip or the priority menu (whose events bubble
+        // through the portal) must not open the panel, and Space there must not pick the card up.
+        if (e.target !== e.currentTarget) return
+        if (e.key === 'Enter') go({ task: t.id })
+        listeners?.onKeyDown?.(e)
+      }} />
   )
 }
 
@@ -114,7 +120,7 @@ export function Board({ route }: { route: Route }) {
   return (
     <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={onStart} onDragEnd={onEnd} onDragCancel={() => setActive(null)}>
       <h1 className="sr-only">Board</h1>
-      <div className="-mx-4 grid auto-cols-[minmax(15.5rem,1fr)] grid-flow-col gap-3 overflow-x-auto px-4 pb-4 snap-x snap-mandatory scroll-px-4 xl:snap-none sm:-mx-6 sm:px-6 xl:auto-cols-[minmax(0,1fr)]">
+      <div className="-mx-4 grid auto-cols-[minmax(15.5rem,1fr)] grid-flow-col gap-3 overflow-x-auto px-4 pb-4 snap-x snap-proximity scroll-px-4 xl:snap-none sm:-mx-6 sm:px-6 xl:auto-cols-[minmax(0,1fr)]">
         {COLUMNS.map((s) => <Column key={s} status={s} tasks={columns[s]} showProject={!route.project} />)}
       </div>
       <DragOverlay>{active && <TaskCard t={active} showProject={!route.project} overlay />}</DragOverlay>

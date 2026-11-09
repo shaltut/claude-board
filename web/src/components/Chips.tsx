@@ -115,7 +115,8 @@ export function PriorityPicker({ t, className }: { t: Pick<Task, 'id' | 'priorit
         className={cn('-mx-1 inline-flex h-5 items-center rounded px-1 outline-none transition-colors hover:bg-raised focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-raised', className)}>
         <Priority p={t.priority} />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-48" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+      <DropdownMenuContent align="start" className="w-48" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}>
         <DropdownMenuRadioGroup value={t.priority} onValueChange={pick}>
           {PRIORITIES.map(({ p, label }) => (
             <DropdownMenuRadioItem key={p} value={p} className="gap-2">
