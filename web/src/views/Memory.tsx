@@ -39,7 +39,8 @@ export function Memory({ route }: { route: Route }) {
   const [adding, setAdding] = useState(false)
   const { data = [], isLoading } = useMemories(route.project, showOld)
   const kinds = FILTERS.find((f) => f.key === filter)!.kinds
-  const shown = data.filter((m) => kinds.includes(m.kind))
+  // newest first (Ahmed, #606); ids rise with time, so they break ties
+  const shown = data.filter((m) => kinds.includes(m.kind)).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id)
   const waiting = shown.filter((m) => m.status === 'proposed')
   const stale = shown.filter((m) => m.status === 'active' && m.expired)
   const live = shown.filter((m) => m.status === 'active' && !m.expired)
