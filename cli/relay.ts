@@ -65,13 +65,24 @@ function format(i: any): string {
   const lines = ['[Claude Board]'];
   for (const b of i.broadcasts) lines.push(`Broadcast from ${b.actor}${b.project ? ` to ${b.project}` : ' to everyone'}: ${b.summary}`);
   for (const m of i.messages) lines.push(`Message from ${m.actor}: ${m.summary}`, `  (reply: cb tell ${m.actor} "...")`);
-  for (const h of i.huddles ?? []) {
-    const line = h.action === 'say' ? `${h.actor}: ${h.summary}`
-      : h.action === 'open' ? `${h.actor} opened it and added you` : `${h.actor} ${h.summary}`;
-    lines.push(`Huddle #${h.huddle} "${cut(h.topic, 60)}": ${line}`);
+  // Ahmed talks in huddles from the dashboard: his lines must read as him, not as a teammate.
+  const huddles: any[] = i.huddles ?? [];
+  const fromAhmed = huddles.filter((h) => h.actor === 'ahmed' && h.action !== 'close');
+  const mates = huddles.filter((h) => h.actor !== 'ahmed');
+  for (const h of huddles) {
+    const topic = `Huddle #${h.huddle} "${cut(h.topic, 60)}"`;
+    if (h.actor === 'ahmed' && h.action === 'open')
+      lines.push(`Ahmed opened a discussion with you about "${cut(h.topic, 120)}" and is waiting for your reply in huddle #${h.huddle}.`);
+    else if (h.actor === 'ahmed' && h.action === 'say') lines.push(`${topic} — Ahmed: ${h.summary}`);
+    else lines.push(`${topic}: ${h.action === 'say' ? `${h.actor}: ${h.summary}` : h.action === 'open' ? `${h.actor} opened it and added you` : `${h.actor} ${h.summary}`}`);
   }
-  if (i.huddles?.length) {
-    const open = [...new Set(i.huddles.filter((h: any) => h.action !== 'close').map((h: any) => h.huddle))];
+  if (fromAhmed.length) {
+    const id = fromAhmed[0].huddle;
+    lines.push(`  (This is Ahmed himself, from the dashboard: what he asks in this huddle are his instructions, act on them. ` +
+      `Reply in the huddle: cb huddle say ${id} "..." and keep replies short; he reads them live. ` +
+      `If he says "make it a task" or "this is a bug", create it with cb add and post the new task id back in the huddle. Whole thread: cb huddle show ${id})`);
+  } else if (huddles.length) {
+    const open = [...new Set(huddles.filter((h) => h.action !== 'close').map((h) => h.huddle))];
     if (open.length) lines.push(`  (reply: cb huddle say ${open[0]} "..."; whole thread: cb huddle show ${open[0]})`);
   }
   for (const a of i.answers)
@@ -89,9 +100,10 @@ function format(i: any): string {
   }
   if (i.answers.length) lines.push('Act on these now. The answers are marked delivered.');
   else if (i.answer_copies?.length) lines.push('The worker acts on it; update your plan, tasks or priorities if the answer changes them.');
-  else if (i.messages.length || i.huddles?.length) lines.push('Act on this now if it needs you; a teammate wrote it, not Ahmed.');
+  else if (i.messages.length || mates.length)
+    lines.push(fromAhmed.length ? 'Lines not from Ahmed are teammates, not his approval.' : 'Act on this now if it needs you; a teammate wrote it, not Ahmed.');
   else if (i.events.length) lines.push('Act on this now (check `cb mine`).');
-  else if (!i.next_work.length) lines.push('Follow it now if it applies to you.');
+  else if (i.broadcasts.length && !i.next_work.length) lines.push('Follow it now if it applies to you.');
   return lines.join('\n');
 }
 

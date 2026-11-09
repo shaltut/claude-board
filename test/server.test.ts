@@ -107,6 +107,25 @@ test('GET /api/huddles lists huddles; /api/huddles/:id has the thread; Today lea
   assert.equal(today.events.filter((e: any) => e.kind === 'huddle').length, 0);
 });
 
+test('the dashboard huddle flow over rpc: Ahmed opens, talks, turns a line into a linked task, closes', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
+  await sql`select cb.iam('pc', 'w2:p2', 'orch@shaltoot', 'ihop')`;
+  const ok = async (fn: string, args: object) => { const j = await (await rpc(fn, { actor: 'ahmed', ...args })).json(); assert.ok(j.ok, j.error); return j.result; };
+  const id = await ok('huddle_open', { topic: 'Rollout plan', members: ['orch@shaltoot'], task: null, project: 'ihop' });
+  await ok('huddle_say', { id, message: 'line one\nline two' });
+  const tid = await ok('task_add', { project: 'ihop', title: 'line one', body: 'from huddle', status: 'next', priority: 'P2', links: { huddle: `#${id}` } });
+  await ok('huddle_say', { id, message: `created #${tid} from this` });
+  await ok('huddle_close', { id, summary: 'ship Monday' });
+  const h = await (await app.request(`/api/huddles/${id}`)).json();
+  assert.deepEqual(h.members, ['ahmed', 'orch@shaltoot']);
+  assert.deepEqual(h.lines.map((l: any) => [l.actor, l.action, l.summary]), [
+    ['ahmed', 'open', 'opened: Rollout plan'], ['ahmed', 'say', 'line one\nline two'],
+    ['ahmed', 'say', `created #${tid} from this`], ['ahmed', 'close', 'closed: ship Monday']]);
+  const [t] = await sql`select links from cb.tasks where id = ${tid}`;
+  assert.deepEqual(t.links, { huddle: `#${id}` });
+});
+
 // Guests reach the board through a tunnel: default-deny, then only their own items.
 const remote = (path: string, init: RequestInit & { cookie?: string } = {}) =>
   app.request(path, { ...init, headers: { 'x-forwarded-for': '1.2.3.4', host: 'abc.ngrok-free.app',
