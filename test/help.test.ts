@@ -136,7 +136,7 @@ test('errors say what to run instead', async () => {
   await sql`select cb.task_add(project => 'ihop', title => 'x')`;
   assert.match(cb(['move', '1']).err, /^cb: usage: cb move <id> <status> \["<note>"\]\. Details: cb help move$/);
   assert.match(cb(['done', '77', 'x']).err, /task #77 not found.*cb mine/);
-  assert.match(cb(['user', 'remove', 'x']).err, /cb user add <name>/);
+  assert.match(cb(['user', 'drop', 'x']).err, /cb user add\|rotate\|remove <name>/);
   assert.match(cb(['huddle', 'show', '9']).err, /no huddle #9.*cb huddles/);
   assert.match(cb(['iam', 'W1@x', 'nope'], { HERDR_PANE_ID: 'p7' }).err, /unknown project "nope".*cb help project/);
   assert.match(cb(['frobnicate']).err, /unknown command "frobnicate"\. Commands: start, iam,.* Run: cb start/);

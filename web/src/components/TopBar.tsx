@@ -14,6 +14,7 @@ const TABS: { view: View; label: string; key: string }[] = [
   { view: 'sessions', label: 'Sessions', key: '4' },
   { view: 'huddles', label: 'Huddles', key: '5' },
   { view: 'history', label: 'History', key: '6' },
+  { view: 'people', label: 'People', key: '7' },
 ]
 
 export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' | 'reconnecting'; onSearch: () => void }) {

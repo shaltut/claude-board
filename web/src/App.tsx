@@ -15,6 +15,7 @@ import { Backlog } from '@/views/Backlog'
 import { History } from '@/views/History'
 import { Sessions } from '@/views/Sessions'
 import { Huddles } from '@/views/Huddles'
+import { People } from '@/views/People'
 import { TagChip, TypeChip } from '@/components/Chips'
 import { Mark } from '@/components/Mark'
 
@@ -60,7 +61,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  const View = { today: Today, questions: Today, board: Board, backlog: Backlog, sessions: Sessions, huddles: Huddles, history: History }[route.view]
+  const View = { today: Today, questions: Today, board: Board, backlog: Backlog, sessions: Sessions, huddles: Huddles, history: History, people: People }[route.view]
 
   return (
     <div className="min-h-dvh">

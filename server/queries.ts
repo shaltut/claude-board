@@ -90,3 +90,15 @@ export async function me(user: string) {
   ]);
   return { questions, tasks };
 }
+
+/** The People page (local only: it carries the link tokens). What waits on each person, and when they last answered or wrote. */
+export const people = () => sql`
+  select u.name, u.display, u.token, u.created_at,
+    coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body, 'blocking', q.blocking, 'created_at', q.created_at)
+               order by q.blocking desc, q.created_at)
+       from cb.questions q where q.assigned_to = u.name and q.status = 'open'), '[]') as questions,
+    coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'project', t.project, 'title', t.title, 'status', t.status, 'priority', t.priority)
+               order by t.priority, t.rank, t.id)
+       from cb.tasks t where t.assignee = u.name and t.status not in ('done', 'cancelled')), '[]') as tasks,
+    (select max(e.at) from cb.events e where e.actor = u.name) as last_active
+  from cb.users u order by u.created_at, u.name`;

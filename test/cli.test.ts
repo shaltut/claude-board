@@ -196,6 +196,24 @@ test('cb user add prints a link; cb ask --to and cb assign hand questions and ta
   assert.match(cb(['brief', 'demo']).out, /Q1 .*E1 scope\? \(for omar\)/);
 });
 
+test('cb user rotate prints a new link; cb user remove hands his open work back', async () => {
+  const sql = await db();
+  cb(['user', 'add', 'omar', 'Omar']);
+  const [{ token: old }] = await sql`select token from cb.users where name = 'omar'`;
+  const r = cb(['user', 'rotate', 'omar'], { CB_PUBLIC_URL: 'https://board.example.app' });
+  assert.equal(r.code, 0, r.err);
+  const [{ token }] = await sql`select token from cb.users where name = 'omar'`;
+  assert.notEqual(token, old);
+  assert.ok(r.out.startsWith(`Omar's new link: https://board.example.app/?u=${token} (the old one no longer works)
+`), r.out);
+  cb(['ask', 'demo', 'E1 scope?', '-o', 'A=x', '-o', 'B=y', '--to', 'omar']);
+  const rm = cb(['user', 'remove', 'omar']);
+  assert.equal(rm.code, 0, rm.err);
+  assert.match(rm.out, /removed omar: .*1 open questions went back to Ahmed, 0 open tasks/);
+  assert.match(cb(['user', 'remove', 'omar']).err, /unknown user omar/);
+  assert.match(cb(['user', 'drop', 'omar']).err, /unknown user command "drop"/);
+});
+
 test('a task number is never a project: cb log 130 logs on task #130; numeric projects are refused', async () => {
   const sql = await db();
   await sql`select cb.task_add(project => 'ihop', title => 'SC64 kit')`;

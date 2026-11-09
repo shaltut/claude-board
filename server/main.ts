@@ -5,7 +5,7 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { sql } from './db.ts';
+import { sql, dotenv } from './db.ts';
 import { callFn, RpcError } from './rpc.ts';
 import * as q from './queries.ts';
 
@@ -106,6 +106,10 @@ app.get('/api/today', async (c) => {
 });
 app.get('/api/last-seen', async (c) => c.json(await q.lastSeen()));
 app.get('/api/users', async (c) => c.json(await sql`select name, display from cb.users order by name`));
+// Tokens: reachable only from this PC (the guest block above refuses every other path). The link base is the CLI's.
+app.get('/api/people', async (c) => c.json({
+  public_url: (process.env.CB_PUBLIC_URL || dotenv('PUBLIC_URL') || '').replace(/\/$/, '') || null, people: await q.people(),
+}));
 app.get('/api/sessions', async (c) => c.json(await q.sessions(opt(c.req.query('project')))));
 app.get('/api/huddles', async (c) => c.json(await q.huddles(opt(c.req.query('project')))));
 app.get('/api/huddles/:id', async (c) => {

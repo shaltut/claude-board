@@ -49,7 +49,7 @@ The base is a green-grey graphite, not slate blue and not neutral black: the col
   don't read as the generic rounded-SaaS kit.
 - Today: queue left (7fr), shift log right (5fr) on a single hairline. Board: six bays with
   condensed heads; done collapses. Phone: one column; the nav scrolls.
-- Every view keeps its keyboard number (1–6) visible in the nav.
+- Every view keeps its keyboard number (1–7) visible in the nav.
 
 ## Motion
 - One orchestrated moment: **clearance.** On answer, the lamp turns green, the strip slides out

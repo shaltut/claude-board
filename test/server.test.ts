@@ -145,7 +145,7 @@ const remote = (path: string, init: RequestInit & { cookie?: string } = {}) =>
 
 test('through a tunnel, nothing is readable or writable without a user link', async () => {
   await db();
-  for (const p of ['/api/tasks', '/api/users', '/api/projects', '/api/sessions', '/api/huddles', '/api/events', '/api/today', '/api/questions', '/api/me'])
+  for (const p of ['/api/tasks', '/api/users', '/api/people', '/api/projects', '/api/sessions', '/api/huddles', '/api/events', '/api/today', '/api/questions', '/api/me'])
     assert.equal((await remote(p)).status, 401, p);
   assert.equal((await remote('/api/rpc/task_add', { method: 'POST', body: '{}' })).status, 401);
   assert.equal((await remote('/api/whoami')).status, 200);

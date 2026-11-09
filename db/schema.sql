@@ -527,6 +527,8 @@ alter table cb.questions add column if not exists assigned_to text references cb
 alter table cb.questions add column if not exists answered_by text;
 drop function if exists cb.ask cascade;
 drop function if exists cb.user_add cascade;
+drop function if exists cb.user_rotate cascade;
+drop function if exists cb.user_remove cascade;
 drop function if exists cb.question_assign cascade;
 drop function if exists cb.answer cascade;
 drop function if exists cb.withdraw cascade;
@@ -986,10 +988,11 @@ begin
 end $$;
 
 -- People who answer through a guest link (Omar, Iman). The link carries the token.
-create function cb.user_add(name text, display text default null) returns text language plpgsql as $$
+create function cb.user_add(name text, display text default null, actor text default null) returns text language plpgsql as $$
 #variable_conflict use_variable
 declare n text := lower(trim(name)); t text;
 begin
+  perform cb.set_actor(actor);
   if n !~ '^[a-z][a-z0-9_-]*$' then raise exception 'user name: lowercase letters, digits, - or _ (e.g. omar)'; end if;
   if n = 'ahmed' then raise exception 'ahmed is the board owner, not a guest user: pick another name'; end if;
   insert into cb.users (name, display) values (n, coalesce(nullif(trim(display), ''), initcap(n)))
@@ -997,6 +1000,41 @@ begin
   returning cb.users.token into t;
   return t;
 end $$;
+
+-- A new link for a user. The old one stops working at once, in signed-in browsers too (the cookie holds the token).
+create function cb.user_rotate(name text, actor text default null) returns text language plpgsql as $$
+#variable_conflict use_variable
+declare t text;
+begin
+  perform cb.set_actor(actor);
+  update cb.users u set token = gen_random_uuid()::text where u.name = lower(trim(name)) returning u.token into t;
+  if t is null then raise exception 'unknown user %: see cb users', name; end if;
+  return t;
+end $$;
+
+-- Remove a user: their link stops working, their open questions go back to Ahmed, their open tasks become
+-- unassigned (status kept, so a task held on one of those questions stays held). Answers and notes they
+-- left stay under their name. Returns how many questions and tasks were handed back.
+create function cb.user_remove(name text, actor text default null) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare n text := lower(trim(name)); d text; nq int; nt int;
+begin
+  perform cb.set_actor(actor);
+  select u.display into d from cb.users u where u.name = n for update;
+  if d is null then raise exception 'unknown user %: see cb users', name; end if;
+  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status = 'open';
+  get diagnostics nq = row_count;
+  perform set_config('cb.note', 'unassigned: ' || d || ' was removed', true);
+  update cb.tasks t set assignee = null where t.assignee = n and t.status not in ('done', 'cancelled');
+  get diagnostics nt = row_count;
+  perform set_config('cb.note', '', true);
+  delete from cb.users u where u.name = n; -- the FK clears assigned_to on their closed questions too
+  return jsonb_build_object('questions', nq, 'tasks', nt);
+end $$;
+
+-- The People page refreshes when someone runs cb user add from a session.
+create or replace trigger users_notify after insert or update or delete on cb.users
+  for each statement execute function cb.notify();
 
 -- Hand an open question to a user (null hands it back to Ahmed).
 create function cb.question_assign(id text, to_user text, actor text default null) returns void language plpgsql as $$

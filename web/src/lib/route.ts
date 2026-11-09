@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
-export type View = 'today' | 'board' | 'backlog' | 'sessions' | 'huddles' | 'history' | 'questions'
-export const VIEWS: View[] = ['today', 'board', 'backlog', 'sessions', 'huddles', 'history']
+export type View = 'today' | 'board' | 'backlog' | 'sessions' | 'huddles' | 'history' | 'people' | 'questions'
+export const VIEWS: View[] = ['today', 'board', 'backlog', 'sessions', 'huddles', 'history', 'people']
 
 export interface Route { view: View; project?: string; task?: number; tag?: string; type?: string; actor?: string; huddle?: number }
 
@@ -9,7 +9,7 @@ export interface Route { view: View; project?: string; task?: number; tag?: stri
 export function parse(hash = location.hash): Route {
   const [path, query = ''] = hash.replace(/^#\/?/, '').split('?')
   const p = new URLSearchParams(query)
-  const view = (['today', 'board', 'backlog', 'sessions', 'huddles', 'history', 'questions'].includes(path) ? path : 'today') as View
+  const view = ([...VIEWS, 'questions'].includes(path as View) ? path : 'today') as View
   const t = Number(p.get('t'))
   return { view, project: p.get('p') || undefined, task: t > 0 ? t : undefined, tag: p.get('g') || undefined, type: p.get('k') || undefined, actor: p.get('a') || undefined, huddle: Number(p.get('h')) || undefined }
 }

@@ -1,4 +1,4 @@
-import { CalendarClock, Columns3, History, ListOrdered, Plus, Layers, Radio, MessagesSquare } from 'lucide-react'
+import { CalendarClock, Columns3, History, ListOrdered, Plus, Layers, Radio, MessagesSquare, Users } from 'lucide-react'
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from '@/components/ui/command'
 import { useProjects, useTasks } from '@/lib/api'
 import { go, type View } from '@/lib/route'
@@ -11,6 +11,7 @@ const VIEWS: { view: View; label: string; icon: typeof History }[] = [
   { view: 'sessions', label: 'Sessions', icon: Radio },
   { view: 'huddles', label: 'Huddles', icon: MessagesSquare },
   { view: 'history', label: 'History', icon: History },
+  { view: 'people', label: 'People', icon: Users },
 ]
 
 export function CommandMenu({ open, onOpenChange, onNewTask }: { open: boolean; onOpenChange: (o: boolean) => void; onNewTask: () => void }) {

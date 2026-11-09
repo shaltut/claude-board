@@ -69,8 +69,16 @@ never taken as your approval.
 
 ## Stop sharing
 
-Stop ngrok (Ctrl+C). Nothing is reachable from outside after that. There is no command to change
-a user's link yet: anyone who has the link gets in again the next time the tunnel is up.
+Stop ngrok (Ctrl+C). Nothing is reachable from outside after that, but anyone who has a link gets
+in again the next time the tunnel is up.
+
+- **A link leaked:** People (key 7) → **New link**, or `cb user rotate omar`. The old link stops
+  working at once, also in a browser already signed in with it. Send the new one.
+- **Done with someone:** People → **Remove**, or `cb user remove omar`. Their link stops working,
+  their open questions come back to you, and their open tasks become unassigned (status kept, so
+  work held on one of those questions stays held). Answers and notes they left stay under their name.
+
+The People page also adds people and copies anyone's link again later.
 
 ## Don'ts
 
