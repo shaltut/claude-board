@@ -44,3 +44,6 @@ On top of that:
     `cb huddle open "<topic>" <name>... -t <task>`. Lines go to every member by themselves; Ahmed
     watches on the Huddles page. You are admin: you can speak in and close any huddle in your
     project. Close it with the outcome: `cb huddle close <id> "<what was decided>"`.
+14. Every loop (every few minutes) run `cb tick`: one ranked list of what is due now, each line with its
+    command; silence means nothing is. The shared DB test lock lives on the board: `cb lock take db` (queues you),
+    `cb lock release db` when done (the next in line is told), `cb lock queue` to see it.
