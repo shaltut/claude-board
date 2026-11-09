@@ -10,7 +10,8 @@ import { PRIORITIES, ProjectChip } from '@/components/Chips'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Mark, useTabLamp } from '@/components/Mark'
-import { ThemeToggle } from '@/components/ThemeToggle'
+import { RingToggle, ThemeToggle } from '@/components/ThemeToggle'
+import { useRing } from '@/lib/ring'
 
 type GuestTask = Task & { my_notes: { summary: string; at: string }[] }
 
@@ -29,6 +30,7 @@ export function Guest({ user }: { user: User }) {
   const done = data?.questions.filter((q) => q.status !== 'open') ?? []
   const tasks = data?.tasks ?? []
   useTabLamp(open.length)
+  useRing(data && open.map((q) => q.id))
 
   return (
     <div className="min-h-dvh">
@@ -38,6 +40,7 @@ export function Guest({ user }: { user: User }) {
           <span className="text-[15px] font-semibold tracking-tight [font-stretch:88%]">Claude Board</span>
           <span className="ml-auto truncate text-sm text-muted-foreground">Signed in as <span className="text-foreground">{user.display}</span></span>
           <button onClick={signOut} className="shrink-0 rounded-md px-1.5 py-1 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Sign out</button>
+          <RingToggle />
           <ThemeToggle />
         </div>
       </header>

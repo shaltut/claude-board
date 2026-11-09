@@ -5,7 +5,8 @@ import { go, href, type Route, type View } from '@/lib/route'
 import { Kbd } from '@/components/ui/kbd'
 import { ProjectSwitcher } from './ProjectSwitcher'
 import { Mark, useTabLamp } from './Mark'
-import { ThemeToggle } from './ThemeToggle'
+import { RingToggle, ThemeToggle } from './ThemeToggle'
+import { useRing } from '@/lib/ring'
 
 const TABS: { view: View; label: string; key: string }[] = [
   { view: 'today', label: 'Today', key: '1' },
@@ -25,6 +26,9 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
   const { data: mems = [] } = useMemories(route.project)
   const proposed = mems.filter((m) => m.status === 'proposed').length
   useTabLamp(open.length)
+  // Ring on any project, not just the one in view: a new question should reach Ahmed wherever he is.
+  const { data: everywhere } = useQuestions(undefined, 'open')
+  useRing(everywhere?.filter((q) => !q.assigned_to).map((q) => q.id))
 
   return (
     <header className="sticky top-0 z-30 border-b bg-background/85 backdrop-blur-md backdrop-saturate-150">
@@ -69,6 +73,7 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
             <span className={cn('size-1.5 rounded-full', live === 'live' ? 'bg-clear shadow-[0_0_8px_var(--clear)]' : 'animate-pulse bg-st-blocked')} />
             <span className="hidden md:inline">{live === 'live' ? 'Live' : 'Reconnecting…'}</span>
           </span>
+          <RingToggle />
           <ThemeToggle />
           <button onClick={onSearch} aria-label="Jump to a task, project or view"
             className="flex h-8 items-center gap-2 rounded-md border bg-card px-2 text-sm text-muted-foreground transition-colors hover:border-input hover:text-foreground sm:px-2.5">
