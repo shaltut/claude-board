@@ -1,6 +1,6 @@
 import { Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useQuestions } from '@/lib/api'
+import { useMemories, useQuestions } from '@/lib/api'
 import { go, href, type Route, type View } from '@/lib/route'
 import { Kbd } from '@/components/ui/kbd'
 import { ProjectSwitcher } from './ProjectSwitcher'
@@ -16,11 +16,14 @@ const TABS: { view: View; label: string; key: string }[] = [
   { view: 'history', label: 'History', key: '6' },
   { view: 'people', label: 'People', key: '7' },
   { view: 'epics', label: 'Epics', key: '8' },
+  { view: 'memory', label: 'Memory', key: '9' },
 ]
 
 export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' | 'reconnecting'; onSearch: () => void }) {
   const { data: all = [] } = useQuestions(route.project, 'open')
   const open = all.filter((q) => !q.assigned_to) // questions handed to Omar/Iman aren't waiting on Ahmed
+  const { data: mems = [] } = useMemories(route.project)
+  const proposed = mems.filter((m) => m.status === 'proposed').length
   useTabLamp(open.length)
 
   return (
@@ -48,6 +51,11 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
                   <span className="flex items-center gap-1.5 text-[12px] font-semibold text-lamp tabular-nums">
                     <span className="lamp size-1.5" />{open.length}
                     <span className="sr-only">waiting on you</span>
+                  </span>
+                )}
+                {t.view === 'memory' && proposed > 0 && (
+                  <span className="relative text-[12px] font-semibold text-muted-foreground tabular-nums">
+                    {proposed}<span className="sr-only"> proposals waiting for you</span>
                   </span>
                 )}
               </a>

@@ -163,6 +163,8 @@ app.get('/api/people', async (c) => {
 app.get('/api/sessions', async (c) => c.json(await q.sessions(opt(c.req.query('project')))));
 app.get('/api/huddles', async (c) => c.json(await q.huddles(opt(c.req.query('project')))));
 app.get('/api/epics', async (c) => c.json(await q.epics(opt(c.req.query('project')))));
+// Shared memory (#167): live and proposed entries (all=1 adds superseded and retired). No project = every project.
+app.get('/api/memories', async (c) => c.json(await callFn('mem_list', { project: opt(c.req.query('project')) ?? null, include_old: c.req.query('all') === '1' })));
 app.get('/api/epics/:id', async (c) => {
   const r = await q.epic(Number(c.req.param('id')));
   return r ? c.json(r) : c.json({ ok: false, error: 'not found' }, 404);

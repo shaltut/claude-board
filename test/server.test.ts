@@ -182,6 +182,8 @@ test('a guest link sets a cookie; the guest sees and answers only what is assign
   assert.equal((await rpc('answer', { id: '2', answer: 'x', actor: 'ahmed' })).status, 403, 'not assigned to omar');
   assert.equal((await rpc('answer', { id: '3', answer: 'x' })).status, 403, "iman's question");
   assert.equal((await rpc('task_add', { project: 'ihop', title: 'x' })).status, 403);
+  assert.equal((await remote('/api/memories', { cookie: token })).status, 403, 'shared memory is the team\'s, not a guest\'s');
+  assert.equal((await rpc('mem_add', { project: 'ihop', title: 'x', kind: 'fact' })).status, 403);
   assert.equal((await rpc('log', { project: 'ihop', summary: 'x', task_id: '2' })).status, 403, 'not his task');
   assert.equal((await rpc('answer', { id: '1', answer: 'A', actor: 'ahmed' })).status, 200);
   assert.equal((await rpc('log', { project: 'ihop', summary: 'signed', task_id: '1', actor: 'ahmed' })).status, 200);

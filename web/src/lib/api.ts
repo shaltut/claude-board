@@ -31,8 +31,17 @@ export const onProject = (users: User[], project: string, holder?: string | null
   users.filter((u) => u.projects?.includes(project) || u.name === holder)
 export interface CbEvent {
   id: number; at: string; actor: string; project: string | null; task_id: number | null; question_id: number | null
-  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle' | 'user' | 'epic'
+  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle' | 'user' | 'epic' | 'memory'
   summary: string; data: Record<string, any>
+}
+export const MEM_KINDS = ['rule', 'ruling', 'fact', 'gotcha', 'runbook'] as const
+/** Shared memory (#167). authority 'ahmed' = he added or confirmed it; 'team' = a session's note. expired = past review_after. */
+export interface Memory {
+  id: number; project: string | null; machine: string | null; kind: (typeof MEM_KINDS)[number]; title: string; body: string
+  status: 'proposed' | 'active' | 'superseded' | 'retired'; authority: 'ahmed' | 'team'
+  source: { question_id?: number; task_id?: number; supersedes?: number; flagged?: boolean }
+  links: Record<string, string>; tags: string[]; created_by: string; confirmed_by: string | null; confirmed_at: string | null
+  review_after: string | null; superseded_by: number | null; created_at: string; updated_at: string; expired: boolean
 }
 
 export async function get<T>(path: string): Promise<T> {
@@ -74,4 +83,6 @@ export const useEpics = (project?: string) =>
   useQuery({ queryKey: ['epics', project], queryFn: () => get<Epic[]>(`/api/epics${qs({ project })}`) })
 export const useEpic = (id: number) =>
   useQuery({ queryKey: ['epic', id], queryFn: () => get<{ epic: Epic; steps: Task[] }>(`/api/epics/${id}`) })
+export const useMemories = (project?: string, all?: boolean) =>
+  useQuery({ queryKey: ['memories', project, !!all], queryFn: () => get<Memory[]>(`/api/memories${qs({ project, all: all ? '1' : undefined })}`) })
 export { qs }

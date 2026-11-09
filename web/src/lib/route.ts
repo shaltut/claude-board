@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
-export type View = 'today' | 'board' | 'backlog' | 'sessions' | 'huddles' | 'history' | 'people' | 'epics' | 'questions'
-export const VIEWS: View[] = ['today', 'board', 'backlog', 'sessions', 'huddles', 'history', 'people', 'epics']
+export type View = 'today' | 'board' | 'backlog' | 'sessions' | 'huddles' | 'history' | 'people' | 'epics' | 'memory' | 'questions'
+export const VIEWS: View[] = ['today', 'board', 'backlog', 'sessions', 'huddles', 'history', 'people', 'epics', 'memory']
 
 export interface Route { view: View; project?: string; task?: number; tag?: string; type?: string; actor?: string; huddle?: number; epic?: number }
 

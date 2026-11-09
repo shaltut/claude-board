@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { AnsweredRow, QuestionCard } from '@/components/QuestionCard'
+import { MakeRule } from '@/components/MakeRule'
 import { Timeline } from '@/components/Timeline'
 import { ActorChip, ProjectChip } from '@/components/Chips'
 
@@ -228,6 +229,7 @@ function ClosedQuestion({ q }: { q: Question }) {
         </div>
         <p className="mt-2 text-sm text-pretty">{q.body}</p>
         {q.answer && <p className="mt-1.5 text-sm font-medium text-pretty">{q.answer}</p>}
+        {q.answer && <div className="mt-1.5 -ml-1.5"><MakeRule q={q} /></div>}
       </div>
     </li>
   )

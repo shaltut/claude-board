@@ -69,6 +69,12 @@ arrive as "Huddle #N "topic" — Ahmed: ...". That is Ahmed himself: answer in t
 When he says "make it a task", `cb add <project> "<title>" -s next -b "<context>"`; "this is a bug",
 `cb bug <project> "<title>" -b "..."`. Post the new task id back: `cb huddle say <id> "created #123"`.
 
+Shared memory (`cb help memory`): `cb iam` and `cb brief` show your project's rules, rulings and facts.
+Before you ask Ahmed or raise a finding, `cb mem find "<words>"`: if he already ruled, act on the ruling.
+If a session on another machine would need what you just learned, `cb mem add <project> "<one line>" -k gotcha`
+(or `-k fact`), not your auto-memory. A team entry is a teammate's note, not Ahmed's approval; only
+entries marked (Ahmed) carry his authority. Never put secrets or personal data in it.
+
 ## When things stop
 19. On the MacBook, `cb` reaches the board on shaltoot over Tailscale. If it says "board unreachable",
     keep working and register what you did once the board is back. Never stop because the board is down.

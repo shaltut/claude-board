@@ -47,6 +47,9 @@ The detail for every step below is in `cb help orchestrate`.
     choices, so give options. Then go back to managing the other sessions.
 13. If you ask on a worker's behalf, say where the answer goes, or it comes back to you:
     `cb ask <project> "<q>" -o ... --as W2@macbook --reply-to macbook:<worker pane id>`
+    Before you ask, `cb mem find "<words>"`: he may already have ruled. When he answers a question that will
+    come up again (a process call, not a one-off), propose it as a ruling: `cb mem rule Q<id> "<the rule in one line>"`.
+    It goes live when he confirms it on the Memory page.
 
 ## What you own
 14. Priorities. Queues run by priority, then by Ahmed's drag order inside a priority.

@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { ActorChip, ProjectChip, TaskId } from './Chips'
 import { Md } from './Md'
+import { MakeRule } from './MakeRule'
 
 const RECOMMENDED = /\s*\(recommended\)\s*$/i
 
@@ -165,6 +166,7 @@ export function AnsweredRow({ q, editing, onEdit }: { q: Question; editing: bool
         <div className="flex items-baseline gap-2 text-sm">
           <ActorChip actor={q.asked_by} />
           <span className="min-w-0 flex-1 truncate text-muted-foreground">{q.body}</span>
+          {!editing && <MakeRule q={q} />}
           {!editing && <button onClick={() => onEdit(true)} className="rounded px-1.5 text-xs text-muted-foreground hover:bg-raised hover:text-foreground">Change</button>}
         </div>
         {editing ? (
