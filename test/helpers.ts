@@ -19,3 +19,8 @@ export async function freshDb() {
   if (tables.length) await sql.unsafe(`truncate ${tables.map((t) => 'cb.' + t.tablename).join(', ')} restart identity cascade`);
   return sql;
 }
+
+/** Puts a person on a project (creating it), as Ahmed does on People: work reaches people only on their projects. */
+export async function onProject(sql: any, user: string, project: string) {
+  await sql`select cb.ensure_project(${project}), cb.user_project_add(${user}, ${project}, 'ahmed')`;
+}

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { get, type Task, type User } from '@/lib/api'
 import { Guest } from '@/views/Guest'
+import { Login } from '@/views/Login'
 import { useLive } from '@/lib/live'
 import { go, useRoute, VIEWS } from '@/lib/route'
 import { shortcutsOff } from '@/lib/keys'
@@ -17,24 +18,20 @@ import { Sessions } from '@/views/Sessions'
 import { Huddles } from '@/views/Huddles'
 import { People } from '@/views/People'
 import { TagChip, TypeChip } from '@/components/Chips'
-import { Mark } from '@/components/Mark'
 
 
 type Who = { role: 'local' } | { role: 'guest'; user: User } | { role: 'anonymous' }
 
-/** The full board only on this machine; a guest link gets the guest page; anyone else gets nothing. */
+/** The full board only on this machine; a signed-in guest gets the guest page; anyone else gets the login page. */
 export function Gate() {
   const { data } = useQuery({ queryKey: ['whoami'], queryFn: () => get<Who>('/api/whoami'), staleTime: Infinity })
   if (!data) return null
   if (data.role === 'local') return <App />
-  if (data.role === 'guest') return <GuestLive user={data.user} />
-  return (
-    <main className="mx-auto grid max-w-md justify-items-center px-4 py-20 text-center">
-      <Mark className="size-10" />
-      <h1 className="mt-4 text-lg font-semibold">Claude Board</h1>
-      <p className="mt-2 text-sm text-muted-foreground">Open the personal link Ahmed sent you to see your questions.</p>
-    </main>
-  )
+  if (data.role === 'guest') {
+    if (location.pathname === '/login') history.replaceState(null, '', '/')
+    return <GuestLive user={data.user} />
+  }
+  return <Login />
 }
 
 function GuestLive({ user }: { user: User }) {

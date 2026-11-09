@@ -14,6 +14,11 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 
 type GuestTask = Task & { my_notes: { summary: string; at: string }[] }
 
+async function signOut() {
+  await fetch('/api/logout', { method: 'POST' }).catch(() => {})
+  location.replace('/login')
+}
+
 /** What a guest (Omar, Iman) sees through their link: only what Ahmed handed to them.
  *  Tower with the engineering taken out: one column, no callsigns or task numbers, the same lamp. */
 export function Guest({ user }: { user: User }) {
@@ -32,6 +37,7 @@ export function Guest({ user }: { user: User }) {
           <Mark lit={open.length > 0} />
           <span className="text-[15px] font-semibold tracking-tight [font-stretch:88%]">Claude Board</span>
           <span className="ml-auto truncate text-sm text-muted-foreground">Signed in as <span className="text-foreground">{user.display}</span></span>
+          <button onClick={signOut} className="shrink-0 rounded-md px-1.5 py-1 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Sign out</button>
           <ThemeToggle />
         </div>
       </header>

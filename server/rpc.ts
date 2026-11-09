@@ -3,7 +3,7 @@ import { sql } from './db.ts';
 
 export const RPC_FUNCTIONS = [
   'task_add', 'task_move', 'task_update', 'task_done', 'log', 'task_claim', 'mine',
-  'ask', 'answer', 'withdraw', 'answers_pending', 'answer_delivered', 'brief', 'seen', 'iam', 'inbox', 'broadcast', 'task_tag', 'sessions_overview', 'tell', 'huddle_open', 'huddle_add', 'huddle_say', 'huddle_close', 'huddles_list', 'user_add', 'user_rotate', 'user_remove', 'question_assign',
+  'ask', 'answer', 'withdraw', 'answers_pending', 'answer_delivered', 'brief', 'seen', 'iam', 'inbox', 'broadcast', 'task_tag', 'sessions_overview', 'tell', 'huddle_open', 'huddle_add', 'huddle_say', 'huddle_close', 'huddles_list', 'user_add', 'user_rotate', 'user_remove', 'user_project_add', 'user_project_remove', 'user_password', 'question_assign',
   'tick', 'lock_take', 'lock_release', 'lock_queue',
 ];
 const SETOF = new Set(['task_claim', 'mine', 'answers_pending']);

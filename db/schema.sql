@@ -3,6 +3,8 @@
 -- column changes need an explicit "alter table" below the create.
 
 create schema if not exists cb;
+-- Guest passwords (bcrypt). Qualified as public.crypt / public.gen_salt wherever used.
+create extension if not exists pgcrypto with schema public;
 
 create table if not exists cb.projects (
   slug       text primary key,
@@ -26,6 +28,14 @@ create table if not exists cb.users (
   display    text not null,
   token      text not null unique default gen_random_uuid()::text,
   created_at timestamptz not null default now()
+);
+alter table cb.users add column if not exists password text; -- bcrypt hash; null = sign in by link only
+
+-- The projects a person works on (#315). Questions and tasks reach them only on these; a new person has none.
+create table if not exists cb.user_projects (
+  user_name text not null references cb.users(name) on update cascade on delete cascade,
+  project   text not null references cb.projects(slug) on update cascade on delete cascade,
+  primary key (user_name, project)
 );
 
 create table if not exists cb.questions (
@@ -539,6 +549,12 @@ drop function if exists cb.ask cascade;
 drop function if exists cb.user_add cascade;
 drop function if exists cb.user_rotate cascade;
 drop function if exists cb.user_remove cascade;
+drop function if exists cb._user_hand_back cascade;
+drop function if exists cb._handed_back cascade;
+drop function if exists cb.user_project_add cascade;
+drop function if exists cb.user_project_remove cascade;
+drop function if exists cb.user_password cascade;
+drop function if exists cb.assignee_on_project cascade;
 drop function if exists cb.question_assign cascade;
 drop function if exists cb.answer cascade;
 drop function if exists cb.withdraw cascade;
@@ -1031,37 +1047,122 @@ begin
   return t;
 end $$;
 
--- Remove a user: their link stops working, their open questions go back to Ahmed, their open tasks become
--- unassigned (status kept, so a task held on one of those questions stays held; in progress goes back to Next,
--- since nobody is working it). Answers and notes they left stay under their name. Returns the counts.
+-- Hand a person's open work back: open questions to Ahmed, open tasks unassigned (status kept, so a task held
+-- on one of those questions stays held; in progress goes back to Next, since nobody is working it).
+-- project null = everywhere. why ends the history note: "unassigned: <why>".
+create function cb._user_hand_back(n text, why text, project text default null) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare nq int; nt int; nt2 int;
+begin
+  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status = 'open' and (project is null or q.project = project);
+  get diagnostics nq = row_count;
+  perform set_config('cb.note', 'unassigned and back to Next: ' || why, true);
+  update cb.tasks t set assignee = null, status = 'next' where t.assignee = n and t.status = 'in_progress' and (project is null or t.project = project);
+  get diagnostics nt = row_count;
+  perform set_config('cb.note', 'unassigned: ' || why, true);
+  update cb.tasks t set assignee = null where t.assignee = n and t.status not in ('done', 'cancelled') and (project is null or t.project = project);
+  get diagnostics nt2 = row_count;
+  perform set_config('cb.note', '', true);
+  return jsonb_build_object('questions', nq, 'tasks', nt + nt2);
+end $$;
+
+-- "1 open question back to Ahmed, 2 open tasks unassigned"
+create function cb._handed_back(r jsonb) returns text language sql immutable as $$
+  select (r ->> 'questions') || ' open question' || case when (r ->> 'questions') = '1' then '' else 's' end || ' back to Ahmed, '
+      || (r ->> 'tasks') || ' open task' || case when (r ->> 'tasks') = '1' then '' else 's' end || ' unassigned'
+$$;
+
+-- Remove a user: their link stops working and their open work is handed back (cb._user_hand_back).
+-- Answers and notes they left stay under their name. Returns the counts.
 create function cb.user_remove(name text, actor text default null) returns jsonb language plpgsql as $$
 #variable_conflict use_variable
-declare a text; n text := lower(trim(name)); d text; nq int; nt int; nt2 int;
+declare a text; n text := lower(trim(name)); d text; r jsonb;
 begin
   perform cb.dashboard_only();
   a := cb.set_actor(actor);
   select u.display into d from cb.users u where u.name = n for update;
   if d is null then raise exception 'unknown user %: see cb users', name; end if;
-  update cb.questions q set assigned_to = null where q.assigned_to = n and q.status = 'open';
-  get diagnostics nq = row_count;
-  perform set_config('cb.note', 'unassigned and back to Next: ' || d || ' was removed', true);
-  update cb.tasks t set assignee = null, status = 'next' where t.assignee = n and t.status = 'in_progress';
-  get diagnostics nt = row_count;
-  perform set_config('cb.note', 'unassigned: ' || d || ' was removed', true);
-  update cb.tasks t set assignee = null where t.assignee = n and t.status not in ('done', 'cancelled');
-  get diagnostics nt2 = row_count;
-  nt := nt + nt2;
-  perform set_config('cb.note', '', true);
+  r := cb._user_hand_back(n, d || ' was removed');
   delete from cb.users u where u.name = n; -- the FK clears assigned_to on their closed questions too
   insert into cb.events (actor, kind, summary, data)
-  values (a, 'user', 'removed ' || d || ' (' || n || '): ' || nq || ' open question' || case when nq = 1 then '' else 's' end
-            || ' back to Ahmed, ' || nt || ' open task' || case when nt = 1 then '' else 's' end || ' unassigned',
-          jsonb_build_object('user', n, 'action', 'remove', 'questions', nq, 'tasks', nt));
-  return jsonb_build_object('questions', nq, 'tasks', nt);
+  values (a, 'user', 'removed ' || d || ' (' || n || '): ' || cb._handed_back(r), jsonb_build_object('user', n, 'action', 'remove') || r);
+  return r;
 end $$;
+
+-- Put a person on a project: questions and tasks there may now go to them.
+create function cb.user_project_add(name text, project text, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; n text := lower(trim(name)); d text; p text;
+begin
+  perform cb.dashboard_only();
+  a := cb.set_actor(actor);
+  select u.display into d from cb.users u where u.name = n;
+  if d is null then raise exception 'unknown user %: see cb users', name; end if;
+  p := cb.read_project(project);
+  if p is null then raise exception 'project is required'; end if;
+  insert into cb.user_projects (user_name, project) values (n, p) on conflict do nothing;
+  if found then
+    insert into cb.events (actor, project, kind, summary, data)
+    values (a, p, 'user', d || ' (' || n || ') is now on ' || p, jsonb_build_object('user', n, 'action', 'project_add', 'project', p));
+  end if;
+end $$;
+
+-- Take a person off a project: their open work there is handed back (cb._user_hand_back). Returns the counts.
+create function cb.user_project_remove(name text, project text, actor text default null) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare a text; n text := lower(trim(name)); d text; p text; r jsonb;
+begin
+  perform cb.dashboard_only();
+  a := cb.set_actor(actor);
+  select u.display into d from cb.users u where u.name = n;
+  if d is null then raise exception 'unknown user %: see cb users', name; end if;
+  p := cb.read_project(project);
+  delete from cb.user_projects up where up.user_name = n and up.project = p;
+  if not found then raise exception '% is not on project %', n, p; end if;
+  r := cb._user_hand_back(n, d || ' was taken off ' || p, p);
+  insert into cb.events (actor, project, kind, summary, data)
+  values (a, p, 'user', d || ' (' || n || ') taken off ' || p || ': ' || cb._handed_back(r),
+          jsonb_build_object('user', n, 'action', 'project_remove', 'project', p) || r);
+  return r;
+end $$;
+
+-- Set or reset a person's password for the login page. Stored as a bcrypt hash; the link keeps working too.
+create function cb.user_password(name text, password text, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; n text := lower(trim(name)); d text;
+begin
+  perform cb.dashboard_only();
+  a := cb.set_actor(actor);
+  if length(coalesce(password, '')) < 8 then raise exception 'password: at least 8 characters'; end if;
+  update cb.users u set password = public.crypt(password, public.gen_salt('bf')) where u.name = n returning u.display into d;
+  if d is null then raise exception 'unknown user %: see cb users', name; end if;
+  insert into cb.events (actor, kind, summary, data)
+  values (a, 'user', 'password set for ' || d || ' (' || n || ')', jsonb_build_object('user', n, 'action', 'password'));
+end $$;
+
+-- A question or task goes to a person only on one of their projects. Checked when the assignee changes, not when
+-- the project does: an alias merge or a slug rename moves assigned work and must not be blocked (the guest page
+-- shows only their projects anyway). Session names (W1@pc) aren't people and pass.
+create function cb.assignee_on_project() returns trigger language plpgsql as $$
+declare who text := to_jsonb(new) ->> tg_argv[0];
+begin
+  if who is null or (tg_op = 'UPDATE' and who is not distinct from to_jsonb(old) ->> tg_argv[0])
+     or not exists (select 1 from cb.users u where u.name = who)
+     or exists (select 1 from cb.user_projects up where up.user_name = who and up.project = new.project) then
+    return new;
+  end if;
+  raise exception '% is not on project %: Ahmed adds people to projects on the People page', who, new.project;
+end $$;
+
+create or replace trigger tasks_assignee_project before insert or update of assignee on cb.tasks
+  for each row execute function cb.assignee_on_project('assignee');
+create or replace trigger questions_assignee_project before insert or update of assigned_to on cb.questions
+  for each row execute function cb.assignee_on_project('assigned_to');
 
 -- The People page refreshes when someone runs cb user add from a session.
 create or replace trigger users_notify after insert or update or delete on cb.users
+  for each statement execute function cb.notify();
+create or replace trigger user_projects_notify after insert or update or delete on cb.user_projects
   for each statement execute function cb.notify();
 
 -- Hand an open question to a user (null hands it back to Ahmed).

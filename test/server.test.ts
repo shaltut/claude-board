@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { freshDb } from './helpers.ts'; // sets CB_DATABASE_URL before the server's db client loads
+import { freshDb, onProject } from './helpers.ts'; // sets CB_DATABASE_URL before the server's db client loads
 
 const { app } = await import('../server/main.ts');
 const { sql: serverSql } = await import('../server/db.ts');
@@ -157,10 +157,12 @@ test('through a tunnel, nothing is readable or writable without a user link', as
 
 test('a guest link sets a cookie; the guest sees and answers only what is assigned to them', async () => {
   const sql = await db();
-  await sql`select cb.task_add(project => 'ihop', title => 'PO sign-off on E1-E12', assignee => 'omar')`;
-  await sql`select cb.task_add(project => 'ihop', title => 'internal')`;
   const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
   await sql`select cb.user_add('iman', 'Iman')`;
+  await onProject(sql, 'omar', 'ihop');
+  await onProject(sql, 'iman', 'ihop');
+  await sql`select cb.task_add(project => 'ihop', title => 'PO sign-off on E1-E12', assignee => 'omar')`;
+  await sql`select cb.task_add(project => 'ihop', title => 'internal')`;
   await sql`select cb.ask(project => 'ihop', body => 'E1 scope?', options => ${sql.json([{ label: 'A' }, { label: 'B' }])}, to_user => 'omar', actor => 'orch@shaltoot')`;
   await sql`select cb.ask(project => 'ihop', body => 'for Ahmed', actor => 'orch@shaltoot')`;
   await sql`select cb.ask(project => 'ihop', body => 'for Iman', to_user => 'iman', actor => 'orch@shaltoot')`;

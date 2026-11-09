@@ -1,18 +1,18 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Copy, KeyRound, UserPlus, UserX } from 'lucide-react'
-import { get, rpc, type Task } from '@/lib/api'
+import { Copy, KeyRound, UserPlus, UserX, X } from 'lucide-react'
+import { get, rpc, useProjects, type Task } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { go, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
-import { Priority, ProjectChip, StatusDot, TaskId } from '@/components/Chips'
+import { Priority, ProjectChip, ProjectDot, StatusDot, TaskId } from '@/components/Chips'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 
 interface Person {
-  name: string; display: string; token: string; created_at: string; last_active: string | null
+  name: string; display: string; token: string; created_at: string; last_active: string | null; projects: string[]; has_password: boolean
   questions: { id: number; project: string; body: string; blocking: boolean; created_at: string }[]
   tasks: { id: number; project: string; title: string; status: Task['status']; priority: Task['priority'] }[]
 }
@@ -140,6 +140,8 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
         </span>
       </div>
 
+      <Access p={p} />
+
       {(p.questions.length > 0 || p.tasks.length > 0) && (
         <ul className="space-y-1.5 border-t pt-3 text-sm">
           {p.questions.map((q) => (
@@ -203,6 +205,85 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
   )
 }
 
+/** Where a person may take work, and how they sign in. Both are Ahmed's: the database refuses sessions. */
+function Access({ p }: { p: Person }) {
+  const qc = useQueryClient()
+  const { data: projects = [] } = useProjects()
+  const [off, setOff] = useState<string | null>(null) // asking first: taking them off a project where work waits on them
+  const [pw, setPw] = useState<string | null>(null) // the new password while it's being typed
+  const free = projects.filter((x) => !p.projects.includes(x.slug))
+  const waiting = (slug: string) => [p.questions.filter((q) => q.project === slug).length, p.tasks.filter((t) => t.project === slug).length]
+
+  async function run(fn: string, args: object, ok: (r: any) => string) {
+    try { const r = await rpc(fn, { name: p.name, ...args }); toast.success(ok(r)); await qc.invalidateQueries(); return true }
+    catch (e: any) { toast.error(e.message); return false }
+  }
+  async function takeOff(slug: string) {
+    const [nq, nt] = waiting(slug)
+    if (off !== slug && nq + nt > 0) return setOff(slug)
+    setOff(null)
+    await run('user_project_remove', { project: slug }, (r) => `${p.display} is off ${slug}`
+      + (r.questions + r.tasks > 0 ? `: ${plural(r.questions, 'question')} back to you, ${plural(r.tasks, 'task')} unassigned` : ''))
+  }
+
+  return (
+    <div className="grid gap-2 border-t pt-3 text-sm">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="w-18 shrink-0 text-xs text-muted-foreground">Projects</span>
+        {p.projects.length === 0 && <span className="text-muted-foreground">None yet, so nothing can be handed to {p.display}.</span>}
+        {p.projects.map((slug) => (
+          <span key={slug} className="inline-flex h-6 items-center gap-1.5 rounded-md border bg-background pr-0.5 pl-2 text-xs">
+            <ProjectDot slug={slug} />{slug}
+            <button onClick={() => takeOff(slug)} aria-label={`Take ${p.display} off ${slug}`}
+              className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-raised hover:text-foreground"><X className="size-3" /></button>
+          </span>
+        ))}
+        {free.length > 0 && (
+          <select value="" aria-label={`Put ${p.display} on a project`}
+            onChange={(e) => { const slug = e.target.value; if (slug) run('user_project_add', { project: slug }, () => `${p.display} is on ${slug}`) }}
+            className="h-6 rounded-md border border-dashed bg-transparent px-1.5 text-xs text-muted-foreground hover:border-input hover:text-foreground">
+            <option value="">+ Project</option>
+            {free.map((x) => <option key={x.slug} value={x.slug}>{x.name}</option>)}
+          </select>
+        )}
+      </div>
+      {off && (() => {
+        const [nq, nt] = waiting(off)
+        return (
+          <div role="group" aria-label={`Confirm taking ${p.display} off ${off}`} className="rounded-md bg-raised p-3"
+            onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setOff(null) } }}>
+            <p className="text-pretty">
+              Take {p.display} off {off}? {nq > 0 && <>{plural(nq, 'open question')} there come{nq === 1 && 's'} back to you. </>}
+              {nt > 0 && <>{plural(nt, 'open task')} there become{nt === 1 && 's'} unassigned. </>}
+            </p>
+            <div className="mt-2.5 flex gap-2">
+              <Button size="sm" onClick={() => takeOff(off)}>Take off {off}</Button>
+              <Button size="sm" variant="ghost" autoFocus onClick={() => setOff(null)}>Cancel</Button>
+            </div>
+          </div>
+        )
+      })()}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="w-18 shrink-0 text-xs text-muted-foreground">Password</span>
+        {pw === null ? <>
+          <span className={cn(!p.has_password && 'text-muted-foreground')}>{p.has_password ? 'Set' : 'None, link only'}</span>
+          <Button size="xs" variant="ghost" onClick={() => setPw('')}>{p.has_password ? 'Reset password' : 'Set password'}</Button>
+        </> : (
+          // Shown as text, not dots: Ahmed types it to send it on. autoComplete off keeps it out of his own password manager.
+          <form className="flex min-w-0 flex-1 items-center gap-1.5"
+            onSubmit={async (e) => { e.preventDefault(); if (await run('user_password', { password: pw }, () => `Password set for ${p.display}. Send it to them privately.`)) setPw(null) }}>
+            <Input autoFocus required minLength={8} value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="off" spellCheck={false}
+              placeholder="8 characters or more" aria-label={`New password for ${p.display}`} className="h-7 min-w-0 flex-1 font-mono text-xs"
+              onKeyDown={(e) => { if (e.key === 'Escape') setPw(null) }} />
+            <Button size="sm" type="submit">Save</Button>
+            <Button size="sm" variant="ghost" type="button" onClick={() => setPw(null)}>Cancel</Button>
+          </form>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /** Name and display name; then the link, ready to copy. Adding a name that exists keeps their link and updates the display name. */
 function AddPerson({ open, onOpenChange, base, people }: { open: boolean; onOpenChange: (o: boolean) => void; base: string; people: Person[] }) {
   const qc = useQueryClient()
@@ -233,7 +314,8 @@ function AddPerson({ open, onOpenChange, base, people }: { open: boolean; onOpen
           <div className="grid gap-4">
             <DialogHeader>
               <DialogTitle>{made.display}'s link</DialogTitle>
-              <DialogDescription>Send it in a direct message, not a group chat: anyone with it can answer {made.display}'s questions. You can copy it again from People any time.</DialogDescription>
+              <DialogDescription>Send it in a direct message, not a group chat: anyone with it can answer {made.display}'s questions. You can copy it again from People any time.
+                Next, put {made.display} on a project on their card: questions and tasks reach them only there.</DialogDescription>
             </DialogHeader>
             <LinkBox link={made.link} who={made.display} />
             <DialogFooter><Button variant="ghost" onClick={() => close(false)}>Done</Button></DialogFooter>

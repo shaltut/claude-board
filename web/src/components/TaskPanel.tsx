@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { rpc, useTask, useUsers, type Status } from '@/lib/api'
+import { onProject, rpc, useTask, useUsers, type Status } from '@/lib/api'
 import { ago, STATUS } from '@/lib/format'
 import { go } from '@/lib/route'
 import { cn } from '@/lib/utils'
@@ -87,7 +87,7 @@ function PanelBody({ data }: { data: NonNullable<ReturnType<typeof useTask>['dat
               </Select>
             </Field>
             <Field label="Assignee">
-              <datalist id="cb-users">{users.map((u) => <option key={u.name} value={u.name}>{u.display}</option>)}</datalist>
+              <datalist id="cb-users">{onProject(users, t.project, t.assignee).map((u) => <option key={u.name} value={u.name}>{u.display}</option>)}</datalist>
               <Input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder="nobody, e.g. W1@macbook…" aria-label="Assignee" className="h-8" spellCheck={false} list="cb-users"
                 onBlur={() => assignee !== (t.assignee ?? '') && update({ assignee: assignee.trim() || null })}
                 onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />

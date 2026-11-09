@@ -251,8 +251,8 @@ Options (required)
 
 --blocking -t <id>   only if that task truly cannot continue. It parks the task in Blocked until answered.
                      Then work on something else: another task, the unblocked part, or cb next.
---to <user>          route it to a person other than Ahmed (cb users), e.g. --to omar. Their answer arrives
-                     marked "(not Ahmed)" and does not carry Ahmed's authority.
+--to <user>          route it to a person other than Ahmed (cb users), e.g. --to omar. Only someone Ahmed put
+                     on that project. Their answer arrives marked "(not Ahmed)" and does not carry Ahmed's authority.
 
 ask vs tell vs huddle
   ask     a decision only Ahmed (or a user) can make

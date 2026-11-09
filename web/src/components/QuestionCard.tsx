@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronRight, CornerDownLeft, CornerDownRight, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { rpc, useUsers, type Question } from '@/lib/api'
+import { onProject, rpc, useUsers, type Question } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { go } from '@/lib/route'
 import { Textarea } from '@/components/ui/textarea'
@@ -195,7 +195,8 @@ export function AnsweredRow({ q, editing, onEdit }: { q: Question; editing: bool
 /** Who should answer: Ahmed (default) or a guest user who answers through their link. */
 function AssignPicker({ q }: { q: Question }) {
   const qc = useQueryClient()
-  const { data: users = [] } = useUsers()
+  const { data: all = [] } = useUsers()
+  const users = onProject(all, q.project, q.assigned_to) // only people on this question's project can take it
   if (!users.length) return null
   async function assign(to: string) {
     try {

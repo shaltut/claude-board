@@ -78,22 +78,23 @@ export async function huddle(id: number) {
   return { ...h, lines };
 }
 
-/** A guest's own page: questions handed to them (open, and answered this week) and their open tasks. */
-export async function me(user: string) {
+/** A guest's own page: questions handed to them (open, and answered this week) and their open tasks, on their projects. */
+export async function me(user: string, scope: ReturnType<typeof sql>) {
   const [questions, tasks] = await Promise.all([
-    sql`select * from cb.questions where assigned_to = ${user}
+    sql`select * from cb.questions where assigned_to = ${user} and ${scope}
           and (status = 'open' or answered_at > now() - interval '7 days') order by status = 'open' desc, id desc`,
     // only the guest's own notes come back: session notes on the same task can hold anything
     sql`select t.*, coalesce((select jsonb_agg(jsonb_build_object('summary', e.summary, 'at', e.at) order by e.at)
           from cb.events e where e.task_id = t.id and e.kind = 'note' and e.actor = ${user}), '[]') as my_notes
-        from cb.tasks t where t.assignee = ${user} and t.status not in ('done', 'cancelled') order by t.priority, t.rank, t.id`,
+        from cb.tasks t where t.assignee = ${user} and ${scope} and t.status not in ('done', 'cancelled') order by t.priority, t.rank, t.id`,
   ]);
   return { questions, tasks };
 }
 
 /** The People page (local only: it carries the link tokens). What waits on each person, and when they last answered or wrote. */
 export const people = () => sql`
-  select u.name, u.display, u.token, u.created_at,
+  select u.name, u.display, u.token, u.created_at, u.password is not null as has_password,
+    array(select up.project from cb.user_projects up where up.user_name = u.name order by up.project) as projects,
     coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body, 'blocking', q.blocking, 'created_at', q.created_at)
                order by q.blocking desc, q.created_at)
        from cb.questions q where q.assigned_to = u.name and q.status = 'open'), '[]') as questions,

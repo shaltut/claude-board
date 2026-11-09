@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { freshDb } from './helpers.ts'; // sets CB_DATABASE_URL before the server's db client loads
+import { freshDb, onProject } from './helpers.ts'; // sets CB_DATABASE_URL before the server's db client loads
 
 const { app } = await import('../server/main.ts');
 const { sql: serverSql } = await import('../server/db.ts');
@@ -22,6 +22,7 @@ const remote = (path: string, init: RequestInit & { cookie?: string } = {}) =>
 test('People: only this PC reads the tokens; a guest or a stranger never does', async () => {
   const sql = await db();
   const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
+  await onProject(sql, 'omar', 'ihop');
   await sql`select cb.ask(project => 'ihop', body => 'E1 scope?', blocking => true, to_user => 'omar', actor => 'orch@shaltoot')`;
 
   const local = await (await app.request('/api/people', { headers: PAGE })).json();
@@ -35,12 +36,14 @@ test('People: only this PC reads the tokens; a guest or a stranger never does', 
   const post = (fn: string) => remote(`/api/rpc/${fn}`, { cookie: token, method: 'POST', body: JSON.stringify({ name: 'omar' }), headers: { 'content-type': 'application/json' } });
   for (const fn of ['user_rotate', 'user_remove', 'user_add']) assert.equal((await post(fn)).status, 403, fn);
   for (const p of ['/api/me', '/api/whoami']) assert.doesNotMatch(await (await remote(p, { cookie: token })).text(), new RegExp(token), p);
-  assert.deepEqual(await (await app.request('/api/users')).json(), [{ name: 'omar', display: 'Omar' }], '/api/users stays name and display only');
+  assert.deepEqual(await (await app.request('/api/users')).json(), [{ name: 'omar', display: 'Omar', projects: ['ihop'] }],
+    '/api/users: name, display and projects (for the pickers), never the token');
 });
 
 test('People: what waits on each person, and when they last answered or wrote', async () => {
   const sql = await db();
   await sql`select cb.user_add('omar', 'Omar'), cb.user_add('iman', 'Iman')`;
+  await onProject(sql, 'omar', 'ihop');
   await sql`select cb.ask(project => 'ihop', body => 'E1 scope?', blocking => true, task_id => null, to_user => 'omar', actor => 'orch@shaltoot')`;
   await sql`select cb.ask(project => 'ihop', body => 'Launch date?', to_user => 'omar', actor => 'orch@shaltoot')`;
   await sql`select cb.ask(project => 'ihop', body => 'Answered one', to_user => 'omar', actor => 'orch@shaltoot')`;
@@ -78,6 +81,7 @@ test('People: a new link stops the old one, in a fresh browser and in a signed-i
 test('People: removing a person hands their open questions back to Ahmed and unassigns their open tasks', async () => {
   const sql = await db();
   const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
+  await onProject(sql, 'omar', 'ihop');
   await sql`select cb.task_add(project => 'ihop', title => 'PO sign-off', assignee => 'omar', status => 'review')`;
   await sql`select cb.task_add(project => 'ihop', title => 'old', assignee => 'omar', status => 'done')`;
   await sql`select cb.task_add(project => 'ihop', title => 'Draft copy', assignee => 'omar', status => 'in_progress')`;
@@ -112,6 +116,7 @@ test('People: removing a person hands their open questions back to Ahmed and una
 test('People: only the dashboard rotates or removes; a session cannot, with or without a name', async () => {
   const sql = await db();
   const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
+  await onProject(sql, 'omar', 'ihop');
   for (const fn of ['user_rotate', 'user_remove']) {
     for (const args of [{ name: 'omar' }, { name: 'omar', actor: 'W1@pc' }, { name: 'omar', actor: 'ahmed' }]) {
       const r = await rpc(fn, args, SESSION);
@@ -136,12 +141,14 @@ test('People: add, new link and remove each leave one audit line, never the toke
   const sql = await db();
   const add = (await (await rpc('user_add', { name: 'omar', display: 'Omar', actor: 'ahmed' })).json()).result;
   await rpc('user_add', { name: 'omar', display: 'Omar', actor: 'ahmed' }); // the same again: nothing changed, nothing logged
+  await onProject(sql, 'omar', 'ihop');
   await sql`select cb.ask(project => 'ihop', body => 'q', to_user => 'omar', actor => 'orch@shaltoot')`;
   const fresh = (await (await rpc('user_rotate', { name: 'omar', actor: 'ahmed' })).json()).result;
   await rpc('user_remove', { name: 'omar', actor: 'ahmed' });
   const evs = await sql`select actor, summary, data from cb.events where kind = 'user' order by id`;
   assert.deepEqual(evs.map((e) => [e.actor, e.summary, e.data]), [
     ['ahmed', 'added Omar (omar)', { user: 'omar', action: 'add' }],
+    ['ahmed', 'Omar (omar) is now on ihop', { user: 'omar', action: 'project_add', project: 'ihop' }],
     ['ahmed', 'new link for Omar (omar): the old one no longer works', { user: 'omar', action: 'rotate' }],
     ['ahmed', 'removed Omar (omar): 1 open question back to Ahmed, 0 open tasks unassigned', { user: 'omar', action: 'remove', questions: 1, tasks: 0 }],
   ]);

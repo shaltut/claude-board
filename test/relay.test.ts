@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { freshDb, TEST_URL } from './helpers.ts';
+import { freshDb, onProject, TEST_URL } from './helpers.ts';
 
 const clients: any[] = [];
 after(() => Promise.all(clients.map((c) => c.end())));
@@ -401,6 +401,7 @@ test('an answer from a guest user is attributed to them, not to Ahmed', async ()
   await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
   await sql`select cb.iam('mac', 'w1:p3', 'W2@macbook', 'ihop')`;
   await sql`select cb.user_add('omar', 'Omar')`;
+  await onProject(sql, 'omar', 'ihop');
   await sql`select cb.ask(project => 'ihop', body => 'E1?', reply_to => ${sql.json({ machine: 'mac', pane: 'w1:p3' })}, to_user => 'omar', actor => 'W2@macbook')`;
   await sql`select cb.answer('1', 'B', 'omar')`;
   const [{ i }] = await sql`select cb.inbox('mac', 'w1:p3', 0) as i`;

@@ -11,6 +11,18 @@ board is readable through the tunnel. The link is the whole login, so send it pr
    (`cb user add omar "Omar"`), but never sees the link: the link is Omar's whole login, so only
    the People page shows it.
 
+   Then **put Omar on his projects** with **+ Project** on his card. Questions and tasks reach a
+   person only on their projects: handing him one anywhere else is refused ("omar is not on project
+   qhs"), and the For picker and the Assignee list offer only the people on that item's project.
+   Omar sees only what is assigned to him on his projects. A new person has no projects. Taking him
+   off a project (the x on its chip) hands his open work there back, like removing him.
+
+   **Optional: a password.** **Set password** on his card lets Omar sign in on the board's login page
+   with his name and password instead of the link (send the password separately from the name). The
+   link keeps working as one-click sign-in. Anyone reaching the board through the tunnel without
+   being signed in gets the login page; a wrong name or password gets one message after a second.
+   He can **Sign out** on his page.
+
 2. **Check the tunnel is up.** The board is shared through a Cloudflare named tunnel,
    `claude-board`, which runs as the `cloudflared` Windows service and forwards its https
    hostname to the board on this PC (port 4747). As a service it runs without a terminal, so there

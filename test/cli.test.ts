@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { freshDb, TEST_URL } from './helpers.ts';
+import { freshDb, onProject, TEST_URL } from './helpers.ts';
 
 const clients: any[] = [];
 after(() => Promise.all(clients.map((c) => c.end())));
@@ -184,6 +184,7 @@ test('cb user add adds a person (Ahmed copies the link); cb ask --to and cb assi
   assert.equal(u.out, 'added omar (Omar): Ahmed copies their link from the People page');
   assert.ok(!u.out.includes(token), 'a session never sees the link');
   assert.match(cb(['users']).out, /omar\s+Omar/);
+  await onProject(sql, 'omar', 'demo');
   assert.equal(cb(['ask', 'demo', 'E1 scope?', '-o', 'A=x', '-o', 'B=y', '--to', 'omar']).code, 0);
   assert.equal(cb(['ask', 'demo', 'mine', '-o', 'A=x', '-o', 'B=y']).code, 0);
   assert.equal(cb(['assign', 'Q2', 'omar']).out, 'Q2 → omar');
@@ -195,6 +196,8 @@ test('cb user add adds a person (Ahmed copies the link); cb ask --to and cb assi
   const [t] = await sql`select assignee from cb.tasks where id = 1`;
   assert.equal(t.assignee, 'omar');
   assert.match(cb(['brief', 'demo']).out, /Q1 .*E1 scope\? \(for omar\)/);
+  assert.match(cb(['ask', 'elsewhere', 'x?', '-o', 'A=x', '-o', 'B=y', '--to', 'omar']).err,
+    /omar is not on project elsewhere: Ahmed adds people to projects on the People page/);
 });
 
 test("cb user rotate and remove are Ahmed's, on the People page", async () => {

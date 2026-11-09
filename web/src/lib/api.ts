@@ -17,7 +17,10 @@ export interface Question {
   reply_to: { machine?: string; pane?: string } | null; created_at: string
   assigned_to: string | null; answered_by: string | null
 }
-export interface User { name: string; display: string }
+export interface User { name: string; display: string; projects?: string[] } // projects: only from /api/users, not on a guest's whoami
+/** People who can take work on a project (they're on it), plus whoever already holds the item. */
+export const onProject = (users: User[], project: string, holder?: string | null) =>
+  users.filter((u) => u.projects?.includes(project) || u.name === holder)
 export interface CbEvent {
   id: number; at: string; actor: string; project: string | null; task_id: number | null; question_id: number | null
   kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle' | 'user'

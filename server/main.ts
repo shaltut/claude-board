@@ -1,5 +1,5 @@
 import { Hono, type Context } from 'hono';
-import { getCookie, setCookie } from 'hono/cookie';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -32,9 +32,14 @@ app.use('*', async (c, next) => {
   if (!token) return next();
   const [u] = await sql`select name from cb.users where token = ${token}`;
   if (!u) return c.text('This link is not valid any more. Ask Ahmed for a new one.', 401);
-  setCookie(c, 'cb_user', token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 90 * 86_400 });
+  signIn(c, token);
   return c.redirect('/', 302);
 });
+function signIn(c: Context, token: string) {
+  setCookie(c, 'cb_user', token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 90 * 86_400 });
+}
+// Guests with a project scope: only what is assigned to them, on a project Ahmed put them on.
+const onTheirProjects = (user: string) => sql`project in (select project from cb.user_projects where user_name = ${user})`;
 
 app.use('/api/*', async (c, next) => {
   // CSRF: a browser always sends Origin on a cross-site POST; a page elsewhere must not drive the board.
@@ -42,6 +47,24 @@ app.use('/api/*', async (c, next) => {
   if (c.req.method !== 'GET' && origin) {
     const host = (() => { try { return new URL(origin).host } catch { return '' } })();
     if (host !== c.req.header('host') && host !== c.req.header('x-forwarded-host')) return c.json({ ok: false, error: 'cross-site request refused' }, 403);
+  }
+  // The login page (#315): name and password set the same cookie as the link. One answer for every failure,
+  // after a second. ponytail: a fixed delay, not lockout or rate limiting; add those if the tunnel gets hammered.
+  if (c.req.path === '/api/login' && c.req.method === 'POST') {
+    const b = (await c.req.json().catch(() => null)) ?? {};
+    const name = typeof b.name === 'string' ? b.name.trim().toLowerCase() : '', pw = typeof b.password === 'string' ? b.password : '';
+    const [u] = name && pw ? await sql`select token from cb.users where name = ${name} and password is not null
+                                         and password = public.crypt(${pw}, password)` : [];
+    if (!u) {
+      await new Promise((r) => setTimeout(r, 1000));
+      return c.json({ ok: false, error: "That name and password don't match." }, 401);
+    }
+    signIn(c, u.token);
+    return c.json({ ok: true });
+  }
+  if (c.req.path === '/api/logout' && c.req.method === 'POST') {
+    deleteCookie(c, 'cb_user', { path: '/' });
+    return c.json({ ok: true });
   }
   const local = isLocal(c);
   if (c.req.path === '/api/whoami') {
@@ -53,15 +76,15 @@ app.use('/api/*', async (c, next) => {
   const u = await guestOf(c);
   if (!u) return c.json({ ok: false, error: 'open the link Ahmed sent you' }, 401);
   if (c.req.path === '/api/stream') return next();
-  if (c.req.path === '/api/me') return c.json(await q.me(u.name));
+  if (c.req.path === '/api/me') return c.json(await q.me(u.name, onTheirProjects(u.name)));
   const fn = c.req.method === 'POST' && /^\/api\/rpc\/(answer|log)$/.exec(c.req.path)?.[1];
   if (!fn) return c.json({ ok: false, error: 'not available to guests' }, 403);
   const args = (await c.req.json().catch(() => null)) ?? {};
   const id = Number(String(fn === 'answer' ? args.id : args.task_id ?? '').replace(/^[#q]/i, ''));
   if (!Number.isSafeInteger(id)) return c.json({ ok: false, error: 'not a valid id' }, 400);
   const [mine] = fn === 'answer'
-    ? await sql`select project from cb.questions where id = ${id} and assigned_to = ${u.name}`
-    : await sql`select project from cb.tasks where id = ${id} and assignee = ${u.name}`;
+    ? await sql`select project from cb.questions where id = ${id} and assigned_to = ${u.name} and ${onTheirProjects(u.name)}`
+    : await sql`select project from cb.tasks where id = ${id} and assignee = ${u.name} and ${onTheirProjects(u.name)}`;
   if (!mine) return c.json({ ok: false, error: fn === 'answer' ? 'that question is not assigned to you' : 'that task is not assigned to you' }, 403);
   try {
     const safe = fn === 'answer' ? { id: String(id), answer: args.answer, actor: u.name }
@@ -105,7 +128,10 @@ app.get('/api/today', async (c) => {
   return c.json(await q.today(opt(c.req.query('project')), since));
 });
 app.get('/api/last-seen', async (c) => c.json(await q.lastSeen()));
-app.get('/api/users', async (c) => c.json(await sql`select name, display from cb.users order by name`));
+// No tokens or hashes here: the For picker and the assignee list use it, to offer people on the item's project.
+app.get('/api/users', async (c) => c.json(await sql`select u.name, u.display,
+  array(select up.project from cb.user_projects up where up.user_name = u.name order by up.project) as projects
+  from cb.users u order by u.name`));
 // Tokens: reachable only from this PC (the guest block above refuses every other path), and only from the
 // dashboard page: a browser's own fetch says Sec-Fetch-Site: same-origin, curl and sessions send nothing.
 // ponytail: a deterrent, not auth (any local process can send the header), like cb.not_ahmed. The link base is the CLI's.
