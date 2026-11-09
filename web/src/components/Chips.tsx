@@ -79,7 +79,7 @@ function PriorityGlyph({ p }: { p: Task['priority'] }) {
 }
 
 const PRIO_TONE: Record<Task['priority'], string> = {
-  P0: 'text-st-blocked', P1: 'text-foreground', P2: 'text-muted-foreground', P3: 'text-muted-foreground/80',
+  P0: 'text-st-blocked', P1: 'text-foreground', P2: 'text-muted-foreground', P3: 'text-muted-foreground',
 }
 
 /** Read-only priority. */

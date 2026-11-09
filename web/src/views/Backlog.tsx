@@ -27,7 +27,7 @@ function Row({ t, showProject, place, selected, onSelect }: { t: Task; showProje
       <button {...attributes} {...listeners} className="grid h-7 w-5 shrink-0 cursor-grab touch-none place-items-center rounded text-muted-foreground/45 hover:bg-raised hover:text-foreground active:cursor-grabbing" aria-label={`Reorder #${t.id}`}>
         <GripVertical className="size-4" />
       </button>
-      {place != null && <span className="callsign w-5 shrink-0 text-right text-[13px] text-muted-foreground/70" title={`Number ${place} in the queue`}>{place}</span>}
+      {place != null && <span className="callsign w-5 shrink-0 text-right text-[13px] text-muted-foreground" title={`Number ${place} in the queue`}>{place}</span>}
       {onSelect && <Checkbox checked={selected} onCheckedChange={(v) => onSelect(!!v)} aria-label={`Select #${t.id}`} />}
       <TaskId id={t.id} className="w-9 shrink-0" />
       <PriorityPicker t={t} className="shrink-0" />

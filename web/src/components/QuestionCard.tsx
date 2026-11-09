@@ -78,7 +78,7 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
             </button>
           )}
           {holding && !q.task_id && <span className="font-medium text-lamp">holding work</span>}
-          <span className="callsign ml-auto text-[12px] text-muted-foreground/80">Q{q.id}</span>
+          <span className="callsign ml-auto text-[12px] text-muted-foreground">Q{q.id}</span>
           {!guest && <AssignPicker q={q} />}
         </header>
 
