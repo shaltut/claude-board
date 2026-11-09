@@ -287,6 +287,8 @@ test('the Memory page sees flagged proposals; a session reading /api/memories do
   const list = async (headers: Record<string, string>) => (await (await app.request('/api/memories', { headers })).json()).map((m: any) => m.id);
   assert.ok((await list({ ...script, 'sec-fetch-site': 'same-origin' })).includes(id), 'the dashboard page lists the flagged proposal for review');
   assert.ok(!(await list(script)).includes(id), 'a script or session does not');
+});
+
 test('"Already ruled": the dashboard answers with a live memory entry; the session gets the rule, the link is kept', async () => {
   const sql = await db();
   await sql`select cb.ensure_project('demo')`;
