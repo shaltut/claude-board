@@ -1,16 +1,16 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/schibsted-grotesk";
+@import "@fontsource-variable/archivo/wdth.css";
 @import "@fontsource-variable/jetbrains-mono";
 
 @custom-variant dark (&:is(.dark *));
 
-/* Claude Board — "night shift handover".
-   Indigo night for the chrome, dawn amber reserved for what waits on Ahmed. */
+/* Claude Board: "Tower". Sessions are callsigns, tasks are strips in bays, and one colour, the
+   amber call lamp, lights only where something waits on Ahmed. See docs/design/brief.md. */
 
 @theme inline {
-  --font-sans: 'Schibsted Grotesk Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Archivo Variable', ui-sans-serif, system-ui, sans-serif;
   --font-heading: var(--font-sans);
   --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
 
@@ -34,9 +34,14 @@
   --color-background: var(--background);
   --color-raised: var(--raised);
 
-  --color-dawn: var(--dawn);
-  --color-dawn-soft: var(--dawn-soft);
-  --color-dawn-ink: var(--dawn-ink);
+  --color-lamp: var(--lamp);
+  --color-lamp-soft: var(--lamp-soft);
+  --color-lamp-ink: var(--lamp-ink);
+  --color-clear: var(--clear);
+  /* Older name for the lamp, kept so nothing that still says "dawn" loses its colour. */
+  --color-dawn: var(--lamp);
+  --color-dawn-soft: var(--lamp-soft);
+  --color-dawn-ink: var(--lamp-ink);
   --color-st-backlog: var(--st-backlog);
   --color-st-next: var(--st-next);
   --color-st-progress: var(--st-progress);
@@ -47,74 +52,88 @@
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-xl: calc(var(--radius) * 1.6);
+
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Light: paper and ink. */
+/* Sticky header height: two rows (bar + views) below lg, one row above. */
+:root { --hdr: 6.2rem; }
+@media (min-width: 64rem) { :root { --hdr: 3.3rem; } }
+
+/* Light: strip paper and ink. */
 :root {
-  --radius: 0.5rem;
-  --background: #f5f6fa;
-  --foreground: #1b2033;
-  --card: #ffffff;
-  --card-foreground: #1b2033;
-  --raised: #eceef5;
+  color-scheme: light;
+  --radius: 0.375rem;
+  --background: #eef1ec;   /* paper */
+  --foreground: #14201f;   /* ink */
+  --card: #ffffff;         /* strip */
+  --card-foreground: #14201f;
+  --raised: #e3e8e2;       /* rack */
   --popover: #ffffff;
-  --popover-foreground: #1b2033;
-  --primary: #2b3566;
-  --primary-foreground: #f5f6fa;
-  --secondary: #e7e9f2;
-  --secondary-foreground: #1b2033;
-  --muted: #e7e9f2;
-  --muted-foreground: #5d6482;
-  --accent: #e3e6f2;
-  --accent-foreground: #1b2033;
-  --destructive: #c4412f;
-  --border: #dcdfeb;
-  --input: #d3d7e6;
-  --ring: #6f7fe0;
+  --popover-foreground: #14201f;
+  --primary: #14201f;
+  --primary-foreground: #f4f6f2;
+  --secondary: #e3e8e2;
+  --secondary-foreground: #14201f;
+  --muted: #e3e8e2;
+  --muted-foreground: #55635f;  /* graphite: 5.1:1 on rack, 5.5:1 on paper */
+  --accent: #e3e8e2;
+  --accent-foreground: #14201f;
+  --destructive: #c2361f;
+  --border: #d3dad3;       /* rule */
+  --input: #c9d1ca;
+  --ring: #1f7f95;
 
-  --dawn: #b9790a;
-  --dawn-soft: #fbf1dc;
-  --dawn-ink: #6b4500;
-  --st-backlog: #8a90a8;
-  --st-next: #5b6bd6;
-  --st-progress: #4b5fe0;
-  --st-blocked: #d4513f;
-  --st-review: #9a5bc9;
-  --st-done: #3f9a6c;
+  --lamp: #a34d00;         /* the call lamp: only for what waits on Ahmed */
+  --lamp-glow: #ff9d1c;
+  --lamp-soft: #fbedd9;
+  --lamp-ink: #6e3300;
+  --clear: #1f7a52;        /* relay live, cleared, done */
+
+  --st-backlog: oklch(0.6 0.02 200);
+  --st-next: oklch(0.55 0.14 270);
+  --st-progress: oklch(0.56 0.11 220);
+  --st-blocked: #c2361f;
+  --st-review: oklch(0.55 0.15 310);
+  --st-done: #1f7a52;
 }
 
-/* Dark: indigo night. */
+/* Dark: instrument glass at night. */
 .dark {
-  --background: #141a2e;
-  --foreground: #e7e9f3;
-  --card: #1c2340;
-  --card-foreground: #e7e9f3;
-  --raised: #252d4f;
-  --popover: #1f2747;
-  --popover-foreground: #e7e9f3;
-  --primary: #c9d0ff;
-  --primary-foreground: #141a2e;
-  --secondary: #252d4f;
-  --secondary-foreground: #e7e9f3;
-  --muted: #212948;
-  --muted-foreground: #8c93b3;
-  --accent: #2a3358;
-  --accent-foreground: #e7e9f3;
-  --destructive: #f07a6a;
-  --border: #2a3256;
-  --input: #323b63;
-  --ring: #8ea2ff;
+  color-scheme: dark;
+  --background: #0f1719;
+  --foreground: #e3ebe8;
+  --card: #16201f;
+  --card-foreground: #e3ebe8;
+  --raised: #1b2725;
+  --popover: #182322;
+  --popover-foreground: #e3ebe8;
+  --primary: #e3ebe8;
+  --primary-foreground: #0f1719;
+  --secondary: #1f2c2a;
+  --secondary-foreground: #e3ebe8;
+  --muted: #1b2725;
+  --muted-foreground: #8a9b98;
+  --accent: #213030;
+  --accent-foreground: #e3ebe8;
+  --destructive: #ff7a63;
+  --border: #25322f;
+  --input: #2d3b38;
+  --ring: #6cc4d4;
 
-  --dawn: #f2b33d;
-  --dawn-soft: #2e2a2a;
-  --dawn-ink: #ffd88a;
-  --st-backlog: #6f7697;
-  --st-next: #a8b5ff;
-  --st-progress: #8ea2ff;
-  --st-blocked: #f07a6a;
-  --st-review: #c79bf0;
-  --st-done: #7fc8a0;
+  --lamp: #ffb43c;
+  --lamp-glow: #ffb43c;
+  --lamp-soft: #2a2416;
+  --lamp-ink: #ffd18a;
+  --clear: #4fd69c;
+
+  --st-backlog: oklch(0.62 0.02 200);
+  --st-next: oklch(0.72 0.12 270);
+  --st-progress: oklch(0.75 0.1 220);
+  --st-blocked: #ff7a63;
+  --st-review: oklch(0.72 0.13 310);
+  --st-done: #4fd69c;
 }
 
 @layer base {
@@ -123,18 +142,74 @@
   }
   html {
     @apply font-sans antialiased;
-
+    font-stretch: 96%;
+    -webkit-tap-highlight-color: transparent;
   }
   body {
     @apply bg-background text-foreground;
+    font-weight: 400;
+    touch-action: manipulation;
   }
   :focus-visible {
     @apply outline-2 outline-offset-2 outline-ring;
   }
+  ::selection { background: color-mix(in oklab, var(--ring) 30%, transparent); }
+  h1, h2, h3 { text-wrap: balance; }
+  /* Light text on dark glass blooms; take a little weight off so dark and light read the same. */
+  .dark body { font-weight: 370; }
+}
+
+/* Strip lettering: condensed bold, for callsigns, IDs and column heads. */
+@utility callsign {
+  font-stretch: 70%;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+@utility wide {
+  font-stretch: 112%;
+}
+
+/* The call lamp. Lit = something waits on Ahmed; breathing = a session is blocked on it. */
+@utility lamp {
+  display: inline-block;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: var(--lamp);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--lamp-glow) 22%, transparent), 0 0 12px color-mix(in oklab, var(--lamp-glow) 45%, transparent);
+}
+@keyframes lamp-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+@utility lamp-breathe {
+  animation: lamp-breathe 2.4s ease-in-out infinite;
+}
+
+/* Clearance: the answered strip's lamp turns green and the strip leaves the rack. */
+@keyframes clear-out {
+  0% { opacity: 1; transform: translateX(0); }
+  35% { opacity: 1; transform: translateX(0); }
+  100% { opacity: 0; transform: translateX(48px); }
+}
+@utility clearing {
+  animation: clear-out 520ms var(--ease-out-quint) forwards;
+  pointer-events: none;
+}
+
+@keyframes strip-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+@utility strip-in {
+  animation: strip-in 260ms var(--ease-out-quint) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+@media (pointer: fine) {
+  html { overscroll-behavior: none; }
 }
 
 /* Markdown bodies (task descriptions, question context). */
