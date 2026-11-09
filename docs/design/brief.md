@@ -24,7 +24,7 @@ Named tokens; text pairs checked at AA (numbers are contrast ratios).
 | `strip` (card) | `#FFFFFF` | `#16201F` | cards, strips, panels |
 | `rack` (muted) | `#E3E8E2` | `#1B2725` | column wells, inputs |
 | `ink` (foreground) | `#14201F` (14.7) | `#E3EBE8` (15.0) | text |
-| `graphite` (muted text) | `#5B6B69` (4.9) | `#8A9B98` (6.2) | secondary text |
+| `graphite` (muted text) | `#55635F` (5.5 paper, 5.1 rack) | `#8A9B98` (6.2) | secondary text |
 | `rule` (border) | `#D3DAD3` | `#25322F` | hairlines |
 | `lamp` (call / waiting on you) | `#A34D00` (5.8 on white) | `#FFB43C` (10.2) | the call lamp, only |
 | `clear` (live, done) | `#1F7A52` (5.3) | `#4FD69C` (9.9) | relay live, cleared, done |
@@ -59,10 +59,13 @@ The base is a green-grey graphite, not slate blue and not neutral black: the col
   `prefers-reduced-motion` turns all of it into instant state changes.
 
 ## Logo
-**The rack.** Three pill-shaped strips stacked like a strip board; the middle one is short, and the
-call lamp sits in its place. The silhouette reads as a "C" with a lit lamp in its mouth. Ink
-strips and an amber lamp on a graphite tile; the same SVG is the header mark and `favicon.svg`.
-At 16px it is three bars and a dot, and still reads.
+**A racked C with the lamp in its mouth.** Three pill-shaped strips (top, spine, bottom; the top one
+shorter, like strips of different lengths in a rack) form a "C" for Claude, and the call lamp sits
+in its opening. Paper strips and an amber lamp on a graphite tile, so it holds on light and dark
+tab bars. The same SVG is `public/favicon.svg` and the header mark (`components/Mark.tsx`).
+At 16px it is a bold C and a dot. The mark is live: the lamp is amber while anything waits on
+Ahmed and green when nothing does, in the header and in the browser tab (with the count in the title).
+First drafts (three stacked strips with a lamp) read as a hamburger icon at 16px and were dropped.
 
 ## Self-review: what was generic, what changed
 - ui-ux-pro-max proposed slate `#0F172A` + run-green + JetBrains/IBM Plex (the "dark dev tool"

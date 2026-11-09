@@ -67,8 +67,12 @@ export default function App() {
 
   return (
     <div className="min-h-dvh">
+      <button onClick={() => document.getElementById('main')?.focus()}
+        className="sr-only z-50 rounded-md bg-foreground px-3 py-2 text-sm text-background focus:not-sr-only focus:fixed focus:top-2 focus:left-2">
+        Skip to content
+      </button>
       <TopBar route={route} live={live} onSearch={() => setMenu(true)} />
-      <main id="main" className="mx-auto max-w-[1600px] px-4 pt-6 pb-16 sm:px-6 lg:pt-8">
+      <main id="main" tabIndex={-1} className="outline-none mx-auto max-w-[1600px] px-4 pt-6 pb-16 sm:px-6 lg:pt-8">
         {route.tag && (route.view === 'board' || route.view === 'backlog') && (
           <div className="mb-4 flex items-center gap-2 text-sm" role="status">
             <span className="text-muted-foreground">Only tasks tagged</span>
