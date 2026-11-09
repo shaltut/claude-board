@@ -173,3 +173,11 @@ test('a web page on another site cannot drive the board through the browser (CSR
   assert.equal((await post('http://localhost:4747')).status, 200);
   assert.equal((await post()).status, 200); // scripts and curl send no Origin
 });
+
+test('a guest sending garbage gets a clean 400, not a server error', async () => {
+  const sql = await db();
+  const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
+  const post = (body: string) => remote('/api/rpc/answer', { method: 'POST', cookie: token, body, headers: { 'content-type': 'application/json' } });
+  assert.equal((await post('null')).status, 400);
+  assert.equal((await post(JSON.stringify({ id: 'abc', answer: 'x' }))).status, 400);
+});
