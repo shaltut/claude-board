@@ -4,6 +4,7 @@ import { get, type Task, type User } from '@/lib/api'
 import { Guest } from '@/views/Guest'
 import { useLive } from '@/lib/live'
 import { go, useRoute, VIEWS } from '@/lib/route'
+import { shortcutsOff } from '@/lib/keys'
 import { TopBar } from '@/components/TopBar'
 import { CommandMenu } from '@/components/CommandMenu'
 import { NewTask } from '@/components/NewTask'
@@ -17,10 +18,6 @@ import { Huddles } from '@/views/Huddles'
 import { TagChip, TypeChip } from '@/components/Chips'
 import { Mark } from '@/components/Mark'
 
-const typing = (e: KeyboardEvent) => {
-  const el = e.target as HTMLElement
-  return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
-}
 
 type Who = { role: 'local' } | { role: 'guest'; user: User } | { role: 'anonymous' }
 
@@ -53,7 +50,7 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setMenu((m) => !m); return }
-      if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return
+      if (shortcutsOff(e.target as Element | null) || e.ctrlKey || e.metaKey || e.altKey) return
       const i = Number(e.key) - 1
       if (i >= 0 && i < VIEWS.length) go({ view: VIEWS[i], task: undefined, actor: undefined, huddle: undefined })
       else if (e.key === 'c') { e.preventDefault(); setNewTask(true) }
