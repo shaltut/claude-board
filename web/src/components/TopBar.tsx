@@ -1,6 +1,7 @@
 import { Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useMemories, useQuestions } from '@/lib/api'
+import { useAsks, useMemories, useQuestions } from '@/lib/api'
+import { replyIds } from '@/lib/asks'
 import { go, href, type Route, type View } from '@/lib/route'
 import { Kbd } from '@/components/ui/kbd'
 import { ProjectSwitcher } from './ProjectSwitcher'
@@ -30,6 +31,9 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
   // Ring on any project, not just the one in view: a new question should reach Ahmed wherever he is.
   const { data: everywhere } = useQuestions(undefined, 'open')
   useRing(everywhere?.filter((q) => !q.assigned_to).map((q) => q.id))
+  // a session's reply to one of Ahmed's asks (#936) rings too, on any view
+  const { data: asks } = useAsks(undefined)
+  useRing(asks && replyIds(asks))
 
   return (
     <header className="sticky top-0 z-30 border-b bg-background/85 backdrop-blur-md backdrop-saturate-150">

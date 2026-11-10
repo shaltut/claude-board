@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import type { Ask } from './asks'
 
 export type Status = 'backlog' | 'next' | 'in_progress' | 'blocked' | 'review' | 'done' | 'cancelled'
 
@@ -54,7 +55,7 @@ export const onProject = (users: User[], project: string, holder?: string | null
   users.filter((u) => u.projects?.includes(project) || u.name === holder)
 export interface CbEvent {
   id: number; at: string; actor: string; project: string | null; task_id: number | null; question_id: number | null
-  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle' | 'user' | 'epic' | 'memory' | 'sent_back' | 'rewritten' | 'goal'
+  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle' | 'user' | 'epic' | 'memory' | 'sent_back' | 'rewritten' | 'goal' | 'ask'
   summary: string; data: Record<string, any>
 }
 export const MEM_KINDS = ['rule', 'ruling', 'fact', 'gotcha', 'runbook'] as const
@@ -122,4 +123,7 @@ export const useMemStats = (project?: string) =>
 export const useMemFind = (term: string, project?: string) =>
   useQuery({ queryKey: ['memories', 'find', project, term], enabled: term.trim().length > 1,
     queryFn: () => get<Memory[]>(`/api/memories${qs({ project, q: term.trim(), live: '1' })}`) })
+/** Ahmed's asks (#936): open threads and those closed in the last day. */
+export const useAsks = (project?: string) =>
+  useQuery({ queryKey: ['asks', project], queryFn: () => get<Ask[]>(`/api/asks${qs({ project })}`) })
 export { qs }

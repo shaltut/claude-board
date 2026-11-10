@@ -12,6 +12,7 @@ import { MakeRule } from '@/components/MakeRule'
 import { Timeline } from '@/components/Timeline'
 import { ActorChip, ProjectChip } from '@/components/Chips'
 import { GoalProgress } from '@/views/Goals'
+import { Asks } from '@/components/Asks'
 
 /**
  * "Since you last looked" is anchored once per visit: the stored marker is read on mount and never
@@ -147,6 +148,7 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
           </section>
         )}
 
+        <Asks project={route.project} />
         <GoalsCard project={route.project} />
         <MemoryCard project={route.project} />
 

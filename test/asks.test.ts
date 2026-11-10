@@ -201,6 +201,19 @@ test('cb tick: late asks for this session come first; cb start lists asks awaiti
   assert.match(s.out, /^  cb reply A1 "<reply>"/m);
 });
 
+test('Today: the default recipient is the picked project\'s orchestrator, a live one first; a reply id rings', async () => {
+  const { defaultRecipient, replyIds } = await import('../web/src/lib/asks.ts');
+  const s = [{ actor: 'W1@mac', project: 'demo', live: true }, { actor: 'orch@old', project: 'demo', live: false },
+    { actor: 'orch@pc', project: 'demo', live: true }, { actor: 'orch@mac', project: 'ihop', live: true }];
+  assert.equal(defaultRecipient(s, 'demo'), 'orch@pc');
+  assert.equal(defaultRecipient(s.filter((x) => x.actor !== 'orch@pc'), 'demo'), 'orch@old', 'no live one: still the orchestrator');
+  assert.equal(defaultRecipient(s, 'other'), '', 'no orchestrator: Ahmed picks');
+  assert.equal(defaultRecipient(s), '', 'no project picked: Ahmed picks');
+  const line = (id: number, action: string, actor: string) => ({ id, action, actor, at: '', text: '', done: false });
+  assert.deepEqual(replyIds([{ lines: [line(1, 'open', 'ahmed'), line(2, 'reply', 'orch@pc'), line(3, 'say', 'ahmed')] },
+    { lines: [line(9, 'reply', 'W1@mac')] }] as any), [2, 9]);
+});
+
 // A stand-in for Claude Code's inbox: checks the auth line, collects messages.
 function fakeInbox(path: string, token: string) {
   const got: any[] = [];

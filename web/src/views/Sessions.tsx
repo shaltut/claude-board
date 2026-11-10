@@ -15,7 +15,7 @@ export interface SessionRow {
 }
 
 // last_seen moves every time the session's relay checks in, so poll to keep the live dots honest.
-const useSessions = (project?: string) =>
+export const useSessions = (project?: string) =>
   useQuery({ queryKey: ['sessions', project], queryFn: () => get<SessionRow[]>(`/api/sessions${qs({ project })}`), refetchInterval: 30_000 })
 
 export function Sessions({ route }: { route: Route }) {
