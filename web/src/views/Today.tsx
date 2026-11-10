@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, BookMarked, Search, Target } from 'lucide-react'
+import { ArrowLeft, BookMarked, Search, Send, Target } from 'lucide-react'
+import { toast } from 'sonner'
 import { get, qs, rpc, useGoals, useMemStats, useQuestions, useUsers, type CbEvent, type Question } from '@/lib/api'
 import { ago, clock, day } from '@/lib/format'
 import { go, href, type Route } from '@/lib/route'
@@ -151,6 +152,7 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
         <Asks project={route.project} />
         <GoalsCard project={route.project} />
         <MemoryCard project={route.project} />
+        <TelegramCard />
 
         <a href="#/questions" onClick={(e) => { e.preventDefault(); go({ view: 'questions' }) }}
           className="mt-6 inline-block text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
@@ -225,6 +227,47 @@ function MemoryCard({ project }: { project?: string }) {
         {' · '}<span className={cn('callsign', m.past_review > 0 && 'text-st-blocked')}>{m.past_review}</span> past review
       </span>
     </a>
+  )
+}
+
+/** Telegram answering (#683): pair Ahmed's chat with the board's bot. Hidden when the server has no bot token.
+ *  The code is one-time and lasts 10 minutes; pairing writes cb.settings, whose NOTIFY flips this card live. */
+function TelegramCard() {
+  const qc = useQueryClient()
+  const { data: t } = useQuery({ queryKey: ['telegram'], queryFn: () => get<{ configured: boolean; bot: string | null; paired: boolean; paired_at: string | null }>('/api/telegram') })
+  const [link, setLink] = useState<string | null>(null)
+  const post = async (path: string) => {
+    const r = await fetch(path, { method: 'POST' })
+    const j = await r.json()
+    if (!r.ok || j.ok === false) throw new Error(j.error ?? r.statusText)
+    return j
+  }
+  const connect = () => post('/api/telegram/connect').then((j) => setLink(j.link), (e) => toast.error('Could not connect Telegram', { description: e.message }))
+  const unpair = () => post('/api/telegram/disconnect').then(() => { setLink(null); qc.invalidateQueries({ queryKey: ['telegram'] }) },
+    (e) => toast.error('Could not unpair Telegram', { description: e.message }))
+  if (!t?.configured) return null
+  return (
+    <div className="mt-6 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border bg-card px-4 py-3 text-sm">
+      <Send className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="font-medium">Telegram</span>
+      {t.paired ? (
+        <>
+          <span className="text-muted-foreground">Questions go to your chat{t.paired_at ? `, since ${day(t.paired_at)}` : ''}.</span>
+          <Button variant="ghost" size="sm" className="ml-auto h-7" onClick={unpair}>Unpair</Button>
+        </>
+      ) : link ? (
+        <>
+          <a href={link} target="_blank" rel="noreferrer" className="font-medium underline underline-offset-4">Open @{t.bot} and press Start</a>
+          <span className="text-muted-foreground">The link works once, for 10 minutes.</span>
+        </>
+      ) : (
+        <>
+          <span className="text-muted-foreground">Answer questions from your phone.</span>
+          <Button variant="outline" size="sm" className="ml-auto h-7" onClick={connect} disabled={!t.bot}
+            title={t.bot ? undefined : 'The bot has not reached Telegram yet'}>Connect Telegram</Button>
+        </>
+      )}
+    </div>
   )
 }
 

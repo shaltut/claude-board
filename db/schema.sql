@@ -2852,3 +2852,21 @@ begin
    where (p is null or a.project = p) and (to_actor is null or a.to_actor = to_actor)
      and (a.status = 'open' or (coalesce(include_closed, true) and a.closed_at > now() - interval '24 hours'))), '[]');
 end $$;
+-- ---------------------------------------------------------------- telegram (#683)
+-- The board server's bot (server/telegram.ts) sends Ahmed's open questions to his paired chat and answers them
+-- from it. The paired chat lives in cb.settings ('telegram_chat': {chat_id, paired_at}); this table maps each
+-- question to the message that shows it, so a restart neither re-sends nor loses the buttons.
+-- asked_at: the question's created_at when sent (a rewrite or a reopened follow-up is asked anew: a new message).
+-- state: 'open' while the buttons work, else the outcome the message shows ('answered:<answer>', 'withdrawn', ...).
+-- picked: multi-select toggles so far (raw labels). awaiting 'clarify': the next reply is the send-back note;
+-- prompt_id: the "reply with your question" message that reply may quote.
+create table if not exists cb.telegram_messages (
+  question_id bigint primary key references cb.questions(id) on delete cascade,
+  chat_id     bigint not null,
+  message_id  bigint not null,
+  asked_at    timestamptz not null,
+  state       text not null default 'open',
+  picked      jsonb not null default '[]',
+  awaiting    text,
+  prompt_id   bigint
+);

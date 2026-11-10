@@ -8,6 +8,7 @@ import { join, relative } from 'node:path';
 import { sql, dotenv } from './db.ts';
 import { callFn, RpcError } from './rpc.ts';
 import * as q from './queries.ts';
+import { reconcile, startTelegram, telegramConnect, telegramDisconnect, telegramStatus } from './telegram.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const DIST = join(ROOT, 'web', 'dist');
@@ -164,6 +165,14 @@ app.get('/api/people', async (c) => {
   if (c.req.header('sec-fetch-site') !== 'same-origin') return c.json({ ok: false, error: 'the People page only: open it on the dashboard' }, 403);
   return c.json({ public_url: (process.env.CB_PUBLIC_URL || dotenv('PUBLIC_URL') || '').replace(/\/$/, '') || null, people: await q.people() });
 });
+// Telegram answering (#683): pairing is the dashboard page's alone, as tokens are on /api/people (guests never get here).
+const pageOnly = (c: Context) => c.req.header('sec-fetch-site') === 'same-origin' ? null
+  : c.json({ ok: false, error: 'Telegram pairing is on the dashboard only' }, 403);
+app.get('/api/telegram', async (c) => pageOnly(c) ?? c.json(await telegramStatus()));
+app.post('/api/telegram/connect', async (c) => {
+  try { return pageOnly(c) ?? c.json(telegramConnect()); } catch (e: any) { return c.json({ ok: false, error: e.message }, 400); }
+});
+app.post('/api/telegram/disconnect', async (c) => pageOnly(c) ?? (await telegramDisconnect(), c.json({ ok: true })));
 app.get('/api/sessions', async (c) => c.json(await q.sessions(opt(c.req.query('project')))));
 app.get('/api/huddles', async (c) => c.json(await q.huddles(opt(c.req.query('project')))));
 app.get('/api/epics', async (c) => c.json(await q.epics(opt(c.req.query('project')))));
@@ -205,7 +214,9 @@ type Client = (table: string) => void;
 const clients = new Set<Client>();
 let listening: Promise<unknown> | null = null;
 function ensureListen() {
-  listening ??= sql.listen('cb', (table) => clients.forEach((send) => send(table)));
+  // 'listen' on every (re)connect: what changed while the connection was down is caught up
+  const fan = (table: string) => clients.forEach((send) => send(table));
+  listening ??= sql.listen('cb', fan, () => fan('listen'));
   return listening;
 }
 
@@ -239,12 +250,21 @@ app.get('*', (c) =>
     ? c.html(readFileSync(join(DIST, 'index.html'), 'utf8'))
     : c.text('UI not built yet: run `pnpm build`', 503));
 
+/** The Telegram bot (#683) rides the same LISTEN as the pages: a question change reconciles the chat. */
+export async function startBot(token: string, api: string) {
+  startTelegram({ token, api });
+  clients.add((table) => { if (table === 'questions' || table === 'listen') reconcile(); });
+  await ensureListen();
+}
+
 export async function start() {
   const { ensurePg } = await import('../db/pg.ts');
   ensurePg();
   const port = Number(process.env.PORT ?? 4747);
   const hostname = process.env.HOST ?? '127.0.0.1';
   serve({ fetch: app.fetch, port, hostname }, () => console.log(`Claude Board: http://localhost:${port}`));
+  const token = process.env.TELEGRAM_BOT_TOKEN || dotenv('TELEGRAM_BOT_TOKEN');
+  if (token) await startBot(token, process.env.TELEGRAM_API || dotenv('TELEGRAM_API') || 'https://api.telegram.org');
 }
 
 if (import.meta.main) await start();
