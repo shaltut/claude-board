@@ -141,12 +141,14 @@ async function pass() {
 }
 
 /** Answer or send back as Ahmed's dashboard, once: refused if it is no longer open for him. */
-async function act(id: number, fn: 'answer' | 'send_back', args: Record<string, unknown>): Promise<string | null> {
+// asked: the message's asked_at as text; a question rewritten since (cb.reask: same id, new options) is refused.
+async function act(id: number, asked: string, fn: 'answer' | 'send_back', args: Record<string, unknown>): Promise<string | null> {
   try {
     const done = await sql.begin(async (tx: any) => {
       await tx`set local application_name = 'cb-web'`;
-      const [q] = await tx`select * from cb.questions where id = ${id} for update`;
+      const [q] = await tx`select *, created_at = ${asked}::text::timestamptz as same from cb.questions where id = ${id} for update`;
       if (!q || q.status !== 'open' || q.assigned_to) return refusal(id, q);
+      if (!q.same) return `Q${id} was rewritten: answer the new message.`;
       await callFn(fn, { id: String(id), ...args }, tx);
       return null;
     });
@@ -170,7 +172,7 @@ function refusal(id: number, q: any) {
 const say = (chat: number, text: string, more: object = {}) => tg('sendMessage', { chat_id: chat, text, ...more });
 
 async function row(where: any) {
-  const [m] = await sql`select m.*, q.options, q.multi from cb.telegram_messages m join cb.questions q on q.id = m.question_id where ${where}`;
+  const [m] = await sql`select m.*, m.asked_at::text as asked, q.options, q.multi from cb.telegram_messages m join cb.questions q on q.id = m.question_id where ${where}`;
   return m;
 }
 
@@ -178,12 +180,12 @@ async function onButton(cb: any, chat: number) {
   const [kind, idS, arg] = String(cb.data ?? '').split(':');
   const id = Number(idS);
   const m = Number.isSafeInteger(id) ? await row(sql`m.question_id = ${id}`) : null;
-  const toast = (text: string, alert = false) => tg('answerCallbackQuery', { callback_query_id: cb.id, text, show_alert: alert });
+  const toast = (text: string, alert = false) => tg('answerCallbackQuery', { callback_query_id: cb.id, text: fit(text, 200), show_alert: alert });
   if (!m || m.message_id !== cb.message?.message_id || m.chat_id !== chat) return toast('This message is out of date.');
   if (m.state !== 'open') return toast(refusal(id, (await sql`select * from cb.questions where id = ${id}`)[0]), true);
   const label = (i: string) => m.options?.[Number(i)]?.label as string | undefined;
   if (kind === 'o' && label(arg)) {
-    const r = await act(id, 'answer', { answer: label(arg)!.replace(RECOMMENDED, '') });
+    const r = await act(id, m.asked, 'answer', { answer: label(arg)!.replace(RECOMMENDED, '') });
     return toast(r ?? 'Answered.', !!r);
   }
   if (kind === 't' && label(arg)) {
@@ -196,7 +198,7 @@ async function onButton(cb: any, chat: number) {
   }
   if (kind === 's') {
     if (!m.picked.length) return toast('Pick at least one first, or reply with your own answer.', true);
-    const r = await act(id, 'answer', { answer: m.picked.join('; ') });
+    const r = await act(id, m.asked, 'answer', { answer: m.picked.join('; ') });
     return toast(r ?? 'Answered.', !!r);
   }
   if (kind === 'b' && REASONS[arg]) {
@@ -206,7 +208,7 @@ async function onButton(cb: any, chat: number) {
       await sql`update cb.telegram_messages set awaiting = 'clarify', prompt_id = ${p.message_id} where question_id = ${id}`;
       return toast('Reply with your question.');
     }
-    const r = await act(id, 'send_back', { reason: arg, note: null });
+    const r = await act(id, m.asked, 'send_back', { reason: arg, note: null });
     return toast(r ?? 'Sent back.', !!r);
   }
   return toast('Unknown button.');
@@ -221,8 +223,10 @@ async function onText(msg: any, chat: number) {
   if (!m) return say(chat, "That message isn't a question waiting on you (a rewrite comes as a new message).", { reply_parameters: { message_id: msg.message_id } });
   if (m.state !== 'open') return say(chat, refusal(m.question_id, (await sql`select * from cb.questions where id = ${m.question_id}`)[0]),
     { reply_parameters: { message_id: msg.message_id } });
-  const r = m.awaiting === 'clarify' ? await act(m.question_id, 'send_back', { reason: 'clarify', note: text })
-    : await act(m.question_id, 'answer', { answer: m.multi && m.picked.length ? `${m.picked.join('; ')} — ${text}` : text });
+  const clarify = m.awaiting === 'clarify' && to === m.prompt_id; // a reply to the question itself answers it
+  if (m.awaiting && !clarify) await sql`update cb.telegram_messages set awaiting = null where question_id = ${m.question_id}`;
+  const r = clarify ? await act(m.question_id, m.asked, 'send_back', { reason: 'clarify', note: text })
+    : await act(m.question_id, m.asked, 'answer', { answer: m.multi && m.picked.length ? `${m.picked.join('; ')} — ${text}` : text });
   if (r) return say(chat, r, { reply_parameters: { message_id: msg.message_id } });
 }
 

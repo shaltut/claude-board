@@ -410,3 +410,15 @@ test('#498 index.html is no-cache on every path; hashed assets are immutable; ap
   await db();
   assert.equal((await app.request('/api/tasks/1')).headers.get('cache-control'), null);
 });
+
+test('a LISTEN failure (say at boot) never rejects and is not cached: the server stays up and retries', async () => {
+  const { ensureListen } = await import('../server/main.ts');
+  const orig = console.error; console.error = () => {};
+  try {
+    let n = 0;
+    const failing = () => { n++; return Promise.reject(new Error('db down')); };
+    await ensureListen(failing);
+    await ensureListen(failing);
+    assert.equal(n, 2, 'a failed LISTEN is tried again, not remembered');
+  } finally { console.error = orig; }
+});

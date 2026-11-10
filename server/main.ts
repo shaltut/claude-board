@@ -212,11 +212,19 @@ app.get('/api/huddles/:id', async (c) => {
 // Live updates: one LISTEN connection fanned out to every open page.
 type Client = (table: string) => void;
 const clients = new Set<Client>();
-let listening: Promise<unknown> | null = null;
-function ensureListen() {
-  // 'listen' on every (re)connect: what changed while the connection was down is caught up
-  const fan = (table: string) => clients.forEach((send) => send(table));
-  listening ??= sql.listen('cb', fan, () => fan('listen'));
+let listening: Promise<unknown> | null = null, retry: ReturnType<typeof setTimeout> | null = null, wait = 1000;
+const fan = (table: string) => clients.forEach((send) => send(table));
+/** Never rejects: a failed LISTEN (the DB down at boot) is logged and retried with backoff, not cached, so the
+ *  server stays up without live updates until it connects. 'listen' fans out on every (re)connect: what changed
+ *  while the connection was down is caught up. listen is injectable for the test. */
+export function ensureListen(listen = () => sql.listen('cb', fan, () => fan('listen'))) {
+  listening ??= listen().then((r) => { wait = 1000; return r; }, (e: any) => {
+    listening = null;
+    console.error(`live updates: LISTEN failed (${e?.message ?? e}); retrying in ${wait / 1000}s`);
+    retry ??= setTimeout(() => { retry = null; ensureListen(); }, wait);
+    retry.unref?.();
+    wait = Math.min(wait * 2, 60_000);
+  });
   return listening;
 }
 

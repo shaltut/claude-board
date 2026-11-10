@@ -242,3 +242,35 @@ test('handed to a guest and back: the message says so, then gets its buttons bac
   press(msg, `o:${id}:1`);
   await until(async () => (await status(sql, id)).answer === 'You', 'answerable again');
 });
+
+test('a stale button on a rewritten question is refused, not read against the new options', async () => {
+  const sql = await paired();
+  const id = await ask(sql, 'Pick?', { options: ['A', 'B'] });
+  await until(() => sentFor(id).length, 'sent');
+  const old = await msgOf(sql, id);
+  // hold the mapping row so reconcile can't mark the old message superseded yet: the press lands in that gap
+  let release!: () => void, locked!: () => void;
+  const held = new Promise<void>((r) => { release = r; }), isLocked = new Promise<void>((r) => { locked = r; });
+  const holder = sql.begin(async (t: any) => { await t`select 1 from cb.telegram_messages where question_id = ${id} for update`; locked(); await held; });
+  await isLocked;
+  await sql`select cb.reask(${String(id)}, 'Pick again?', '["X", "Y"]'::jsonb, actor => 'W1')`;
+  await until(() => calls('editMessageReplyMarkup').some((c) => c.body.message_id === old), 'reconcile reached the old message');
+  press(old, `o:${id}:1`);
+  await new Promise((r) => setTimeout(r, 400));
+  const mid = await status(sql, id);
+  release(); await holder;
+  assert.equal(mid.status, 'open', `the old "B" must not answer the new question (got ${mid.answer})`);
+  await until(() => calls('answerCallbackQuery').some((c) => /rewritten/.test(c.body.text)), 'told it was rewritten');
+});
+
+test('after Clarify, a reply to the question itself answers it; only a reply to the prompt is the note', async () => {
+  const sql = await paired();
+  const id = await ask(sql, 'Go ahead?', { options: ['Yes', 'No'] });
+  await until(() => sentFor(id).length, 'sent');
+  const m = await msgOf(sql, id);
+  press(m, `b:${id}:clarify`);
+  await until(() => calls('sendMessage').some((c) => /Reply with your question/.test(c.body.text)), 'prompt');
+  text('Yes', AHMED, m);
+  await until(async () => (await status(sql, id)).status !== 'open', 'handled');
+  assert.deepEqual([(await status(sql, id)).status, (await status(sql, id)).answer], ['answered', 'Yes']);
+});
