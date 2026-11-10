@@ -18,6 +18,7 @@ const TABS: { view: View; label: string; key: string }[] = [
   { view: 'people', label: 'People', key: '7' },
   { view: 'epics', label: 'Epics', key: '8' },
   { view: 'memory', label: 'Memory', key: '9' },
+  { view: 'goals', label: 'Goals', key: '0' },
 ]
 
 export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' | 'reconnecting'; onSearch: () => void }) {
@@ -45,7 +46,7 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
             const active = route.view === t.view || (t.view === 'today' && route.view === 'questions')
             return (
               <a key={t.view} href={href({ view: t.view, project: route.project, tag: route.tag })}
-                onClick={(e) => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.button) return; e.preventDefault(); go({ view: t.view, task: undefined, actor: undefined, huddle: undefined, epic: undefined }) }}
+                onClick={(e) => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.button) return; e.preventDefault(); go({ view: t.view, task: undefined, actor: undefined, huddle: undefined, epic: undefined, goal: undefined }) }}
                 aria-current={active ? 'page' : undefined} title={`${t.label} (${t.key})`}
                 className={cn('group flex h-8 shrink-0 items-center gap-2 rounded-md px-2.5 text-sm transition-colors duration-150',
                   active ? 'bg-raised font-medium text-foreground' : 'text-muted-foreground hover:bg-raised/60 hover:text-foreground')}>

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, BookMarked, Search } from 'lucide-react'
-import { get, qs, rpc, useMemStats, useQuestions, useUsers, type CbEvent, type Question } from '@/lib/api'
+import { ArrowLeft, BookMarked, Search, Target } from 'lucide-react'
+import { get, qs, rpc, useGoals, useMemStats, useQuestions, useUsers, type CbEvent, type Question } from '@/lib/api'
 import { ago, clock, day } from '@/lib/format'
 import { go, href, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
@@ -11,6 +11,7 @@ import { AnsweredRow, QuestionCard, SentBackRow } from '@/components/QuestionCar
 import { MakeRule } from '@/components/MakeRule'
 import { Timeline } from '@/components/Timeline'
 import { ActorChip, ProjectChip } from '@/components/Chips'
+import { GoalProgress } from '@/views/Goals'
 
 /**
  * "Since you last looked" is anchored once per visit: the stored marker is read on mount and never
@@ -146,6 +147,7 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
           </section>
         )}
 
+        <GoalsCard project={route.project} />
         <MemoryCard project={route.project} />
 
         <a href="#/questions" onClick={(e) => { e.preventDefault(); go({ view: 'questions' }) }}
@@ -179,6 +181,31 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
         )}
       </section>
     </div>
+  )
+}
+
+/** Active goals (#663) in their order, each with N of M closed. Hidden when there are none. */
+function GoalsCard({ project }: { project?: string }) {
+  const { data = [] } = useGoals(project)
+  const active = data.filter((g) => g.status === 'active')
+  if (!active.length) return null
+  return (
+    <section aria-labelledby="goals-today" className="mt-8">
+      <h2 id="goals-today" className="mb-2 flex items-center gap-2 text-base font-semibold"><Target className="size-4 text-muted-foreground" aria-hidden /> Goals</h2>
+      <ul className="overflow-hidden rounded-lg border bg-card">
+        {active.map((g) => (
+          <li key={g.id} className="border-b last:border-b-0">
+            <a href={href({ view: 'goals', goal: g.id })} onClick={(e) => { e.preventDefault(); go({ view: 'goals', goal: g.id, task: undefined }) }}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm transition-colors hover:bg-raised/50">
+              <span className="callsign text-[13px] text-muted-foreground">G{g.id}</span>
+              <span className="min-w-0 flex-1 truncate font-medium">{g.title}</span>
+              {g.new > 0 && <span className="rounded bg-lamp/15 px-1.5 text-[11px] font-semibold text-lamp">{g.new} new</span>}
+              <GoalProgress g={g} />
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 

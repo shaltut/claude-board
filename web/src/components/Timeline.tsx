@@ -1,4 +1,4 @@
-import { BookMarked, CheckCircle2,CircleDot, HelpCircle, MessageSquareReply, PencilLine, Plus, Send, StickyNote, XCircle, Megaphone, MessageCircle, MessagesSquare, Milestone, UserCog, Undo2 } from 'lucide-react'
+import { BookMarked, CheckCircle2,CircleDot, HelpCircle, MessageSquareReply, PencilLine, Plus, Send, StickyNote, XCircle, Megaphone, MessageCircle, MessagesSquare, Milestone, Target, UserCog, Undo2 } from 'lucide-react'
 import type { CbEvent, Status } from '@/lib/api'
 import { clock, day, STATUS } from '@/lib/format'
 import { go } from '@/lib/route'
@@ -7,7 +7,7 @@ import { ActorChip, ProjectChip, StatusDot, TaskId } from './Chips'
 
 const ICON: Record<CbEvent['kind'], typeof Plus> = {
   task_created: Plus, moved: CircleDot, updated: PencilLine, done: CheckCircle2, note: StickyNote,
-  asked: HelpCircle, answered: MessageSquareReply, delivered: Send, withdrawn: XCircle, broadcast: Megaphone, message: MessageCircle, huddle: MessagesSquare, user: UserCog, epic: Milestone, memory: BookMarked,
+  asked: HelpCircle, answered: MessageSquareReply, delivered: Send, withdrawn: XCircle, broadcast: Megaphone, message: MessageCircle, huddle: MessagesSquare, user: UserCog, epic: Milestone, goal: Target, memory: BookMarked,
   sent_back: Undo2, rewritten: PencilLine,
 }
 const TONE: Partial<Record<CbEvent['kind'], string>> = {
@@ -15,7 +15,7 @@ const TONE: Partial<Record<CbEvent['kind'], string>> = {
 }
 const VERB: Partial<Record<CbEvent['kind'], string>> = {
   task_created: 'created', updated: 'edited', done: 'finished', note: 'noted', asked: 'asked', answered: 'answered',
-  delivered: 'delivered', withdrawn: 'withdrew', broadcast: 'broadcast', message: 'messaged', huddle: 'in a huddle', user: 'changed People', epic: 'changed an epic', memory: 'changed memory',
+  delivered: 'delivered', withdrawn: 'withdrew', broadcast: 'broadcast', message: 'messaged', huddle: 'in a huddle', user: 'changed People', epic: 'changed an epic', goal: 'changed a goal', memory: 'changed memory',
   sent_back: 'sent back', rewritten: 'rewrote',
 }
 

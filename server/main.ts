@@ -188,6 +188,11 @@ app.get('/api/epics/:id', async (c) => {
   const r = await q.epic(Number(c.req.param('id')));
   return r ? c.json(r) : c.json({ ok: false, error: 'not found' }, 404);
 });
+app.get('/api/goals', async (c) => c.json(await q.goals(opt(c.req.query('project')))));
+app.get('/api/goals/:id', async (c) => {
+  const r = await q.goal(Number(c.req.param('id')));
+  return r ? c.json(r) : c.json({ ok: false, error: 'not found' }, 404);
+});
 app.get('/api/huddles/:id', async (c) => {
   const r = await q.huddle(Number(c.req.param('id')));
   return r ? c.json(r) : c.json({ ok: false, error: 'not found' }, 404);

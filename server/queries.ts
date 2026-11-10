@@ -43,6 +43,22 @@ export async function epic(id: number) {
   return { epic: e, steps };
 }
 
+/** Goals (#663), every status: active in Ahmed's order, then paused, then done. */
+export async function goals(project?: string) {
+  const [{ l }] = await sql`select cb.goals_list(${project ?? null}, true) as l`;
+  return l;
+}
+
+/** One goal and its cards: in before out, open before closed, then work order. */
+export async function goal(id: number) {
+  const [{ l }] = await sql`select cb.goals_list(null, true) as l`;
+  const g = l.find((x: any) => x.id === id);
+  if (!g) return null;
+  const cards = await sql`select t.*, gt.state, gt.via, gt.new, gt.added_at from cb.goal_tasks gt join cb.tasks t on t.id = gt.task_id
+    where gt.goal_id = ${id} order by gt.state = 'out', t.status in ('done', 'cancelled'), t.priority, t.rank, t.id`;
+  return { goal: g, cards };
+}
+
 /** Follow-ups (#472): what the parent was answered, and the dormant branches still to come. A guest sees only their
  *  own branches, and the parent's answer only when the parent was theirs too (Ahmed's answer and note are his). */
 const followups = (user?: string) => sql`

@@ -1,4 +1,4 @@
-import { BookMarked, CalendarClock,Columns3, History, ListOrdered, Plus, Layers, Radio, MessagesSquare, Milestone, Users } from 'lucide-react'
+import { BookMarked, CalendarClock,Columns3, History, ListOrdered, Plus, Layers, Radio, MessagesSquare, Milestone, Target, Users } from 'lucide-react'
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from '@/components/ui/command'
 import { useEpics, useProjects, useTasks } from '@/lib/api'
 import { go, type View } from '@/lib/route'
@@ -14,6 +14,7 @@ const VIEWS: { view: View; label: string; icon: typeof History }[] = [
   { view: 'people', label: 'People', icon: Users },
   { view: 'epics', label: 'Epics', icon: Milestone },
   { view: 'memory', label: 'Memory', icon: BookMarked },
+  { view: 'goals', label: 'Goals', icon: Target },
 ]
 
 export function CommandMenu({ open, onOpenChange, onNewTask }: { open: boolean; onOpenChange: (o: boolean) => void; onNewTask: () => void }) {
@@ -63,8 +64,8 @@ export function CommandMenu({ open, onOpenChange, onNewTask }: { open: boolean; 
           </CommandGroup>
           <CommandGroup heading="Go to">
             {VIEWS.map(({ view, label, icon: Icon }, i) => (
-              <CommandItem key={view} value={`go ${label}`} onSelect={() => run(() => go({ view, task: undefined, actor: undefined, huddle: undefined, epic: undefined }))}>
-                <Icon /> {label}<CommandShortcut>{i + 1}</CommandShortcut>
+              <CommandItem key={view} value={`go ${label}`} onSelect={() => run(() => go({ view, task: undefined, actor: undefined, huddle: undefined, epic: undefined, goal: undefined }))}>
+                <Icon /> {label}<CommandShortcut>{(i + 1) % 10}</CommandShortcut>
               </CommandItem>
             ))}
           </CommandGroup>

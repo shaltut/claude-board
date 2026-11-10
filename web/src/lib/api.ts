@@ -17,6 +17,13 @@ export interface Epic {
   id: number; project: string; title: string; goal: string; created_by: string; created_at: string; closed_at: string | null
   closed: boolean; status: 'open' | 'done'; total: number; done: number; cancelled: number; finished: number
 }
+/** Goals (#663): total = cards in, closed = done or cancelled among them, new = joined since Ahmed last opened it. */
+export interface GoalRules { labels: string[]; words: string[]; epics: number[] }
+export interface Goal {
+  id: number; title: string; description: string; project: string | null; rules: GoalRules; status: 'active' | 'paused' | 'done'
+  rank: number; created_by: string; created_at: string; closed_at: string | null; total: number; closed: number; new: number
+}
+export type GoalCard = Task & { state: 'in' | 'out'; via: 'match' | 'ahmed'; new: boolean; added_at: string }
 export interface QOption { label: string; description: string | null }
 export interface Question {
   id: number; project: string; task_id: number | null; asked_by: string; body: string; context: string | null
@@ -46,7 +53,7 @@ export const onProject = (users: User[], project: string, holder?: string | null
   users.filter((u) => u.projects?.includes(project) || u.name === holder)
 export interface CbEvent {
   id: number; at: string; actor: string; project: string | null; task_id: number | null; question_id: number | null
-  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle' | 'user' | 'epic' | 'memory' | 'sent_back' | 'rewritten'
+  kind: 'task_created' | 'moved' | 'updated' | 'done' | 'note' | 'asked' | 'answered' | 'delivered' | 'withdrawn' | 'broadcast' | 'message' | 'huddle' | 'user' | 'epic' | 'memory' | 'sent_back' | 'rewritten' | 'goal'
   summary: string; data: Record<string, any>
 }
 export const MEM_KINDS = ['rule', 'ruling', 'fact', 'gotcha', 'runbook'] as const
@@ -65,11 +72,13 @@ export async function get<T>(path: string): Promise<T> {
   return r.json()
 }
 
+const NO_ACTOR = new Set(['seen', 'goal_opened', 'goal_preview', 'goal_propose']) // functions without an actor argument
+
 /** Every write goes through the same cb.* SQL functions Claude uses. The UI acts as "ahmed". */
 export async function rpc<T = unknown>(fn: string, args: Record<string, unknown>): Promise<T> {
   const r = await fetch(`/api/rpc/${fn}`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(fn === 'seen' ? args : { actor: 'ahmed', ...args }),
+    body: JSON.stringify(NO_ACTOR.has(fn) ? args : { actor: 'ahmed', ...args }),
   })
   const j = await r.json()
   if (!j.ok) throw new Error(j.error)
@@ -98,6 +107,10 @@ export const useEpics = (project?: string) =>
   useQuery({ queryKey: ['epics', project], queryFn: () => get<Epic[]>(`/api/epics${qs({ project })}`) })
 export const useEpic = (id: number) =>
   useQuery({ queryKey: ['epic', id], queryFn: () => get<{ epic: Epic; steps: Task[] }>(`/api/epics/${id}`) })
+export const useGoals = (project?: string) =>
+  useQuery({ queryKey: ['goals', project], queryFn: () => get<Goal[]>(`/api/goals${qs({ project })}`) })
+export const useGoal = (id: number) =>
+  useQuery({ queryKey: ['goal', id], queryFn: () => get<{ goal: Goal; cards: GoalCard[] }>(`/api/goals/${id}`) })
 export const useMemories = (project?: string, all?: boolean) =>
   useQuery({ queryKey: ['memories', project, !!all], queryFn: () => get<Memory[]>(`/api/memories${qs({ project, all: all ? '1' : undefined })}`) })
 /** The weekly memory metric (last 7 days) and the Today card's counts (#553). stale_pct: null when nothing is live. */

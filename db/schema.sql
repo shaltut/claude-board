@@ -2463,7 +2463,7 @@ begin
     select count(*) into n from cb.goal_tasks gt where gt.goal_id = g.id and gt.state = 'in';
     perform cb._goal_event(g, 'close', 'G' || g.id || ' done: every card closed', 'board');
     insert into cb.events (actor, project, kind, summary)
-    values ('board', g.project, 'broadcast', 'Goal G' || g.id || ' is done: ' || g.title || ' (all ' || n || ' cards closed).');
+    values ('board', g.project, 'broadcast', 'Goal G' || g.id || ' is done: ' || g.title || ' (' || case when n = 1 then 'its card' else 'all ' || n || ' cards' end || ' closed).');
   end loop;
 end $$;
 
@@ -2515,7 +2515,7 @@ begin
    where t.id in (select cb.norm_id(x) from jsonb_array_elements_text(coalesce(skip, '[]')) x) and cb._goal_match(g.rules, g.project, t);
   n := cb._goal_pull(g, false);
   perform cb._goal_event(g, 'create', 'G' || g.id || ' set: ' || g.title, a);
-  perform cb.broadcast('Goal G' || g.id || ' is active: ' || g.title || ' (' || n || ' cards). Its cards come right after P0; cb goals lists it.', g.project, a);
+  perform cb.broadcast('Goal G' || g.id || ' is active: ' || g.title || ' (' || n || case when n = 1 then ' card' else ' cards' end || '). Its cards come right after P0; cb goals lists it.', g.project, a);
   return g.id;
 end $$;
 
@@ -2558,7 +2558,7 @@ begin
     perform cb._goal_pull(g, true);
     select count(*) into n from cb.goal_tasks gt join cb.tasks t on t.id = gt.task_id
      where gt.goal_id = g.id and gt.state = 'in' and t.status not in ('done', 'cancelled');
-    perform cb.broadcast('Goal G' || g.id || ' is active: ' || g.title || ' (' || n || ' open cards). Its cards come right after P0; cb goals lists it.', g.project, a);
+    perform cb.broadcast('Goal G' || g.id || ' is active: ' || g.title || ' (' || n || case when n = 1 then ' open card' else ' open cards' end || '). Its cards come right after P0; cb goals lists it.', g.project, a);
   end if;
 end $$;
 
