@@ -1,17 +1,17 @@
 import { useRef } from 'react'
 import { Mic } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useVoice, useVoiceLang } from '@/lib/voice'
+import { useVoice, useVoiceLang, voiceOn, voiceSupported } from '@/lib/voice'
 import { Textarea } from '@/components/ui/textarea'
 
 /** A Textarea you can talk into (#658): hold Space in it, or hold the mic. Where the browser has no speech
- *  recognition (Firefox) it is a plain Textarea. */
-export function VoiceTextarea({ value, onValue, onKeyDown, disabled, className, ...props }:
-  Omit<React.ComponentProps<'textarea'>, 'value' | 'onChange'> & { value: string; onValue: (v: string) => void }) {
+ *  recognition (Firefox), or voice is off (a guest's card), it is a plain Textarea. */
+export function VoiceTextarea({ value, onValue, voice = true, onKeyDown, disabled, className, ...props }:
+  Omit<React.ComponentProps<'textarea'>, 'value' | 'onChange'> & { value: string; onValue: (v: string) => void; voice?: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null)
-  const v = useVoice(ref, onValue)
+  const on = voiceOn(voiceSupported, voice, !!disabled)
+  const v = useVoice(ref, onValue, on)
   const { lang, toggle } = useVoiceLang()
-  const on = v.supported && !disabled
   const hint = 'Hold Space or hold this button to talk'
 
   return (

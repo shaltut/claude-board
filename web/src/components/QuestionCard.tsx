@@ -184,7 +184,7 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
         )}
 
         <div className="mt-3 flex items-end gap-2">
-          <VoiceTextarea value={text} onValue={setText} onKeyDown={onKey} rows={1} disabled={cleared}
+          <VoiceTextarea value={text} onValue={setText} voice={!guest} onKeyDown={onKey} rows={1} disabled={cleared}
             placeholder={q.options?.length ? (q.multi ? 'Add a note (optional)…' : 'Or write your own answer; a note here rides along with the option you click…') : 'Write your answer…'}
             className="min-h-9 resize-y bg-background/50 text-sm" aria-label={`Answer to Q${q.id}`} />
           <Button disabled={!!busy || cleared || (q.multi ? !picked.length && !text.trim() : !text.trim())}
@@ -214,7 +214,7 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
               ))}
             </div>
             <div className="flex items-end gap-2">
-              <VoiceTextarea value={note} onValue={setNote} rows={1} aria-label={`Note sending Q${q.id} back`}
+              <VoiceTextarea value={note} onValue={setNote} voice={!guest} rows={1} aria-label={`Note sending Q${q.id} back`}
                 onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendBack() } }}
                 placeholder={reason === 'clarify' ? 'Your question (required)…' : 'A note for the session (optional)…'}
                 className="min-h-9 resize-y bg-background/50 text-sm" />

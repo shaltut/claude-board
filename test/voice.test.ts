@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HOLD_MS, holdEvent, holdStep, insertText, type Hold, type HoldEvent } from '../web/src/lib/voice.ts';
+import { HOLD_MS, holdEvent, holdStep, insertSpot, insertText, voiceOn, type Hold, type HoldEvent } from '../web/src/lib/voice.ts';
 
 // Runs events through the reducer, returning the actions and the final state.
 function run(events: HoldEvent[], s: Hold = { phase: 'idle' }) {
@@ -78,4 +78,26 @@ test('insertText: at the caret, with a separating space only where needed', () =
   assert.deepEqual(insertText('a XX b', 2, 4, 'yes'), { value: 'a yes b', caret: 5 }); // replaces a selection
   assert.deepEqual(insertText('نعم', 3, 3, 'ابدأ'), { value: 'نعم ابدأ', caret: 8 });
   assert.deepEqual(insertText('keep', 4, 4, '   '), { value: 'keep', caret: 4 }); // nothing heard
+});
+
+test('holdStep: the box going off (disabled, or voice turned off) cancels a recording and resets the hold', () => {
+  assert.deepEqual(run([down(0), { type: 'timer', t: 400 }, { type: 'off' }, down(450, true)]).out, ['type', 'start:1', 'cancel', 'type']);
+  const held = run([down(0), { type: 'off' }, { type: 'timer', t: 400 }]);
+  assert.deepEqual(held.out, ['type', 'none', 'none']);
+  assert.equal(held.s.phase, 'idle');
+  assert.equal(run([down(0), { type: 'timer', t: 400 }, { type: 'escape' }, { type: 'off' }]).s.phase, 'idle');
+});
+
+test('insertSpot: the snapshot range only while the text is unchanged; otherwise the current caret, nothing replaced', () => {
+  const snap = { value: 'a XX b', start: 2, end: 4 };
+  assert.deepEqual(insertSpot(snap, 'a XX b', 6), { start: 2, end: 4 });
+  assert.deepEqual(insertSpot(snap, 'a XX bc', 7), { start: 7, end: 7 }); // typed after release: keep it, add at caret
+  assert.deepEqual(insertSpot(snap, 'zz a XX b', 2), { start: 2, end: 2 }); // a fresh selection [1,2) is not replaced either: after it
+});
+
+test('voiceOn: only where the API exists, voice is allowed (not for guests) and the box is enabled', () => {
+  assert.equal(voiceOn(true, true, false), true);
+  assert.equal(voiceOn(false, true, false), false); // Firefox
+  assert.equal(voiceOn(true, false, false), false); // guest
+  assert.equal(voiceOn(true, true, true), false);   // disabled (answered)
 });

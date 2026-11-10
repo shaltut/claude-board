@@ -14,6 +14,7 @@ export type HoldEvent =
   | { type: 'up' } // Space released
   | { type: 'timer'; t: number } // the HOLD_MS timer armed on the first keydown
   | { type: 'escape' } | { type: 'other' } | { type: 'blur' } | { type: 'ended' } // other key; focus left; recognition ended itself
+  | { type: 'off' } // the box went disabled (answered, sent back) or voice was turned off: its key handlers are gone
 
 /** type = let the keydown type its space; prevent = swallow it; start = swallow, take the `remove` typed spaces back out, record. */
 export type HoldAction = { do: 'none' | 'type' | 'prevent' | 'start' | 'stop' | 'cancel'; remove?: number }
@@ -22,6 +23,7 @@ const IDLE: Hold = { phase: 'idle' }
 
 /** The hold-to-talk decision, as a pure step: tap types a space, a hold records, release stops, Esc cancels. */
 export function holdStep(s: Hold, e: HoldEvent): [Hold, HoldAction] {
+  if (e.type === 'off') return [IDLE, { do: s.phase === 'recording' ? 'cancel' : 'none' }]
   switch (s.phase) {
     case 'idle':
       if (e.type !== 'down') return [s, { do: 'none' }]
@@ -64,6 +66,15 @@ export function insertText(value: string, start: number, end: number, text: stri
   return { value: before + lead + t + trail + after, caret: before.length + lead.length + t.length }
 }
 
+/** Where heard text goes when recording ends. The snapshot's range only if the text is untouched since; if he typed
+ *  meanwhile, that range now holds other text, so it goes in at the current caret and replaces nothing. */
+export function insertSpot(snap: { value: string; start: number; end: number }, value: string, caret: number) {
+  return value === snap.value ? { start: snap.start, end: snap.end } : { start: caret, end: caret }
+}
+
+/** Voice shows only where the browser has it, the box allows it (Ahmed's, not a guest's: #658 accepted Google for him) and is enabled. */
+export const voiceOn = (supported: boolean, voice: boolean, disabled: boolean) => supported && voice && !disabled
+
 // --- the browser side -------------------------------------------------------------------------------
 
 // Chrome, Edge and Safari have it (Chrome sends the audio to Google: accepted in #658); Firefox doesn't, so no mic shows there.
@@ -100,7 +111,7 @@ type Spot = { value: string; start: number; end: number }
 
 /** Dictation into a controlled textarea: hold Space in it (the key handlers) or hold the mic button (press/release).
  *  The interim transcript is shown, never written; the final one lands at the caret when recording stops. */
-export function useVoice(ref: RefObject<HTMLTextAreaElement | null>, setValue: (v: string) => void) {
+export function useVoice(ref: RefObject<HTMLTextAreaElement | null>, setValue: (v: string) => void, on: boolean) {
   const { lang } = useVoiceLang()
   const [listening, setListening] = useState(false)
   const [interim, setInterim] = useState('')
@@ -116,6 +127,8 @@ export function useVoice(ref: RefObject<HTMLTextAreaElement | null>, setValue: (
     if (sel.current && ref.current) { ref.current.setSelectionRange(...sel.current); sel.current = null }
   })
   useEffect(() => () => { clearTimeout(timer.current); cancel() }, [])
+  // Disabled mid-hold (Ctrl+Enter sent it): keyup and blur no longer reach us, so close the mic here.
+  useEffect(() => { if (!on) { step({ type: 'off' }); cancel() } }, [on])
 
   function apply(v: string, a: number, b: number) {
     const el = ref.current
@@ -125,7 +138,7 @@ export function useVoice(ref: RefObject<HTMLTextAreaElement | null>, setValue: (
   }
 
   function cancel() {
-    if (!rec.current) return
+    if (!rec.current || rec.current.cancelled) return
     rec.current.cancelled = true
     rec.current.r.abort()
   }
@@ -154,8 +167,8 @@ export function useVoice(ref: RefObject<HTMLTextAreaElement | null>, setValue: (
       hold.current = holdStep(hold.current, { type: 'ended' })[0]
       const el = ref.current
       if (me.cancelled || !el || !heard.trim()) return
-      const n = el.value.length
-      const { value, caret } = insertText(el.value, Math.min(at.start, n), Math.min(at.end, n), heard)
+      const spot = insertSpot(at, el.value, el.selectionEnd)
+      const { value, caret } = insertText(el.value, spot.start, spot.end, heard)
       apply(value, caret, caret)
     }
     try { r.start() } catch { setError('Voice input failed. Try again.'); return }
@@ -194,7 +207,7 @@ export function useVoice(ref: RefObject<HTMLTextAreaElement | null>, setValue: (
   }
 
   return {
-    supported: voiceSupported, listening, interim, error,
+    listening, interim, error,
     onKeyDown: key('keydown'), onKeyUp: key('keyup'), onBlur: () => step({ type: 'blur' }),
     /** The mic button: at the caret if the box has focus, else at the end. */
     press: () => {
