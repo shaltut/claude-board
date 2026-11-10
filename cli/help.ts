@@ -25,7 +25,7 @@ const GROUPS: [string, Record<string, Cmd>][] = [
       does: 'Start the push into this session: answers, changes to your tasks, messages, huddle lines, broadcasts, new work. The SessionStart hook usually starts it; running it twice is harmless; --restart replaces a running one.',
       eg: 'cb relay' },
     brief: { use: 'cb brief [project] [--tag <tag>] [--type <type>]',
-      does: 'The project at a glance: in progress, next, blocked, review, waiting on Ahmed, broadcasts, answers to deliver. --tag / --type filter it (--type bug = open bugs).',
+      does: 'The project at a glance: Ahmed\'s active goals, in progress, next, blocked, review, waiting on Ahmed, broadcasts, answers to deliver. --tag / --type filter it (--type bug = open bugs).',
       eg: 'cb brief --type bug' },
     help: { use: 'cb help [topic|command]',
       does: 'This manual. A topic or a command name prints the detailed page; an unknown name lists what exists.',
@@ -36,7 +36,7 @@ const GROUPS: [string, Record<string, Cmd>][] = [
       does: 'Your open tasks. Without a relay, run it between steps: a task missing from it was reassigned, stop working on it.',
       eg: 'cb mine' },
     show: { use: 'cb show <id>', topic: 'work',
-      does: 'One task in full: its line, its body, and its last 10 notes (cb log, cb done). Read-only; works for any project\'s task.',
+      does: 'One task in full: its line, the goals it is in, its body, and its last 10 notes (cb log, cb done). Read-only; works for any project\'s task.',
       eg: 'cb show 42' },
     next: { use: 'cb next [project]', topic: 'work',
       does: 'Claim the top task in Next: sets in_progress and assigns you; prints the task and its body, or "nothing to claim". The project defaults to yours; another project\'s queue is refused.',
@@ -55,6 +55,9 @@ const GROUPS: [string, Record<string, Cmd>][] = [
     epics: { use: 'cb epics [project]', topic: 'work',
       does: 'Your project\'s epics: E<n>, open or done, and how many of their steps are finished. Ahmed creates and closes epics; you put your tasks in one with --epic.',
       eg: 'cb epics' },
+    goals: { use: 'cb goals [project]', topic: 'work',
+      does: 'What matters now: Ahmed\'s active goals for your project (and every-project ones), in his order, each with how many of its cards are closed. A goal\'s cards come right after P0 in cb next, before other work. Read-only: Ahmed sets goals on the Goals page (key 0).',
+      eg: 'cb goals' },
     lock: { use: 'cb lock take <name>\ncb lock release <name> [--force]\ncb lock queue [name]', topic: 'work',
       does: 'Shared locks on the board (db = the shared DB test lock). take: you hold it (exit 0), or you queue (exit 2) and a message tells you when it is yours; taking again while queued keeps your place. release: hands it to the next in line. --force: take it off a dead holder (logged; the holder is told). queue: who holds what.',
       eg: 'cb lock take db',
@@ -237,6 +240,9 @@ Types     task (default) | bug | feature | change | chore | research. Set with -
 Epics     Ahmed groups a project's tasks into epics (E3): ordered steps toward one goal. The order is a plan,
           not a lock: any step can start. Put a task in one: cb add ... --epic E3, or cb edit <id> --epic E3.
           cb epics lists them. Only Ahmed creates, renames or closes an epic.
+Goals     What matters now (G2: "improve OCR/vision"). Every card that fits one of Ahmed's active goals, filed
+          before or after it, is handed out right after P0, in his goal order, before other work. cb goals lists
+          them; cb brief and cb show name them. Only Ahmed sets, orders or closes a goal.
 Blockers  cb block 13 --by 12: #13 cannot start before #12 is finished. #13 waits in Blocked and goes back to
           Next by itself when #12 is done or cancelled; its holder (or the orchestrator) is told.
           cb unblock 13 --by 12 removes it. Same project only; a cycle is refused.

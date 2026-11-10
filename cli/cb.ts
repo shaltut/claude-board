@@ -105,6 +105,11 @@ const memLine = (m: any) =>
 /** Someone's text inside our own lines: its extra lines indented, so none passes for a line of ours (as the relay does). */
 const flat = (s: unknown) => String(s ?? '').replace(/\r\n|[\r\n\u0085\u2028\u2029]/g, '\n    ');
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
+/** A goal (#663): one line, its description (Ahmed's words) indented under it. */
+const goalText = (g: any) => `G${g.id} ${flat(g.title)} · ${g.project ?? 'every project'} · ${g.closed} of ${g.total} closed` +
+  `${g.status !== 'active' ? ` [${g.status}]` : ''}${g.description ? `\n    ${flat(g.description)}` : ''}`;
+const goalsText = (rows: any[]) => rows.length
+  ? ['[goals: their cards come right after P0 in cb next]', ...rows.map(goalText)].join('\n') : '';
 /** What a session is told when it binds: the pack, its size, and how team entries count. */
 function packText(p: any): string {
   if (!p?.entries?.length) return '';
@@ -121,6 +126,7 @@ function printBrief(b: any) {
     console.log(`${name} (${rows.length})`);
     for (const r of rows) console.log('  ' + fmt(r));
   };
+  sec('GOALS (their cards come right after P0)', b.goals ?? [], goalText);
   sec('IN PROGRESS', b.in_progress, line);
   sec('NEXT (take with `cb next`)', b.next, line);
   sec('BLOCKED', b.blocked, (t) => `${line(t)}${t.blocked_on ? ` — on Q${t.blocked_on}` : ''}${t.waits_on?.length ? ` — waits on #${t.waits_on.join(', #')}` : ''}`);
@@ -187,7 +193,8 @@ async function start() {
   const open = mine.filter((t: any) => t.assignee === actor && !['done', 'cancelled'].includes(t.status));
   const project = sessionProject;
   const queue = project ? await sql`select id, priority, title, labels, project, assignee from cb.tasks
-    where project = ${project} and status = 'next' and (assignee is null or assignee = ${actor}) order by priority, rank, id limit 3` : [];
+    where project = ${project} and status = 'next' and (assignee is null or assignee = ${actor})
+    order by priority <> 'P0', case when priority <> 'P0' then cb._goal_rank(id) end nulls last, priority, rank, id limit 3` : []; // = cb.task_claim
   const qs = await sql`select id, status, body from cb.questions where asked_by = ${actor} and status in ('open', 'answered', 'sent_back') order by id`;
   const cut = (s: string) => (s.length > 100 ? s.slice(0, 99) + '…' : s);
   out.push(`YOUR TASKS (cb mine)`, ...(mine.length ? mine.map((t: any) => '  ' + line(t)) : ['  none']),
@@ -417,7 +424,8 @@ async function run(): Promise<unknown> {
       const p = await callFn('iam', { machine: machine(), pane, actor: args[0], project: args[1] ?? null });
       const [b] = await sql`select project from cb.sessions where machine = ${machine()} and pane = ${pane}`;
       const pack = b?.project ? packText(await callFn('mem_pack', { project: b.project, machine: machine() })) : '';
-      return { out: `this pane (${pane}@${machine()}) is ${p}${b?.project ? `, working on ${b.project}` : ' (no project: add one, cb iam <name> <project>)'}${pack ? `\n\n${pack}` : ''}` };
+      const goals = b?.project ? goalsText(await callFn('goals_list', { project: b.project }) as any[]) : '';
+      return { out: `this pane (${pane}@${machine()}) is ${p}${b?.project ? `, working on ${b.project}` : ' (no project: add one, cb iam <name> <project>)'}${pack ? `\n\n${pack}` : ''}${goals ? `\n\n${goals}` : ''}` };
     }
     case 'mem':
       return await mem();
@@ -460,6 +468,10 @@ async function run(): Promise<unknown> {
       const [t] = await sql`select id, status from cb.tasks where id = ${Number(args[0].replace(/^#/, ''))}`;
       const by = o.by.replace(/^#/, '');
       return { out: `#${t.id} ${cmd === 'block' ? 'waits on' : 'no longer waits on'} #${by} (now ${t.status})` };
+    }
+    case 'goals': {
+      const rows: any = await callFn('goals_list', { project: args[0] ?? sessionProject ?? null });
+      return { out: goalsText(rows) || 'no active goals: Ahmed sets them on the Goals page (key 0)', json: rows };
     }
     case 'epics': {
       const rows: any = await callFn('epics_list', { project: args[0] ?? sessionProject ?? null });
@@ -507,7 +519,10 @@ async function run(): Promise<unknown> {
       const [t] = await sql`select * from cb.tasks where id = ${n}`;
       if (!t) throw new Error(`no task #${n}: check the id (cb mine, cb brief)`);
       const notes = await sql`select at, actor, summary from cb.events where task_id = ${n} and kind in ('note', 'done') order by id desc limit 10`;
-      return { out: [line(t), t.body && `\n${flat(t.body)}`, notes.length && `\nNOTES (newest first)`,
+      const goals = await sql`select g.id, g.title, g.status from cb.goal_tasks gt join cb.goals g on g.id = gt.goal_id
+        where gt.task_id = ${n} and gt.state = 'in' and g.status <> 'done' order by g.status, g.rank`;
+      return { out: [line(t), ...goals.map((g: any) => `in goal G${g.id} ${flat(g.title)}${g.status === 'paused' ? ' [paused]' : ': comes right after P0'}`),
+        t.body && `\n${flat(t.body)}`, notes.length && `\nNOTES (newest first)`,
         ...notes.map((e: any) => `  ${new Date(e.at).toISOString().slice(0, 16).replace('T', ' ')} ${e.actor}: ${flat(e.summary)}`)]
         .filter(Boolean).join('\n'), json: { ...t, notes } };
     }

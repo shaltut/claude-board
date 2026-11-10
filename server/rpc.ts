@@ -7,6 +7,7 @@ export const RPC_FUNCTIONS = [
   'tick', 'lock_take', 'lock_release', 'lock_queue',
   'epic_create', 'epic_update', 'epic_close', 'epic_delete', 'epics_list', 'task_block', 'task_unblock',
   'mem_add', 'mem_rule', 'mem_confirm', 'mem_retire', 'mem_supersede', 'mem_find', 'mem_list', 'mem_show', 'mem_pack',
+  'goal_create', 'goal_update', 'goal_status', 'goal_tick', 'goal_opened', 'goal_preview', 'goal_propose', 'goals_list',
 ];
 const SETOF = new Set(['task_claim', 'mine', 'answers_pending']);
 

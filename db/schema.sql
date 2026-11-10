@@ -87,7 +87,7 @@ create table if not exists cb.events (
   data        jsonb not null default '{}'
 );
 alter table cb.events drop constraint if exists events_kind_check;
-alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user','epic','memory','sent_back','rewritten'));
+alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user','epic','memory','sent_back','rewritten','goal'));
 
 alter table cb.questions add column if not exists multi boolean not null default false;
 
@@ -133,6 +133,34 @@ create table if not exists cb.epics (
 alter table cb.tasks add column if not exists epic_id bigint references cb.epics(id) on delete set null;
 alter table cb.tasks add column if not exists epic_rank double precision not null default 0;
 create index if not exists tasks_epic on cb.tasks (epic_id, epic_rank) where epic_id is not null;
+
+-- Goals (#663): what matters now, as a description plus match rules {labels, words, epics} (plain SQL, no LLM).
+-- Every card that matches an active goal joins it, including cards filed later, and is handed out right after P0,
+-- in goal order (rank). project null = every project. Only Ahmed (dashboard_only) creates, edits, orders or closes.
+create table if not exists cb.goals (
+  id          bigint generated always as identity primary key,
+  title       text not null,
+  description text not null default '',
+  project     text references cb.projects(slug) on update cascade,
+  rules       jsonb not null default '{"labels": [], "words": [], "epics": []}',
+  status      text not null default 'active' check (status in ('active', 'paused', 'done')),
+  rank        double precision not null default 0,
+  created_by  text not null default 'ahmed',
+  created_at  timestamptz not null default now(),
+  closed_at   timestamptz
+);
+-- A goal's cards. out = Ahmed unticked it: the row holds the key, so matching never adds it again.
+-- new = it joined by matching since Ahmed last opened the goal.
+create table if not exists cb.goal_tasks (
+  goal_id  bigint not null references cb.goals(id) on delete cascade,
+  task_id  bigint not null references cb.tasks(id) on delete cascade,
+  state    text not null default 'in' check (state in ('in', 'out')),
+  via      text not null default 'match' check (via in ('match', 'ahmed')),
+  new      boolean not null default false,
+  added_at timestamptz not null default now(),
+  primary key (goal_id, task_id)
+);
+create index if not exists goal_tasks_task on cb.goal_tasks (task_id);
 
 -- Task-on-task blockers (#341): task waits on blocker. Same project only, no self-links, no cycles (cb.task_blockers_check).
 -- How they combine with a question block (tasks.blocked_on): a task is held while blocked_on is set OR any of its
@@ -242,6 +270,23 @@ drop function if exists cb.task_blockers_check cascade;
 drop function if exists cb.task_block cascade;
 drop function if exists cb.task_unblock cascade;
 drop function if exists cb.tasks_unblock cascade;
+drop function if exists cb._goal_rank cascade;
+drop function if exists cb.norm_goal cascade;
+drop function if exists cb._goal_rules cascade;
+drop function if exists cb._goal_match cascade;
+drop function if exists cb._goal_pull cascade;
+drop function if exists cb._goal_event cascade;
+drop function if exists cb._goal_autoclose cascade;
+drop function if exists cb.tasks_goals cascade;
+drop function if exists cb.tasks_goals_close cascade;
+drop function if exists cb.goal_create cascade;
+drop function if exists cb.goal_update cascade;
+drop function if exists cb.goal_status cascade;
+drop function if exists cb.goal_tick cascade;
+drop function if exists cb.goal_opened cascade;
+drop function if exists cb.goal_preview cascade;
+drop function if exists cb.goal_propose cascade;
+drop function if exists cb.goals_list cascade;
 
 -- Only Ahmed's dashboard (the web server sets application_name 'cb-web' on its writes) may act as
 -- ahmed: the relay tells sessions to act on his lines, so a session must not be able to speak as him.
@@ -372,6 +417,7 @@ begin
     update cb.questions q set project = t where q.project = a;
     update cb.events e set project = t where e.project = a;
     update cb.epics e set project = t where e.project = a; -- epics follow their steps
+    update cb.goals g set project = t where g.project = a;
     update cb.project_aliases pa set slug = t where pa.slug = a;
     -- people on the merged project follow their work (#315 review); the FK cascade would drop them
     insert into cb.user_projects (user_name, project) select up.user_name, t from cb.user_projects up where up.project = a
@@ -617,7 +663,14 @@ begin
   return new_id;
 end $$;
 
--- Atomically take the top task in Next (lowest rank). skip locked: two
+-- Goals (#663): the lowest rank of an active goal this card is in (null: none). Work order (cb next, cb brief,
+-- cb tick, cb start): P0 first, untouched by goals; then goal cards in goal order; then priority, rank, id.
+create function cb._goal_rank(tid bigint) returns double precision language sql stable as $$
+  select min(g.rank) from cb.goal_tasks gt join cb.goals g on g.id = gt.goal_id
+   where gt.task_id = $1 and gt.state = 'in' and g.status = 'active'
+$$;
+
+-- Atomically take the top task in Next (P0, then goals: cb._goal_rank, then lowest rank). skip locked: two
 -- sessions claiming at once never get the same task.
 create function cb.task_claim(project text default null, actor text default null)
 returns setof cb.tasks language plpgsql as $$
@@ -627,7 +680,7 @@ begin
   select t.id into tid from cb.tasks t
    where t.status = 'next' and (p is null or t.project = p)
      and (t.assignee is null or t.assignee = a)  -- never take a task queued for someone else
-   order by t.priority, t.rank, t.id limit 1
+   order by t.priority <> 'P0', case when t.priority <> 'P0' then cb._goal_rank(t.id) end nulls last, t.priority, t.rank, t.id limit 1
    for update skip locked;
   if tid is null then return; end if;
   perform set_config('cb.note', 'claimed by ' || a, true);
@@ -1087,17 +1140,20 @@ begin
                                                order by e.id desc)
       from cb.events e where e.kind = 'broadcast' and e.at > now() - interval '24 hours'
                          and (p is null or e.project is null or e.project = p)), '[]'),
+    'goals', cb.goals_list(p),  -- active goals for this project and every-project ones, in order
     'memory', cb.mem_pack(p));  -- no project: the global entries only
 end $$;
 
 drop function if exists cb._brief_tasks cascade;
 create function cb._brief_tasks(p text, tg text, s text, lim int, ty text default null) returns jsonb language sql stable as $$
-  select coalesce(jsonb_agg(x order by x.priority, x.rank), '[]') from (
+  select coalesce(jsonb_agg(to_jsonb(x) - 'o' order by x.o), '[]') from (
     select t.id, t.project, t.title, t.priority, t.assignee, t.updated_at, t.blocked_on, t.rank, t.labels, t.type,
-           t.epic_id, cb._waits_on(t.id) as waits_on
+           t.epic_id, cb._waits_on(t.id) as waits_on,
+           row_number() over (order by t.priority <> 'P0', case when t.priority <> 'P0' then cb._goal_rank(t.id) end nulls last,
+                                       t.priority, t.rank, t.id) as o
       from cb.tasks t where t.status = s and (p is null or t.project = p) and (tg is null or tg = any(t.labels))
                         and (ty is null or t.type = ty)
-     order by t.priority, t.rank limit lim) x
+     order by o limit lim) x
 $$;
 
 create function cb.seen(at timestamptz default now()) returns void language plpgsql as $$
@@ -1280,7 +1336,7 @@ begin
       union select t.assignee from cb.tasks t where t.assignee is not null and t.status not in ('done', 'cancelled') and (p is null or t.project = p)
     ) a
     left join lateral (select * from cb.sessions s3 where s3.actor = a.actor order by s3.last_seen desc limit 1) s on true
-    where a.actor is not null and a.actor not in ('ahmed', 'relay', 'unknown') and a.actor not in (select u.name from cb.users u)
+    where a.actor is not null and a.actor not in ('ahmed', 'relay', 'unknown', 'board') and a.actor not in (select u.name from cb.users u)
   ) x), '[]');
 end $$;
 
@@ -2341,4 +2397,237 @@ begin
                             or e.summary ~* '\mstale\s+(finding|review|claim|comment|report)'
                             or e.summary ~* '\m(finding|review|claim|comment|report)s?\W+(is|was|were|are)\s+stale\M')
                        and (p is null or e.project = p)));
+end $$;
+
+-- ---------------------------------------------------------------- goals (#663)
+
+-- "G3", "g3", "#3" or "3" → 3. An unknown goal is an error.
+create function cb.norm_goal(id text) returns bigint language plpgsql stable as $$
+#variable_conflict use_variable
+declare v text := ltrim(ltrim(lower(trim(coalesce(id, ''))), '#'), 'g');
+begin
+  if v !~ '^[0-9]+$' then raise exception 'bad goal "%"; use G3', id; end if;
+  if not exists (select 1 from cb.goals g where g.id = v::bigint) then raise exception 'no goal G%: cb goals lists them', v; end if;
+  return v::bigint;
+end $$;
+
+-- Rules as stored: labels as tags, words lowercased, epics as ids (an unknown epic is an error); blanks and repeats dropped.
+create function cb._goal_rules(r jsonb) returns jsonb language sql stable strict as $$
+  select jsonb_build_object(
+    'labels', coalesce((select jsonb_agg(distinct n) from (select cb.norm_tag(x) n from jsonb_array_elements_text(coalesce($1 -> 'labels', '[]')) x) z where n <> ''), '[]'),
+    'words', coalesce((select jsonb_agg(distinct n) from (select lower(trim(x)) n from jsonb_array_elements_text(coalesce($1 -> 'words', '[]')) x) z where n <> ''), '[]'),
+    'epics', coalesce((select jsonb_agg(distinct n) from (select cb.norm_epic(x) n from jsonb_array_elements_text(coalesce($1 -> 'epics', '[]')) x) z where n is not null), '[]'))
+$$;
+
+-- Does an open card fit a goal: one of its labels, OR one of its words in the title/body (full text, plus a plain
+-- substring match for words full text drops, as cb.mem_find), OR one of its epics; and in its project, if it has one.
+-- ponytail: to_tsvector per card per goal, no index; fine for a board's few thousand cards. A tsv column if it slows.
+create function cb._goal_match(r jsonb, gp text, t cb.tasks) returns boolean language sql stable as $$
+  select t.status not in ('done', 'cancelled') and ($2 is null or t.project = $2) and (
+    t.labels && array(select jsonb_array_elements_text(coalesce($1 -> 'labels', '[]')))
+    or coalesce(t.epic_id in (select (x)::bigint from jsonb_array_elements_text(coalesce($1 -> 'epics', '[]')) x), false)
+    or exists (select 1 from jsonb_array_elements_text(coalesce($1 -> 'words', '[]')) w
+                where to_tsvector('english', t.title || ' ' || t.body) @@ websearch_to_tsquery('english', w)
+                   or t.title ilike '%' || replace(replace(replace(w, '\', '\\'), '%', '\%'), '_', '\_') || '%'
+                   or t.body ilike '%' || replace(replace(replace(w, '\', '\\'), '%', '\%'), '_', '\_') || '%'))
+$$;
+
+-- Add every card the goal matches now, as in. A card already listed (in, or out: Ahmed unticked it) is left alone.
+create function cb._goal_pull(g cb.goals, fresh boolean) returns int language plpgsql as $$
+declare n int;
+begin
+  insert into cb.goal_tasks (goal_id, task_id, state, via, new)
+  select g.id, t.id, 'in', 'match', fresh from cb.tasks t where cb._goal_match(g.rules, g.project, t)
+  on conflict (goal_id, task_id) do nothing;
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- One audit row per goal change (kind goal, data.action).
+create function cb._goal_event(g cb.goals, action text, summary text, a text) returns void language sql as $$
+  insert into cb.events (actor, project, kind, summary, data)
+  values ($4, $1.project, 'goal', $3, jsonb_build_object('goal', $1.id, 'action', $2))
+$$;
+
+-- Close the active goals among these whose in cards are all done or cancelled (at least one: an empty goal stays
+-- open), and tell their project. The board says it, not whoever finished the last card.
+create function cb._goal_autoclose(ids bigint[]) returns void language plpgsql as $$
+declare g cb.goals; n int;
+begin
+  for g in update cb.goals x set status = 'done', closed_at = now()
+            where x.id = any(ids) and x.status = 'active'
+              and exists (select 1 from cb.goal_tasks gt where gt.goal_id = x.id and gt.state = 'in')
+              and not exists (select 1 from cb.goal_tasks gt join cb.tasks t on t.id = gt.task_id
+                               where gt.goal_id = x.id and gt.state = 'in' and t.status not in ('done', 'cancelled'))
+           returning * loop
+    select count(*) into n from cb.goal_tasks gt where gt.goal_id = g.id and gt.state = 'in';
+    perform cb._goal_event(g, 'close', 'G' || g.id || ' done: every card closed', 'board');
+    insert into cb.events (actor, project, kind, summary)
+    values ('board', g.project, 'broadcast', 'Goal G' || g.id || ' is done: ' || g.title || ' (all ' || n || ' cards closed).');
+  end loop;
+end $$;
+
+-- A card filed or changed (title, body, labels, epic, project) joins every active goal it now matches, marked new.
+create function cb.tasks_goals() returns trigger language plpgsql as $$
+begin
+  insert into cb.goal_tasks (goal_id, task_id, state, via, new)
+  select g.id, new.id, 'in', 'match', true from cb.goals g where g.status = 'active' and cb._goal_match(g.rules, g.project, new)
+  on conflict (goal_id, task_id) do nothing;
+  return null;
+end $$;
+
+-- A card done or cancelled may finish its goals.
+create function cb.tasks_goals_close() returns trigger language plpgsql as $$
+begin
+  if new.status in ('done', 'cancelled') and old.status not in ('done', 'cancelled') then
+    perform cb._goal_autoclose(array(select gt.goal_id from cb.goal_tasks gt where gt.task_id = new.id and gt.state = 'in'));
+  end if;
+  return null;
+end $$;
+
+create or replace trigger tasks_goals after insert or update of title, body, labels, epic_id, project on cb.tasks
+  for each row execute function cb.tasks_goals();
+create or replace trigger tasks_goals_close after update of status on cb.tasks
+  for each row execute function cb.tasks_goals_close();
+create or replace trigger goals_notify after insert or update or delete on cb.goals
+  for each statement execute function cb.notify();
+create or replace trigger goal_tasks_notify after insert or update or delete on cb.goal_tasks
+  for each statement execute function cb.notify();
+
+-- Ahmed sets a goal. Its first list is every card it matches now, less the ones he unticked in the preview (skip: they
+-- stay out). It goes last in the order and is broadcast to its project (every session when it has none).
+create function cb.goal_create(title text, description text default '', project text default null, rules jsonb default null,
+                               skip jsonb default '[]', actor text default null) returns bigint language plpgsql as $$
+#variable_conflict use_variable
+declare a text; p text; g cb.goals; n int;
+begin
+  perform cb.dashboard_only('Goals');
+  a := cb.set_actor(actor);
+  p := cb.read_project(project);
+  if coalesce(trim(title), '') = '' then raise exception 'title is required'; end if;
+  insert into cb.goals (title, description, project, rules, rank, created_by)
+  values (regexp_replace(trim(title), '\s+', ' ', 'g'), coalesce(trim(description), ''), p,
+          coalesce(cb._goal_rules(rules), '{"labels": [], "words": [], "epics": []}'),
+          coalesce((select max(x.rank) + 1024 from cb.goals x), 0), a)
+  returning * into g;
+  insert into cb.goal_tasks (goal_id, task_id, state, via, new)
+  select g.id, t.id, 'out', 'match', false from cb.tasks t
+   where t.id in (select cb.norm_id(x) from jsonb_array_elements_text(coalesce(skip, '[]')) x) and cb._goal_match(g.rules, g.project, t);
+  n := cb._goal_pull(g, false);
+  perform cb._goal_event(g, 'create', 'G' || g.id || ' set: ' || g.title, a);
+  perform cb.broadcast('Goal G' || g.id || ' is active: ' || g.title || ' (' || n || ' cards). Its cards come right after P0; cb goals lists it.', g.project, a);
+  return g.id;
+end $$;
+
+-- Edit title, description, rules, or order (rank); null leaves a field as it is. New rules pull in the cards they
+-- now match (Ahmed saw them in the preview, so not new); cards that stopped matching stay until he unticks them.
+create function cb.goal_update(id text, title text default null, description text default null, rules jsonb default null,
+                               rank double precision default null, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; was cb.goals; g cb.goals;
+begin
+  perform cb.dashboard_only('Goals');
+  a := cb.set_actor(actor);
+  if title is not null and trim(title) = '' then raise exception 'title is required'; end if;
+  select * into was from cb.goals x where x.id = cb.norm_goal(id);
+  update cb.goals x set title = coalesce(regexp_replace(trim(title), '\s+', ' ', 'g'), x.title),
+                        description = coalesce(trim(description), x.description),
+                        rules = coalesce(cb._goal_rules(rules), x.rules), rank = coalesce(rank, x.rank)
+   where x.id = was.id returning * into g;
+  if g.rules is distinct from was.rules and g.status = 'active' then perform cb._goal_pull(g, false); end if;
+  if (g.title, g.description, g.rules) is distinct from (was.title, was.description, was.rules) then
+    perform cb._goal_event(g, 'edit', 'G' || g.id || ' edited: ' || g.title, a);
+  end if;  -- a reorder alone is silent, as an epic's
+end $$;
+
+-- active | paused | done. Paused keeps its list but stops ordering and matching; active again catches up on the
+-- cards that matched meanwhile (marked new) and is broadcast like a new goal.
+create function cb.goal_status(id text, status text, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; s text := lower(trim(coalesce(status, ''))); g cb.goals; n int;
+begin
+  perform cb.dashboard_only('Goals');
+  a := cb.set_actor(actor);
+  if s not in ('active', 'paused', 'done') then raise exception 'bad goal status "%"; use active, paused or done', status; end if;
+  update cb.goals x set status = s, closed_at = case when s = 'done' then now() end
+   where x.id = cb.norm_goal(id) and x.status <> s returning * into g;
+  if g.id is null then return; end if;
+  perform cb._goal_event(g, case s when 'active' then 'activate' when 'paused' then 'pause' else 'close' end,
+                         'G' || g.id || case s when 'active' then ' active: ' when 'paused' then ' paused: ' else ' closed: ' end || g.title, a);
+  if s = 'active' then
+    perform cb._goal_pull(g, true);
+    select count(*) into n from cb.goal_tasks gt join cb.tasks t on t.id = gt.task_id
+     where gt.goal_id = g.id and gt.state = 'in' and t.status not in ('done', 'cancelled');
+    perform cb.broadcast('Goal G' || g.id || ' is active: ' || g.title || ' (' || n || ' open cards). Its cards come right after P0; cb goals lists it.', g.project, a);
+  end if;
+end $$;
+
+-- Ahmed ticks a card in (via ahmed) or out of a goal. Out stays out: matching never adds it back.
+create function cb.goal_tick(goal text, task text, state text, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; gid bigint; tid bigint := cb.norm_id(task); st text := lower(trim(coalesce(state, ''))); gp text; tp text;
+begin
+  perform cb.dashboard_only('Goals');
+  a := cb.set_actor(actor);
+  gid := cb.norm_goal(goal);
+  if st not in ('in', 'out') then raise exception 'bad state "%"; use in or out', state; end if;
+  select t.project into tp from cb.tasks t where t.id = tid;
+  if not found then raise exception 'task #% not found', tid; end if;
+  select g.project into gp from cb.goals g where g.id = gid;
+  if gp is not null and gp <> tp then raise exception 'G% is for %, #% is in %', gid, gp, tid, tp; end if;
+  insert into cb.goal_tasks (goal_id, task_id, state, via, new) values (gid, tid, st, 'ahmed', false)
+  on conflict (goal_id, task_id) do update
+    set state = excluded.state, new = false, via = case when excluded.state = 'in' then 'ahmed' else cb.goal_tasks.via end;
+  perform cb._goal_autoclose(array[gid]);
+end $$;
+
+-- Ahmed opened the goal: its cards are no longer new.
+create function cb.goal_opened(id text) returns void language plpgsql as $$
+#variable_conflict use_variable
+begin
+  perform cb.dashboard_only('Goals');
+  update cb.goal_tasks gt set new = false where gt.goal_id = cb.norm_goal(id) and gt.new;
+end $$;
+
+-- What these rules match right now (the live preview before saving), in work order.
+create function cb.goal_preview(rules jsonb, project text default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb.read_project(project); r jsonb := coalesce(cb._goal_rules(rules), '{}');
+begin
+  return coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'project', t.project, 'title', t.title, 'status', t.status,
+                                                       'priority', t.priority, 'labels', t.labels, 'assignee', t.assignee)
+                                    order by t.priority, t.rank, t.id)
+                     from cb.tasks t where cb._goal_match(r, p, t)), '[]');
+end $$;
+
+-- Rules proposed from a description: the existing labels (of its project, or any) it names, plus its other
+-- words that are not English stopwords (to_tsvector drops those), 3+ characters, in the order written.
+create function cb.goal_propose(description text, project text default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb.read_project(project); w text[]; labs text[];
+begin
+  w := array(select x from (select trim(x, '-_') x, min(o) o
+                              from regexp_split_to_table(lower(coalesce(description, '')), '[^[:alnum:]_-]+') with ordinality s(x, o) group by 1) z
+              where x <> '' order by o);
+  labs := array(select distinct l from cb.tasks t, unnest(t.labels) l where (p is null or t.project = p) and l = any(w) order by l);
+  return jsonb_build_object('labels', to_jsonb(labs), 'epics', '[]'::jsonb,
+    'words', to_jsonb(array(select x from unnest(w) with ordinality u(x, o)
+                             where length(x) >= 3 and x <> all(labs) and to_tsvector('english', x) <> ''::tsvector order by o)));
+end $$;
+
+-- Goals with progress: total = cards in, closed = those done or cancelled, new = joined since Ahmed last looked.
+-- A project includes the every-project goals. Active only, in order, unless include_all (then paused, then done).
+create function cb.goals_list(project text default null, include_all boolean default false) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb.read_project(project);
+begin
+  return coalesce((select jsonb_agg(to_jsonb(x) order by x.status = 'done', x.status = 'paused', x.rank, x.id) from (
+    select g.id, g.title, g.description, g.project, g.rules, g.status, g.rank, g.created_by, g.created_at, g.closed_at,
+           c.total, c.closed, c.new
+      from cb.goals g
+      cross join lateral (select (count(*) filter (where gt.state = 'in'))::int as total,
+                                 (count(*) filter (where gt.state = 'in' and t.status in ('done', 'cancelled')))::int as closed,
+                                 (count(*) filter (where gt.state = 'in' and gt.new))::int as new
+                            from cb.goal_tasks gt join cb.tasks t on t.id = gt.task_id where gt.goal_id = g.id) c
+     where (p is null or g.project is null or g.project = p) and (coalesce(include_all, false) or g.status = 'active')) x), '[]');
 end $$;
