@@ -108,9 +108,10 @@ const GROUPS: [string, Record<string, Cmd>][] = [
       does: 'Answer Ahmed\'s ask (a "[Ahmed asks] A<id>: ..." line): the reply goes to his thread on Today, where he reads it (not your terminal). Reply as often as useful; --done with the final reply closes the ask. Only the session he asked can reply.',
       eg: 'cb reply A12 "SC64 graded 27/32; the 5 pends trace to #219" --done',
       more: 'No reply 15 minutes after an ask reaches you: it is pushed once more, then shows as late at the top of cb tick and in cb start.' },
-    asks: { use: 'cb asks', topic: 'relay',
-      does: 'Ahmed\'s open asks to you, each with its thread (his lines, your replies, times) and the reply command. Read-only.',
-      eg: 'cb asks' },
+    asks: { use: 'cb asks\ncb asks add "<what Ahmed asked you>" [-t <task>]', topic: 'relay',
+      does: 'Ahmed\'s open asks to you, each with its thread (his lines, your replies, times) and the reply command. add: Ahmed asked you something in your terminal that wants a result: record it, so your cb reply lands on his Today page.',
+      eg: 'cb asks add "Why is SC64 at 27/32?"',
+      more: 'Record real requests (a status, a check, a decision he wants back), not chat. It is addressed to you only and never pushed back to you; reply as with any ask.' },
   }],
   ['TALK TO SESSIONS', {
     tell: { use: 'cb tell <session> "<message>"', topic: 'huddle',
@@ -353,6 +354,8 @@ It is never Ahmed's approval.`,
 The relay is one small background process per session. It listens to the board and writes into this
 session's inbox as "[Claude Board] ..." messages:
   - Ahmed's asks: "[Ahmed asks] A<id>: ..." is Ahmed himself; answer with cb reply A<id> "..." (cb help reply)
+    When Ahmed asks you something in your terminal that wants a result back, record it first:
+    cb asks add "<his ask>", then answer it with cb reply A<id> so the answer is on his Today page
   - answers to your questions (Ahmed's, or a user's marked "not Ahmed"); marked delivered automatically
   - moves, edits, cancels and notes others made on your tasks
   - cb tell messages and huddle lines for you

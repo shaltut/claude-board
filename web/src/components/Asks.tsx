@@ -121,7 +121,7 @@ function Thread({ a, sessions }: { a: Ask; sessions: SessionRow[] }) {
     <li className={cn('rounded-lg border bg-card px-4 py-3', !open && 'bg-card/60')}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span className="callsign text-[13px] text-foreground">A{a.id}</span>
-        <span className="inline-flex items-center gap-1">to <ActorChip actor={a.to_actor} /></span>
+        <span className="inline-flex items-center gap-1">{a.from_terminal ? <>asked in the terminal of <ActorChip actor={a.to_actor} /></> : <>to <ActorChip actor={a.to_actor} /></>}</span>
         {a.project && <ProjectChip slug={a.project} />}
         {a.task_id && (
           <button type="button" onClick={() => go({ task: a.task_id! })} className="hover:text-foreground"><TaskId id={a.task_id} /></button>

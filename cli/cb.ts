@@ -198,7 +198,7 @@ async function start() {
   // Ahmed's asks (#936) waiting on this session's reply: a resumed session lost the terminal they were pushed into
   const asks = (await callFn('asks_list', { to_actor: actor, include_closed: false }) as any[]).filter((a) => a.awaiting);
   if (asks.length) out.push('AHMED ASKS YOU', ...asks.map((a) =>
-    `  A${a.id}${a.late ? ` LATE ${dur((Date.now() - +new Date(a.delivered_at)) / 60000)}` : ''}: ${cut(flat(a.body))}`));
+    `  A${a.id}${a.late ? ` LATE ${dur((Date.now() - +new Date(a.delivered_at)) / 60000)}` : ''}${a.from_terminal ? ' (asked in your terminal)' : ''}: ${cut(flat(a.body))}`));
   out.push(`YOUR TASKS (cb mine)`, ...(mine.length ? mine.map((t: any) => '  ' + line(t)) : ['  none']),
     `QUEUE HEAD${project ? ` (${project} Next; cb next takes the first)` : ''}`, ...(queue.length ? queue.map((t: any) => '  ' + line(t)) : ['  empty']),
     ...(qs.length ? ['YOUR QUESTIONS', ...qs.map((q: any) => `  Q${q.id} ${q.status}: ${cut(q.body)}`)] : []), '', 'NEXT');
@@ -593,10 +593,15 @@ async function run(): Promise<unknown> {
       return { out: `replied to A${id}${o.done ? `; A${id} closed` : ': Ahmed reads it on Today (more: cb reply again; the last one with --done)'}` };
     }
     case 'asks': {
+      if (args[0] === 'add') { // #951: what Ahmed asked in this terminal, onto the board so the reply lands on Today
+        need(2, 'asks add "<what Ahmed asked you>" [-t <task>]   e.g. cb asks add "Why is SC64 at 27/32?"');
+        const id = await callFn('ask_record', { body: args.slice(1).join(' '), task: o.task ?? null, project: sessionProject ?? null, actor });
+        return { out: `A${id} recorded (asked in your terminal): reply on the board with cb reply A${id} "<reply>" (--done with the final one)`, json: id };
+      }
       const rows: any = await callFn('asks_list', { to_actor: actor, include_closed: false });
       const hm = (t: string) => new Date(t).toISOString().slice(11, 16);
       return { out: rows.map((a: any) => [
-        `A${a.id} [${a.state}${a.late ? ', late' : ''}] from Ahmed ${dur((Date.now() - +new Date(a.created_at)) / 60000)} ago${a.task_id ? ` · task #${a.task_id}` : ''}`,
+        `A${a.id} [${a.state}${a.late ? ', late' : ''}] ${a.from_terminal ? 'asked in your terminal, recorded by you' : 'from Ahmed'} ${dur((Date.now() - +new Date(a.created_at)) / 60000)} ago${a.task_id ? ` · task #${a.task_id}` : ''}`,
         ...a.lines.map((l: any) => `  ${hm(l.at)} ${l.actor === 'ahmed' ? 'Ahmed' : l.actor}: ${flat(l.text)}`),
         `  → cb reply A${a.id} "<reply>"   (--done with the final one closes it)`].join('\n')).join('\n') || `no open asks for ${actor}`, json: rows };
     }

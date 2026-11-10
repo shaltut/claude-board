@@ -283,3 +283,31 @@ test('the relay pushes [Ahmed asks] A<n> ending with the reply command, and mark
     await Promise.race([exited, new Promise((r) => setTimeout(r, 8000))]);
   }
 });
+
+test('a session records what Ahmed asked in its terminal: an ask to itself, never pushed back as [Ahmed asks] (#951)', async () => {
+  const sql = await db();
+  await setup(sql);
+  const r = cb(['asks', 'add', 'Why is SC64 at 27/32?']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^A1 recorded \(asked in your terminal\)/);
+  const [a] = await sql`select to_actor, from_terminal, project from cb.asks`;
+  assert.deepEqual([a.to_actor, a.from_terminal, a.project], ['orch@pc', true, 'demo']);
+  assert.deepEqual((await inbox(sql)).asks, [], 'its own note is never pushed to it');
+  await sql`update cb.asks set delivered_at = now() - interval '16 minutes'`;
+  assert.deepEqual((await inbox(sql)).asks, [], 'no reminder dressed as [Ahmed asks]');
+  assert.match(cb(['asks']).out, /^A1 \[seen, late\] asked in your terminal, recorded by you/);
+  const [l] = (await sql`select cb.asks_list() as l`)[0].l;
+  assert.equal(l.from_terminal, true);
+  assert.equal(cb(['reply', 'A1', 'Two Hijri dates misparse', '--done']).code, 0);
+  assert.equal((await sql`select status from cb.asks`)[0].status, 'done');
+  const s = session();
+  await assert.rejects(s`select cb.ask_record(body => 'x', actor => 'ahmed')`, /act as ahmed|a session records/);
+});
+
+test('the dashboard cannot record a terminal ask: it asks with Ask a session (#951)', async () => {
+  const sql = await db();
+  await setup(sql);
+  const r = await rpc('ask_record', { body: 'x' });
+  assert.notEqual(r.status, 200);
+  assert.match(await r.text(), /a session records|act as ahmed/);
+});

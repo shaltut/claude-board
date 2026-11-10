@@ -1807,7 +1807,7 @@ begin
      where h.status = 'open' and (p is null or h.project = p) and l.at < now() - interval '20 minutes'), '[]'),
     'locks', cb.lock_queue(null),
     -- Ahmed's asks to me (#936) still without a reply 15 minutes after delivery
-    'late_asks', coalesce((select jsonb_agg(jsonb_build_object('id', a.id, 'body', a.body, 'delivered_at', a.delivered_at) order by a.id)
+    'late_asks', coalesce((select jsonb_agg(jsonb_build_object('id', a.id, 'body', a.body, 'delivered_at', a.delivered_at, 'from_terminal', a.from_terminal) order by a.id)
       from cb.asks a cross join lateral cb._ask_info(a.id) i where a.to_actor = me and i.late), '[]'),
     -- tasks with a PR, open or touched this week: the CLI asks GitHub about these
     'prs', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'status', t.status, 'assignee', t.assignee, 'labels', t.labels,
@@ -2672,6 +2672,8 @@ create table if not exists cb.asks (
   repushed_at    timestamptz,
   closed_at      timestamptz
 );
+-- #951: what Ahmed asked in a session's terminal, recorded by that session as an ask to itself (never pushed to it)
+alter table cb.asks add column if not exists from_terminal boolean not null default false;
 create index if not exists asks_open_to on cb.asks (to_actor) where status = 'open';
 create index if not exists events_ask on cb.events (((data ->> 'ask')::bigint)) where kind = 'ask';
 create or replace trigger asks_notify after insert or update or delete on cb.asks
@@ -2683,6 +2685,7 @@ drop function if exists cb._ask_session cascade;
 drop function if exists cb._ask_event cascade;
 drop function if exists cb._ask_info cascade;
 drop function if exists cb.ask_open cascade;
+drop function if exists cb.ask_record cascade;
 drop function if exists cb.ask_say cascade;
 drop function if exists cb.ask_reply cascade;
 drop function if exists cb.ask_close cascade;
@@ -2745,6 +2748,30 @@ language sql stable as $$
 $$;
 
 -- Ahmed asks one session (the dashboard only). The ask's project is the session's, else the one he is looking at.
+-- #951: Ahmed asked this session in its terminal; the session records it so its replies land on Today. Always
+-- addressed to the caller, marked from_terminal, and counted as delivered with its reminder spent: the relay never
+-- hands the session its own note back as an "[Ahmed asks]" line. cb tick and cb start still show it late.
+create function cb.ask_record(body text, task text default null, project text default null, actor text default null)
+returns bigint language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); tid bigint; r cb.asks; ev bigint;
+begin
+  if cb._is_dashboard() or cb.ahmed_like(a) then
+    raise exception 'a session records what Ahmed asked in its terminal; the dashboard uses Ask a session on Today';
+  end if;
+  if coalesce(trim(body), '') = '' then raise exception 'what Ahmed asked is required: cb asks add "<his ask>"'; end if;
+  if nullif(trim(coalesce(task, '')), '') is not null then
+    tid := cb.norm_id(task);
+    if not exists (select 1 from cb.tasks t where t.id = tid) then raise exception 'task #% not found', tid; end if;
+  end if;
+  insert into cb.asks (project, task_id, to_actor, body, from_terminal, delivered_at, delivered_to, repushed_at)
+  values (coalesce((select s.project from cb.sessions s where s.actor = a order by s.last_seen desc limit 1), cb.read_project(project)),
+          tid, a, trim(body), true, now(), a, now()) returning * into r;
+  ev := cb._ask_event(r, 'open', r.body, a, '{"terminal": true}');
+  update cb.asks x set delivered_upto = ev where x.id = r.id;
+  return r.id;
+end $$;
+
 create function cb.ask_open(to_actor text, body text, task text default null, project text default null, actor text default 'ahmed')
 returns bigint language plpgsql as $$
 #variable_conflict use_variable
@@ -2840,6 +2867,7 @@ declare p text := cb.read_project(project);
 begin
   return coalesce((select jsonb_agg(jsonb_build_object(
       'id', a.id, 'project', a.project, 'task_id', a.task_id, 'to_actor', a.to_actor, 'body', a.body, 'status', a.status,
+      'from_terminal', a.from_terminal,
       'created_at', a.created_at, 'delivered_at', a.delivered_at, 'closed_at', a.closed_at,
       'state', case when a.status = 'done' then 'done' when not i.awaiting then 'replied' when i.delivered then 'seen' else 'sent' end,
       'awaiting', a.status = 'open' and i.awaiting, 'late', i.late,

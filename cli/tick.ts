@@ -92,7 +92,7 @@ export async function tick(project: string, actor: string) {
 
   // #936: Ahmed asked this session, it was pushed (and pushed once more), and still no reply
   for (const a of b.late_asks ?? [])
-    add('asks', actor, `A${a.id} from Ahmed, no reply for ${ago(a.delivered_at)}: ${cut(flat(a.body))}`, `cb reply A${a.id} "<reply>"`);
+    add('asks', actor, `A${a.id} ${a.from_terminal ? 'asked in your terminal' : 'from Ahmed'}, no reply for ${ago(a.delivered_at)}: ${cut(flat(a.body))}`, `cb reply A${a.id} "<reply>"`);
 
   for (const a of b.answered) {
     const mine = a.who === actor;

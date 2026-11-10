@@ -2,7 +2,7 @@
 
 export interface AskLine { id: number; at: string; actor: string; action: 'open' | 'say' | 'reply' | 'close' | 'reroute'; text: string; done: boolean }
 export interface Ask {
-  id: number; project: string | null; task_id: number | null; to_actor: string; body: string; status: 'open' | 'done'
+  id: number; project: string | null; task_id: number | null; to_actor: string; body: string; status: 'open' | 'done'; from_terminal?: boolean
   created_at: string; delivered_at: string | null; closed_at: string | null
   state: 'sent' | 'seen' | 'replied' | 'done'; awaiting: boolean; late: boolean; live: boolean; lines: AskLine[]
 }
