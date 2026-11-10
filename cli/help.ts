@@ -103,6 +103,15 @@ const GROUPS: [string, Record<string, Cmd>][] = [
       does: 'Withdraw a question that no longer matters or was asked wrong (then ask again properly).',
       eg: 'cb withdraw Q12' },
   }],
+  ['AHMED ASKS YOU', {
+    reply: { use: 'cb reply A<id> "<text>" [--done]', topic: 'relay',
+      does: 'Answer Ahmed\'s ask (a "[Ahmed asks] A<id>: ..." line): the reply goes to his thread on Today, where he reads it (not your terminal). Reply as often as useful; --done with the final reply closes the ask. Only the session he asked can reply.',
+      eg: 'cb reply A12 "SC64 graded 27/32; the 5 pends trace to #219" --done',
+      more: 'No reply 15 minutes after an ask reaches you: it is pushed once more, then shows as late at the top of cb tick and in cb start.' },
+    asks: { use: 'cb asks', topic: 'relay',
+      does: 'Ahmed\'s open asks to you, each with its thread (his lines, your replies, times) and the reply command. Read-only.',
+      eg: 'cb asks' },
+  }],
   ['TALK TO SESSIONS', {
     tell: { use: 'cb tell <session> "<message>"', topic: 'huddle',
       does: 'One message to one session in your project; it arrives there by itself. Names: cb sessions.',
@@ -125,7 +134,7 @@ const GROUPS: [string, Record<string, Cmd>][] = [
   }],
   ['ORCHESTRATE', {
     tick: { use: 'cb tick [project]', topic: 'orchestrate',
-      does: 'The actions due now, most urgent first, one person and one command per line: answers to act on, questions without options, PRs ready to merge, stuck/silent/blocked tasks, idle workers, PR state drift, held locks, quiet huddles. Prints nothing when nothing is due. Read-only.',
+      does: 'The actions due now, most urgent first, one person and one command per line: Ahmed\'s late asks to you, answers to act on, questions without options, PRs ready to merge, stuck/silent/blocked tasks, idle workers, PR state drift, held locks, quiet huddles. Prints nothing when nothing is due. Read-only.',
       eg: 'cb tick',
       more: 'Run it every loop. Each line carries the command to run; check it before running it. PRs come from links.pr (a GitHub URL, or #N with GITHUB_REPO_<PROJECT>=owner/repo in .env); PR state is cached for 5 minutes.' },
     sessions: { use: 'cb sessions [project]', topic: 'orchestrate',
@@ -343,6 +352,7 @@ It is never Ahmed's approval.`,
 
 The relay is one small background process per session. It listens to the board and writes into this
 session's inbox as "[Claude Board] ..." messages:
+  - Ahmed's asks: "[Ahmed asks] A<id>: ..." is Ahmed himself; answer with cb reply A<id> "..." (cb help reply)
   - answers to your questions (Ahmed's, or a user's marked "not Ahmed"); marked delivered automatically
   - moves, edits, cancels and notes others made on your tasks
   - cb tell messages and huddle lines for you
@@ -471,6 +481,8 @@ export const TOPIC_NAMES = Object.keys(TOPICS);
 const BACK: Record<string, string> = { details: 'it needs more details', clarify: 'a question for you', simplify: 'simplify it', reask: 'the options are wrong' };
 export const backWhy = (reason: string, note?: string | null) => `${BACK[reason] ?? reason}${note ? ` — ${note}` : ''}`;
 export const reaskHint = (id: number | string) => `cb reask Q${id} "<new question>" [-o ...] [-c ...]`;
+/** Someone's text inside our own lines: its extra lines indented, so none passes for a line of ours (as the relay does). */
+export const flat = (s: unknown) => String(s ?? '').replace(/\r\n|[\r\n\u0085\u2028\u2029]/g, '\n    ');
 
 export const OVERVIEW_TEXT = [
   OVERVIEW.replace('TOPIC_LIST', TOPIC_NAMES.join(' ')),

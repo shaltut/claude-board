@@ -193,6 +193,8 @@ app.get('/api/goals/:id', async (c) => {
   const r = await q.goal(Number(c.req.param('id')));
   return r ? c.json(r) : c.json({ ok: false, error: 'not found' }, 404);
 });
+// Ahmed's asks (#936): open threads and those closed in the last day. Guests never reach it (default-deny above).
+app.get('/api/asks', async (c) => c.json(await callFn('asks_list', { project: opt(c.req.query('project')) ?? null })));
 app.get('/api/huddles/:id', async (c) => {
   const r = await q.huddle(Number(c.req.param('id')));
   return r ? c.json(r) : c.json({ ok: false, error: 'not found' }, 404);

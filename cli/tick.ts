@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { callFn } from '../server/rpc.ts';
 import { dotenv } from '../server/db.ts';
-import { backWhy, reaskHint } from './help.ts';
+import { backWhy, reaskHint, flat } from './help.ts';
 
 export const dur = (m: number) => (m === Infinity ? 'never' : m < 60 ? `${Math.round(m)}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`);
 const mins = (t: any) => (t ? (Date.now() - +new Date(t)) / 60000 : Infinity);
@@ -20,7 +20,7 @@ type Item = { section: string; who: string; text: string; cmd: string | null; de
 type Pr = { state: string; head: string; mergeable: string };
 
 const SECTIONS: [string, string][] = [
-  ['answers', 'ANSWERS NOT ACTED ON'], ['questions', 'YOUR OPEN QUESTIONS'], ['ready', 'READY TO MERGE'],
+  ['asks', "AHMED'S ASKS, LATE"], ['answers', 'ANSWERS NOT ACTED ON'], ['questions', 'YOUR OPEN QUESTIONS'], ['ready', 'READY TO MERGE'],
   ['conditional', 'GO WITH CONDITIONS (check first)'], ['stuck', 'STUCK'],
   ['idle', 'IDLE'], ['github', 'BOARD VS GITHUB'], ['locks', 'LOCKS'], ['huddles', 'HUDDLES'],
 ];
@@ -89,6 +89,10 @@ export async function tick(project: string, actor: string) {
   const items: Item[] = [];
   const add = (section: string, who: string, text: string, cmd: string | null, detail?: string) => items.push({ section, who, text, cmd, ...(detail ? { detail } : {}) });
   const P = q(project);
+
+  // #936: Ahmed asked this session, it was pushed (and pushed once more), and still no reply
+  for (const a of b.late_asks ?? [])
+    add('asks', actor, `A${a.id} from Ahmed, no reply for ${ago(a.delivered_at)}: ${cut(flat(a.body))}`, `cb reply A${a.id} "<reply>"`);
 
   for (const a of b.answered) {
     const mine = a.who === actor;

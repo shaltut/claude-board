@@ -75,6 +75,13 @@ const indent = (x: any): any =>
 function format(raw: any): string {
   const i = indent(raw);
   const lines = ['[Claude Board]'];
+  // Ahmed's asks (#936) first: his own words, answered on the board, where he reads them (not in this terminal)
+  for (const a of i.asks ?? []) {
+    const tag = `A${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}`;
+    for (const l of a.lines)
+      lines.push(`[Ahmed asks] ${tag}${a.reminder ? ' (reminder: no reply in 15 min)' : l.action === 'say' ? ' (in the thread)' : ''}: ${l.text}`);
+    lines.push(`  → cb reply A${a.id} "<your reply>"   (Ahmed reads replies on the board, not here; add --done with the final one)`);
+  }
   for (const b of i.broadcasts) lines.push(`Broadcast from ${b.actor}${b.project ? ` to ${b.project}` : ' to everyone'}: ${b.summary}`);
   for (const m of i.messages) lines.push(`Message from ${m.actor}: ${m.summary}`, `  (reply: cb tell ${m.actor} "...")`);
   // Ahmed talks in huddles from the dashboard: his lines must read as him, not as a teammate.
@@ -154,13 +161,14 @@ async function check() {
       const [{ i }] = await sql`select cb.inbox(${M}, ${PANE}, ${after}) as i`;
       const read = [...i.broadcasts, ...i.messages, ...(i.huddles ?? [])].map((x: any) => Number(x.id))
         .concat([...(i.answer_copies ?? []), ...(i.bugs ?? [])].map((x: any) => Number(x.event_id)));
-      if (i.answers.length || i.sent_back?.length || i.events.length || read.length || i.next_work.length || i.memory?.length) {
+      if (i.asks?.length || i.answers.length || i.sent_back?.length || i.events.length || read.length || i.next_work.length || i.memory?.length) {
         await post(format(i));
+        for (const a of i.asks ?? []) await sql`select cb.ask_delivered(${String(a.id)}, ${a.upto}, ${i.actor}, ${a.reminder})`;
         if (read.length) await sql`select cb.broadcast_seen(${M}, ${PANE}, ${Math.max(...read)})`;
         for (const a of i.answers) await sql`select cb.answer_delivered(${String(a.id)}, ${i.actor ?? `${PANE}@${M}`}, ${'relay'})`;
         // only the send-back pushed: one rewritten (or sent back again) since stays as it is
         for (const s of i.sent_back ?? []) await sql`select cb.answer_delivered(${String(s.id)}, ${i.actor ?? `${PANE}@${M}`}, ${'relay'}, ${s.at})`;
-        log(`pushed ${i.bugs?.length ?? 0} bugs, ${i.huddles?.length ?? 0} huddle lines, ${i.messages.length} messages, ${i.answers.length} answers, ${i.sent_back?.length ?? 0} sent back, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next, ${i.memory?.length ?? 0} memory`);
+        log(`pushed ${i.asks?.length ?? 0} asks, ${i.bugs?.length ?? 0} bugs, ${i.huddles?.length ?? 0} huddle lines, ${i.messages.length} messages, ${i.answers.length} answers, ${i.sent_back?.length ?? 0} sent back, ${i.events.length} events, ${i.broadcasts.length} broadcasts, ${i.next_work.length} next, ${i.memory?.length ?? 0} memory`);
       }
       after = Number(i.last_event);
     } while (again);

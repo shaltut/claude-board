@@ -87,7 +87,7 @@ create table if not exists cb.events (
   data        jsonb not null default '{}'
 );
 alter table cb.events drop constraint if exists events_kind_check;
-alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user','epic','memory','sent_back','rewritten','goal'));
+alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user','epic','memory','sent_back','rewritten','goal','ask'));
 
 alter table cb.questions add column if not exists multi boolean not null default false;
 
@@ -1276,6 +1276,17 @@ begin
                            and not (e.data ->> 'action' = 'add' and x.source ? 'supersedes')
                            and (e.data ->> 'action' not in ('add', 'confirm') or x.status = 'active')  -- retired since: old news
                            and (x.project is null or x.project = proj) and (x.machine is null or x.machine = m)), '[]'),
+    -- Ahmed's asks to me (#936): his lines not yet pushed, or once, late with no reply, a reminder of his lines since
+    -- my last reply. upto: the event the relay marks delivered (cb.ask_delivered).
+    'asks', coalesce((select jsonb_agg(jsonb_build_object('id', a.id, 'task_id', a.task_id, 'upto', i.last_ahmed, 'reminder', i.delivered,
+                                                          'lines', (select jsonb_agg(jsonb_build_object('action', e.data ->> 'action', 'text', e.summary) order by e.id)
+                                                                      from cb.events e where e.kind = 'ask' and (e.data ->> 'ask')::bigint = a.id
+                                                                       and e.data ->> 'action' in ('open', 'say')
+                                                                       and e.id > case when i.delivered then coalesce(i.last_reply, 0) else a.delivered_upto end))
+                                        order by a.id)
+                        from cb.asks a cross join lateral cb._ask_info(a.id) i
+                       where me is not null and a.status = 'open' and a.to_actor = me
+                         and (not i.delivered or (i.late and a.repushed_at is null))), '[]'),
     'last_event', (select coalesce(max(e.id), 0) from cb.events e));
 end $$;
 
@@ -1795,6 +1806,9 @@ begin
                                              where e.kind = 'huddle' and (e.data ->> 'huddle')::bigint = h.id) l
      where h.status = 'open' and (p is null or h.project = p) and l.at < now() - interval '20 minutes'), '[]'),
     'locks', cb.lock_queue(null),
+    -- Ahmed's asks to me (#936) still without a reply 15 minutes after delivery
+    'late_asks', coalesce((select jsonb_agg(jsonb_build_object('id', a.id, 'body', a.body, 'delivered_at', a.delivered_at) order by a.id)
+      from cb.asks a cross join lateral cb._ask_info(a.id) i where a.to_actor = me and i.late), '[]'),
     -- tasks with a PR, open or touched this week: the CLI asks GitHub about these
     'prs', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'status', t.status, 'assignee', t.assignee, 'labels', t.labels,
         'pr', t.links ->> 'pr', 'commit', t.links ->> 'commit', 'done_at', t.done_at,
@@ -2636,4 +2650,202 @@ begin
                                  (count(*) filter (where gt.state = 'in' and gt.new))::int as new
                             from cb.goal_tasks gt join cb.tasks t on t.id = gt.task_id where gt.goal_id = g.id) c
      where (p is null or g.project is null or g.project = p) and (coalesce(include_all, false) or g.status = 'active')) x), '[]');
+end $$;
+
+-- ---------------------------------------------------------------- Ahmed's asks (#936)
+-- Ahmed asks one session something from Today (A<n>). The relay pushes it as "[Ahmed asks] A<n>: ..." and the
+-- session answers with cb reply. The thread is events of kind 'ask', data {ask, action, to}: action open (the ask),
+-- say (Ahmed in the thread), reply (done: true when it closed the ask), close (Ahmed), reroute (from, to).
+-- delivered_upto: the last of Ahmed's thread events pushed to to_actor (delivered_at: when). repushed_at: the one
+-- reminder for his latest line (a new line clears it). Only the dashboard asks, writes, closes and re-routes.
+create table if not exists cb.asks (
+  id             bigint generated always as identity primary key,
+  project        text references cb.projects(slug) on update cascade on delete set null,
+  task_id        bigint references cb.tasks(id) on delete set null,
+  to_actor       text not null,
+  body           text not null,
+  status         text not null default 'open' check (status in ('open', 'done')),
+  created_at     timestamptz not null default now(),
+  delivered_at   timestamptz,
+  delivered_to   text,
+  delivered_upto bigint not null default 0,
+  repushed_at    timestamptz,
+  closed_at      timestamptz
+);
+create index if not exists asks_open_to on cb.asks (to_actor) where status = 'open';
+create index if not exists events_ask on cb.events (((data ->> 'ask')::bigint)) where kind = 'ask';
+create or replace trigger asks_notify after insert or update or delete on cb.asks
+  for each statement execute function cb.notify();
+
+drop function if exists cb.norm_ask cascade;
+drop function if exists cb._ask_get cascade;
+drop function if exists cb._ask_session cascade;
+drop function if exists cb._ask_event cascade;
+drop function if exists cb._ask_info cascade;
+drop function if exists cb.ask_open cascade;
+drop function if exists cb.ask_say cascade;
+drop function if exists cb.ask_reply cascade;
+drop function if exists cb.ask_close cascade;
+drop function if exists cb.ask_reroute cascade;
+drop function if exists cb.ask_delivered cascade;
+drop function if exists cb.asks_list cascade;
+
+-- "A12", "a12", "#12" or "12" → 12.
+create function cb.norm_ask(id text) returns bigint language plpgsql immutable as $$
+#variable_conflict use_variable
+declare v text := regexp_replace(trim(coalesce(id, '')), '^[aA#]', '');
+begin
+  if v !~ '^[0-9]+$' then raise exception 'bad ask id "%"; use A12 or 12', id; end if;
+  return v::bigint;
+end $$;
+
+-- The open ask, locked; a closed one is refused (Ahmed opens a new ask instead).
+create function cb._ask_get(id text) returns cb.asks language plpgsql as $$
+#variable_conflict use_variable
+declare r cb.asks;
+begin
+  select * into r from cb.asks x where x.id = cb.norm_ask(id) for update;
+  if not found then raise exception 'ask A% not found', cb.norm_ask(id); end if;
+  if r.status <> 'open' then raise exception 'A% is closed', r.id; end if;
+  return r;
+end $$;
+
+-- A session to ask: one cb.sessions knows (its latest pane), never Ahmed or a guest.
+create function cb._ask_session(to_actor text) returns cb.sessions language plpgsql stable as $$
+#variable_conflict use_variable
+declare s cb.sessions;
+begin
+  select * into s from cb.sessions x where x.actor = trim(coalesce(to_actor, '')) order by x.last_seen desc limit 1;
+  if not found or cb.ahmed_like(s.actor) or exists (select 1 from cb.users u where u.name = s.actor) then
+    raise exception 'unknown session %: pick one on the Sessions page', to_actor;
+  end if;
+  return s;
+end $$;
+
+create function cb._ask_event(r cb.asks, action text, summary text, a text, extra jsonb default '{}') returns bigint language sql as $$
+  insert into cb.events (actor, project, task_id, kind, summary, data)
+  values ($4, $1.project, $1.task_id, 'ask', $3, jsonb_build_object('ask', $1.id, 'action', $2, 'to', $1.to_actor) || $5)
+  returning id
+$$;
+
+-- Where an ask stands. awaiting: no reply after Ahmed's latest line; delivered: that line reached the session;
+-- late: open, awaiting, and delivered over 15 minutes ago (the relay pushes it once more, then only flags it).
+create function cb._ask_info(aid bigint, out last_ahmed bigint, out last_reply bigint, out awaiting boolean, out delivered boolean, out late boolean)
+language sql stable as $$
+  select m.la, m.lr, m.lr is null or m.lr < m.la, a.delivered_upto >= m.la,
+         a.status = 'open' and (m.lr is null or m.lr < m.la) and a.delivered_upto >= m.la and a.delivered_at < now() - interval '15 minutes'
+    from cb.asks a
+    cross join lateral (select max(e.id) filter (where e.data ->> 'action' in ('open', 'say')) as la,
+                               max(e.id) filter (where e.data ->> 'action' = 'reply') as lr
+                          from cb.events e where e.kind = 'ask' and (e.data ->> 'ask')::bigint = a.id) m
+   where a.id = $1
+$$;
+
+-- Ahmed asks one session (the dashboard only). The ask's project is the session's, else the one he is looking at.
+create function cb.ask_open(to_actor text, body text, task text default null, project text default null, actor text default 'ahmed')
+returns bigint language plpgsql as $$
+#variable_conflict use_variable
+declare a text; s cb.sessions; tid bigint; r cb.asks;
+begin
+  perform cb.dashboard_only('Today');
+  a := cb.set_actor(actor);
+  if coalesce(trim(body), '') = '' then raise exception 'the ask text is required'; end if;
+  s := cb._ask_session(to_actor);
+  if nullif(trim(coalesce(task, '')), '') is not null then
+    tid := cb.norm_id(task);
+    if not exists (select 1 from cb.tasks t where t.id = tid) then raise exception 'task #% not found', tid; end if;
+  end if;
+  insert into cb.asks (project, task_id, to_actor, body)
+  values (coalesce(s.project, cb.read_project(project)), tid, s.actor, trim(body)) returning * into r;
+  perform cb._ask_event(r, 'open', r.body, a);
+  return r.id;
+end $$;
+
+-- Ahmed writes in the thread: delivered like a new ask line, with its own reminder.
+create function cb.ask_say(id text, message text, actor text default 'ahmed') returns bigint language plpgsql as $$
+#variable_conflict use_variable
+declare a text; r cb.asks; e bigint;
+begin
+  perform cb.dashboard_only('Today');
+  a := cb.set_actor(actor);
+  r := cb._ask_get(id);
+  if coalesce(trim(message), '') = '' then raise exception 'the message is required'; end if;
+  e := cb._ask_event(r, 'say', trim(message), a);
+  update cb.asks x set repushed_at = null where x.id = r.id;
+  return e;
+end $$;
+
+-- A reply in the thread, from the session it was asked of (or the dashboard). done closes the ask.
+create function cb.ask_reply(id text, message text, done boolean default false, actor text default null) returns bigint language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); r cb.asks; e bigint;
+begin
+  r := cb._ask_get(id);
+  if not cb._is_dashboard() and a <> r.to_actor then
+    raise exception 'A% is for %: only that session (or Ahmed) replies', r.id, r.to_actor;
+  end if;
+  if coalesce(trim(message), '') = '' then raise exception 'the reply text is required'; end if;
+  e := cb._ask_event(r, 'reply', trim(message), a, case when coalesce(done, false) then '{"done": true}'::jsonb else '{}'::jsonb end);
+  if coalesce(done, false) then update cb.asks x set status = 'done', closed_at = now() where x.id = r.id; end if;
+  return e;
+end $$;
+
+create function cb.ask_close(id text, actor text default 'ahmed') returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; r cb.asks;
+begin
+  perform cb.dashboard_only('Today');
+  a := cb.set_actor(actor);
+  r := cb._ask_get(id);
+  update cb.asks x set status = 'done', closed_at = now() where x.id = r.id;
+  perform cb._ask_event(r, 'close', 'closed', a);
+end $$;
+
+-- Hand the ask to another session (or the same one again): it is delivered from the start, reminder and all.
+create function cb.ask_reroute(id text, to_actor text, actor text default 'ahmed') returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; r cb.asks; s cb.sessions; was text;
+begin
+  perform cb.dashboard_only('Today');
+  a := cb.set_actor(actor);
+  r := cb._ask_get(id);
+  s := cb._ask_session(to_actor);
+  was := r.to_actor;
+  update cb.asks x set to_actor = s.actor, project = coalesce(s.project, x.project), delivered_at = null, delivered_to = null,
+                       delivered_upto = 0, repushed_at = null
+   where x.id = r.id returning * into r;
+  perform cb._ask_event(r, 'reroute', 're-routed to ' || s.actor, a, jsonb_build_object('from', was));
+end $$;
+
+-- The relay pushed Ahmed's lines up to event `upto` (or the reminder) into delivered_to. Marks nothing if the ask
+-- was re-routed or closed meanwhile: the new session still gets it.
+create function cb.ask_delivered(id text, upto bigint, delivered_to text, reminder boolean default false) returns void language plpgsql as $$
+#variable_conflict use_variable
+begin
+  update cb.asks x set delivered_at = case when upto > x.delivered_upto then now() else x.delivered_at end,
+                       delivered_upto = greatest(x.delivered_upto, upto), delivered_to = delivered_to,
+                       repushed_at = case when coalesce(reminder, false) then now() else x.repushed_at end
+   where x.id = cb.norm_ask(id) and x.to_actor = delivered_to and x.status = 'open';
+end $$;
+
+-- Asks with their threads: open ones (newest first), then those closed in the last 24 hours unless include_closed
+-- is false. to_actor narrows to one session's. state: sent | seen | replied | done; live: its relay checked in.
+create function cb.asks_list(project text default null, to_actor text default null, include_closed boolean default true)
+returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+declare p text := cb.read_project(project);
+begin
+  return coalesce((select jsonb_agg(jsonb_build_object(
+      'id', a.id, 'project', a.project, 'task_id', a.task_id, 'to_actor', a.to_actor, 'body', a.body, 'status', a.status,
+      'created_at', a.created_at, 'delivered_at', a.delivered_at, 'closed_at', a.closed_at,
+      'state', case when a.status = 'done' then 'done' when not i.awaiting then 'replied' when i.delivered then 'seen' else 'sent' end,
+      'awaiting', a.status = 'open' and i.awaiting, 'late', i.late,
+      'live', exists (select 1 from cb.sessions s where s.actor = a.to_actor and s.last_seen > now() - interval '90 seconds'),
+      'lines', (select jsonb_agg(jsonb_build_object('id', e.id, 'at', e.at, 'actor', e.actor, 'action', e.data ->> 'action',
+                                                    'text', e.summary, 'done', coalesce((e.data ->> 'done')::boolean, false)) order by e.id)
+                  from cb.events e where e.kind = 'ask' and (e.data ->> 'ask')::bigint = a.id))
+      order by a.status = 'open' desc, a.id desc)
+    from cb.asks a cross join lateral cb._ask_info(a.id) i
+   where (p is null or a.project = p) and (to_actor is null or a.to_actor = to_actor)
+     and (a.status = 'open' or (coalesce(include_closed, true) and a.closed_at > now() - interval '24 hours'))), '[]');
 end $$;

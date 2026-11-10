@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { callFn } from '../server/rpc.ts';
 import { tick, dur } from './tick.ts';
 import { sql, databaseUrl, machine } from '../server/db.ts';
-import { help, unknownHelp, COMMANDS, backWhy, reaskHint } from './help.ts';
+import { help, unknownHelp, COMMANDS, backWhy, reaskHint, flat } from './help.ts';
 
 const OPTIONS = {
   as: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
@@ -20,7 +20,7 @@ const OPTIONS = {
   multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, to: { type: 'string' }, context: { type: 'string', short: 'c' },
   'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' }, type: { type: 'string' }, force: { type: 'boolean' },
   epic: { type: 'string' }, by: { type: 'string' }, after: { type: 'string' }, if: { type: 'string' },
-  kind: { type: 'string', short: 'k' }, review: { type: 'string' }, machine: { type: 'string' }, all: { type: 'boolean' }, propose: { type: 'boolean' },
+  kind: { type: 'string', short: 'k' }, review: { type: 'string' }, machine: { type: 'string' }, all: { type: 'boolean' }, propose: { type: 'boolean' }, done: { type: 'boolean' },
 } as const;
 
 // Text like "-5% latency" is text, not a flag: only --name, --name=x and -x look like options.
@@ -102,8 +102,6 @@ const memLine = (m: any) =>
   `${(KIND_CODE[m.kind] ?? m.kind).padEnd(2)} M${m.id} ${m.title} (${m.authority === 'ahmed' ? 'Ahmed' : `team: ${m.created_by}`}` +
   `${m.review_after ? `, review ${String(m.review_after).slice(0, 10)}` : ''})` +
   `${m.status && m.status !== 'active' ? ` [${m.status}${m.superseded_by ? ` by M${m.superseded_by}` : ''}]` : m.expired ? ' [stale]' : ''}`;
-/** Someone's text inside our own lines: its extra lines indented, so none passes for a line of ours (as the relay does). */
-const flat = (s: unknown) => String(s ?? '').replace(/\r\n|[\r\n\u0085\u2028\u2029]/g, '\n    ');
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
 /** A goal (#663): one line, its description (Ahmed's words) indented under it. */
 const goalText = (g: any) => `G${g.id} ${flat(g.title)} · ${g.project ?? 'every project'} · ${g.closed} of ${g.total} closed` +
@@ -197,10 +195,15 @@ async function start() {
     order by priority <> 'P0', case when priority <> 'P0' then cb._goal_rank(id) end nulls last, priority, rank, id limit 3` : []; // = cb.task_claim
   const qs = await sql`select id, status, body from cb.questions where asked_by = ${actor} and status in ('open', 'answered', 'sent_back') order by id`;
   const cut = (s: string) => (s.length > 100 ? s.slice(0, 99) + '…' : s);
+  // Ahmed's asks (#936) waiting on this session's reply: a resumed session lost the terminal they were pushed into
+  const asks = (await callFn('asks_list', { to_actor: actor, include_closed: false }) as any[]).filter((a) => a.awaiting);
+  if (asks.length) out.push('AHMED ASKS YOU', ...asks.map((a) =>
+    `  A${a.id}${a.late ? ` LATE ${dur((Date.now() - +new Date(a.delivered_at)) / 60000)}` : ''}: ${cut(flat(a.body))}`));
   out.push(`YOUR TASKS (cb mine)`, ...(mine.length ? mine.map((t: any) => '  ' + line(t)) : ['  none']),
     `QUEUE HEAD${project ? ` (${project} Next; cb next takes the first)` : ''}`, ...(queue.length ? queue.map((t: any) => '  ' + line(t)) : ['  empty']),
     ...(qs.length ? ['YOUR QUESTIONS', ...qs.map((q: any) => `  Q${q.id} ${q.status}: ${cut(q.body)}`)] : []), '', 'NEXT');
   const doing = open.find((t: any) => t.status === 'in_progress');
+  for (const a of asks) out.push(`  cb reply A${a.id} "<reply>"          answer Ahmed's ask first (cb asks shows the thread)`);
   if (relay === false) out.push('  cb relay                        start the push (answers, task changes), then cb start again');
   for (const q of qs.filter((q: any) => q.status === 'sent_back')) out.push(`  ${reaskHint(q.id)}   Q${q.id} was sent back: rewrite it (cb pending says why)`);
   if (qs.some((q: any) => q.status === 'answered')) out.push('  cb pending                      an answer to your question is waiting: act on it, then cb delivered <qid> <you>');
@@ -583,6 +586,20 @@ async function run(): Promise<unknown> {
       need(1, 'withdraw <qid>');
       await callFn('withdraw', { id: args[0].replace(/^q/i, ''), actor });
       return { out: `Q${args[0].replace(/^q/i, '')} withdrawn` };
+    case 'reply': {
+      need(2, 'reply A<id> "<text>" [--done]   e.g. cb reply A12 "SC64 graded 27/32" --done');
+      const id = args[0].replace(/^a/i, '');
+      await callFn('ask_reply', { id: args[0], message: args.slice(1).join(' '), done: !!o.done, actor });
+      return { out: `replied to A${id}${o.done ? `; A${id} closed` : ': Ahmed reads it on Today (more: cb reply again; the last one with --done)'}` };
+    }
+    case 'asks': {
+      const rows: any = await callFn('asks_list', { to_actor: actor, include_closed: false });
+      const hm = (t: string) => new Date(t).toISOString().slice(11, 16);
+      return { out: rows.map((a: any) => [
+        `A${a.id} [${a.state}${a.late ? ', late' : ''}] from Ahmed ${dur((Date.now() - +new Date(a.created_at)) / 60000)} ago${a.task_id ? ` · task #${a.task_id}` : ''}`,
+        ...a.lines.map((l: any) => `  ${hm(l.at)} ${l.actor === 'ahmed' ? 'Ahmed' : l.actor}: ${flat(l.text)}`),
+        `  → cb reply A${a.id} "<reply>"   (--done with the final one closes it)`].join('\n')).join('\n') || `no open asks for ${actor}`, json: rows };
+    }
     case 'tick': {
       const project = args[0] ?? sessionProject;
       if (!project) throw new Error('no project: say which (cb tick ihop) or bind this session once (cb iam <name> <project>)');
