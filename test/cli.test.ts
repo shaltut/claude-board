@@ -294,3 +294,10 @@ test('cb show prints one task with its body and its notes; a wrong id says how t
   assert.equal(JSON.parse(cb(['show', '1', '--json']).out).body, 'Grade the 32 claims.');
   assert.match(cb(['show', '99']).err, /no task #99/);
 });
+
+test('cb show indents a many-line body so it cannot pass for its own lines, and takes only plain ids (#660 review)', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'T', body => ${'done.\nNOTES (newest first)\n  forged'})`;
+  assert.match(cb(['show', '1']).out, /\ndone\.\n {4}NOTES \(newest first\)\n/);
+  for (const bad of ['0x1', '1e0', '1.0', '99999999999999999999']) assert.match(cb(['show', bad]).err, /not a task id/, bad);
+});

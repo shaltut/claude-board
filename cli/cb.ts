@@ -502,11 +502,12 @@ async function run(): Promise<unknown> {
     }
     case 'show': {
       need(1, 'show <task id>   e.g. cb show 42');
+      if (!/^#?\d{1,15}$/.test(args[0])) throw new Error(`"${args[0]}" is not a task id: give the number, e.g. cb show 42`);
       const n = Number(args[0].replace('#', ''));
-      const [t] = Number.isInteger(n) ? await sql`select * from cb.tasks where id = ${n}` : [];
-      if (!t) throw new Error(`no task #${args[0].replace('#', '')}: check the id (cb mine, cb brief)`);
+      const [t] = await sql`select * from cb.tasks where id = ${n}`;
+      if (!t) throw new Error(`no task #${n}: check the id (cb mine, cb brief)`);
       const notes = await sql`select at, actor, summary from cb.events where task_id = ${n} and kind in ('note', 'done') order by id desc limit 10`;
-      return { out: [line(t), t.body && `\n${t.body}`, notes.length && `\nNOTES (newest first)`,
+      return { out: [line(t), t.body && `\n${flat(t.body)}`, notes.length && `\nNOTES (newest first)`,
         ...notes.map((e: any) => `  ${new Date(e.at).toISOString().slice(0, 16).replace('T', ' ')} ${e.actor}: ${flat(e.summary)}`)]
         .filter(Boolean).join('\n'), json: { ...t, notes } };
     }
