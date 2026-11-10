@@ -187,6 +187,13 @@ test('a guest sends back only a question assigned to them; the session hears it 
   const [{ i }] = await sql`select cb.inbox('mac', 'p3') as i`;
   assert.deepEqual(i.sent_back.map((s: any) => [s.id, s.by]), [[mine, 'omar']]);
   assert.equal((await remote('/api/rpc/reask', { cookie: token, method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } })).status, 403);
+  // #917: the rewrite goes back to Omar, never to Ahmed
+  const r = cb(['reask', 'Q' + mine, 'Which E1: the PO one or the invoice one?'], { CB_ACTOR: 'orch@shaltoot' });
+  assert.equal(r.code, 0, r.err);
+  const again = await row(sql, mine);
+  assert.deepEqual([again.status, again.assigned_to], ['open', 'omar']);
+  const me2 = await (await remote('/api/me', { cookie: token })).json();
+  assert.deepEqual(me2.questions.map((x: any) => [x.id, x.status]), [[mine, 'open']], 'back on his page, open');
 });
 
 test('a rewrite may not drop the option a waiting follow-up needs; a respelled label carries over', async () => {
