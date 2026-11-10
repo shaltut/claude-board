@@ -118,9 +118,11 @@ async function pass() {
     try {
       if (q.desired === 'superseded') // rewritten or reopened: the new message below carries it
         await tg('editMessageReplyMarkup', { chat_id: q.m_chat, message_id: q.message_id, reply_markup: { inline_keyboard: [] } });
+      else if (q.desired === 'open') // handed back to Ahmed as it was asked: the same message, buttons again
+        await tg('editMessageText', { chat_id: q.m_chat, message_id: q.message_id, ...compose(q) });
       else await tg('editMessageText', { chat_id: q.m_chat, message_id: q.message_id, ...compose(q, [], outcome(q)) });
     } catch (e: any) { if (!notModified(e)) console.error(`telegram: Q${q.id}: ${e.message}`); }
-    await sql`update cb.telegram_messages set state = ${q.desired}, awaiting = null where question_id = ${q.id}`;
+    await sql`update cb.telegram_messages set state = ${q.desired}, awaiting = null, picked = '[]' where question_id = ${q.id}`;
   }
   // 2. open for Ahmed and not on Telegram as it stands: send it (new, rewritten, a follow-up that opened, handed back)
   // asked_at as text: created_at has microseconds, which a JS Date would drop (and every pass would re-send)

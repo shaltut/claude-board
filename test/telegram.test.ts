@@ -223,5 +223,22 @@ test('network trouble never crashes: an unreachable API backs off and stops clea
     await until(() => logged.some((l) => /telegram getMe: 0 network error; retrying/.test(l)), 'a logged retry');
     assert.ok(logged.every((l) => !l.includes('123:test')), 'the token never reaches a log line');
     await tg.stopTelegram();
-  } finally { console.error = orig; }
+  } finally { console.error = orig; tg.startTelegram({ token: '123:test', api: fake.url }); } // back on the fake for what follows
+});
+
+test('handed to a guest and back: the message says so, then gets its buttons back without a second message', async () => {
+  const sql = await paired();
+  await sql`select cb.user_add('omar', 'Omar', 'ahmed')`;
+  await sql`select cb.ensure_project('demo'), cb.user_project_add('omar', 'demo', 'ahmed')`;
+  const id = await ask(sql, 'Who takes this?', { options: ['Me', 'You'] });
+  await until(() => sentFor(id).length, 'sent');
+  const msg = await msgOf(sql, id);
+  await sql`select cb.question_assign(${String(id)}, 'omar')`;
+  await until(() => calls('editMessageText').some((c) => c.body.message_id === msg && /Handed to omar/.test(c.body.text)), 'handed on');
+  await sql`select cb.question_assign(${String(id)}, null)`;
+  const back = await until(() => calls('editMessageText').find((c) => c.body.message_id === msg && c.body.reply_markup.inline_keyboard.length), 'buttons back');
+  assert.equal(back.body.reply_markup.inline_keyboard[0][0].callback_data, `o:${id}:0`);
+  assert.equal(sentFor(id).length, 1, 'the same message, not a new one');
+  press(msg, `o:${id}:1`);
+  await until(async () => (await status(sql, id)).answer === 'You', 'answerable again');
 });
