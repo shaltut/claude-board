@@ -281,3 +281,16 @@ test('bin/cb passes quotes, < > | and newlines through untouched (#660)', async 
   assert.equal(r.status, 0, r.stderr);
   assert.ok(r.stdout.includes('"<words>" a | b\nline2'), r.stdout);
 });
+
+test('cb show prints one task with its body and its notes; a wrong id says how to find one (#660)', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'ihop', title => 'SC64 kit', body => 'Grade the 32 claims.')`;
+  cb(['log', '1', 'graded 27/32']);
+  const r = cb(['show', '#1']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^#1 \[backlog\] P2 SC64 kit · ihop\n/);
+  assert.match(r.out, /\nGrade the 32 claims\.\n/);
+  assert.match(r.out, /graded 27\/32/);
+  assert.equal(JSON.parse(cb(['show', '1', '--json']).out).body, 'Grade the 32 claims.');
+  assert.match(cb(['show', '99']).err, /no task #99/);
+});

@@ -500,6 +500,16 @@ async function run(): Promise<unknown> {
       const t = rows[0];
       return { out: `${line(t)}${t.body ? '\n\n' + t.body : ''}`, json: t };
     }
+    case 'show': {
+      need(1, 'show <task id>   e.g. cb show 42');
+      const n = Number(args[0].replace('#', ''));
+      const [t] = Number.isInteger(n) ? await sql`select * from cb.tasks where id = ${n}` : [];
+      if (!t) throw new Error(`no task #${args[0].replace('#', '')}: check the id (cb mine, cb brief)`);
+      const notes = await sql`select at, actor, summary from cb.events where task_id = ${n} and kind in ('note', 'done') order by id desc limit 10`;
+      return { out: [line(t), t.body && `\n${t.body}`, notes.length && `\nNOTES (newest first)`,
+        ...notes.map((e: any) => `  ${new Date(e.at).toISOString().slice(0, 16).replace('T', ' ')} ${e.actor}: ${flat(e.summary)}`)]
+        .filter(Boolean).join('\n'), json: { ...t, notes } };
+    }
     case 'mine': {
       const rows: any = await callFn('mine', { actor });
       return { out: rows.length ? rows.map(line).join('\n') : 'no tasks assigned to ' + actor, json: rows };
