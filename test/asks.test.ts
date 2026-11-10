@@ -135,6 +135,26 @@ test('re-route: the new session gets the ask and Ahmed\'s lines; a late delivery
   await assert.rejects(session()`select cb.ask_reply(${String(id)}, 'x', false, 'orch@pc')`, /A1 is for W1@mac/);
 });
 
+test('re-routed after a reply: the new session owes a reply; reminder and late apply to it', async () => {
+  const sql = await db();
+  await setup(sql);
+  const id = await open(sql);
+  await sql`select cb.ask_reply(${String(id)}, 'not sure', false, 'orch@pc')`;
+  await sql`select cb.ask_reroute(${String(id)}, 'W1@mac')`;
+  const [x] = await list(sql);
+  assert.deepEqual([x.state, x.awaiting], ['sent', true]);
+  const [a] = (await inbox(sql, 'mac', 'p2')).asks;
+  await sql`select cb.ask_delivered(${String(id)}, ${a.upto}, 'W1@mac', false)`;
+  await sql`update cb.asks set delivered_at = now() - interval '16 minutes'`;
+  const [r] = (await inbox(sql, 'mac', 'p2')).asks;
+  assert.equal(r.reminder, true);
+  assert.deepEqual(r.lines.map((l: any) => l.text), ['Status of SC64?']);
+  await sql`select cb.ask_delivered(${String(id)}, ${r.upto}, 'W1@mac', true)`;
+  assert.equal((await list(sql))[0].late, true);
+  const s = cb(['start'], { CB_ACTOR: 'W1@mac', HERDR_PANE_ID: 'p2', CB_MACHINE: 'mac' });
+  assert.match(s.out, /^  A1 LATE 16m: Status of SC64\?/m);
+});
+
 test('asks_list says whether the recipient has a live relay', async () => {
   const sql = await db();
   await setup(sql);

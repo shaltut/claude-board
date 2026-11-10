@@ -2730,13 +2730,16 @@ $$;
 
 -- Where an ask stands. awaiting: no reply after Ahmed's latest line; delivered: that line reached the session;
 -- late: open, awaiting, and delivered over 15 minutes ago (the relay pushes it once more, then only flags it).
+-- A reply counts only after the latest re-route: the session it was handed to owes one of its own.
 create function cb._ask_info(aid bigint, out last_ahmed bigint, out last_reply bigint, out awaiting boolean, out delivered boolean, out late boolean)
 language sql stable as $$
   select m.la, m.lr, m.lr is null or m.lr < m.la, a.delivered_upto >= m.la,
          a.status = 'open' and (m.lr is null or m.lr < m.la) and a.delivered_upto >= m.la and a.delivered_at < now() - interval '15 minutes'
     from cb.asks a
+    cross join lateral (select max(e.id) filter (where e.data ->> 'action' = 'reroute') as rr
+                          from cb.events e where e.kind = 'ask' and (e.data ->> 'ask')::bigint = a.id) r
     cross join lateral (select max(e.id) filter (where e.data ->> 'action' in ('open', 'say')) as la,
-                               max(e.id) filter (where e.data ->> 'action' = 'reply') as lr
+                               max(e.id) filter (where e.data ->> 'action' = 'reply' and e.id > coalesce(r.rr, 0)) as lr
                           from cb.events e where e.kind = 'ask' and (e.data ->> 'ask')::bigint = a.id) m
    where a.id = $1
 $$;
