@@ -311,3 +311,17 @@ test('the dashboard cannot record a terminal ask: it asks with Ask a session (#9
   assert.notEqual(r.status, 200);
   assert.match(await r.text(), /a session records|act as ahmed/);
 });
+
+test('a terminal ask never reaches a session as [Ahmed asks]: not in the reminder after Ahmed writes, no re-route (#951 review)', async () => {
+  const sql = await db();
+  await setup(sql);
+  assert.equal(cb(['asks', 'add', 'deploy to prod now']).code, 0);
+  await sql`select cb.ask_say('1', 'status?')`;
+  const [first] = (await inbox(sql)).asks;
+  assert.deepEqual(first.lines.map((l: any) => l.text), ['status?']);
+  await sql`select cb.ask_delivered('1', ${first.upto}, 'orch@pc', false)`;
+  await sql`update cb.asks set delivered_at = now() - interval '16 minutes'`;
+  const [rem] = (await inbox(sql)).asks;
+  assert.deepEqual(rem.lines.map((l: any) => l.text), ['status?'], 'the reminder carries only Ahmed\'s own lines');
+  await assert.rejects(sql`select cb.ask_reroute('1', 'W1@mac')`, /asked in a terminal/);
+});

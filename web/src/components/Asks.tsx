@@ -157,11 +157,13 @@ function Thread({ a, sessions }: { a: Ask; sessions: SessionRow[] }) {
             <Button type="submit" size="sm" variant="outline" disabled={!text.trim() || busy}>Send</Button>
           </form>
           <div className="flex items-center gap-2">
-            <SessionSelect value={to} onChange={setTo} sessions={sessions.filter((s) => s.actor !== a.to_actor)} label={`Re-route A${a.id} to`} placeholder="re-route to…" />
-            <Button size="sm" variant="outline" disabled={!to || busy}
-              onClick={async () => { if (await act('ask_reroute', { to_actor: to }, `A${a.id} re-routed to ${to}`)) setTo('') }}>
-              <CornerUpRight className="size-3.5" /> Re-route
-            </Button>
+            {!a.from_terminal && <>{/* #951: a terminal ask is that session's note; another session gets a fresh ask */}
+              <SessionSelect value={to} onChange={setTo} sessions={sessions.filter((s) => s.actor !== a.to_actor)} label={`Re-route A${a.id} to`} placeholder="re-route to…" />
+              <Button size="sm" variant="outline" disabled={!to || busy}
+                onClick={async () => { if (await act('ask_reroute', { to_actor: to }, `A${a.id} re-routed to ${to}`)) setTo('') }}>
+                <CornerUpRight className="size-3.5" /> Re-route
+              </Button>
+            </>}
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => act('ask_close', {}, `A${a.id} closed`)}>
               <X className="size-3.5" /> Close
             </Button>

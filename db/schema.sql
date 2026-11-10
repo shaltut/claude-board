@@ -1282,6 +1282,7 @@ begin
                                                           'lines', (select jsonb_agg(jsonb_build_object('action', e.data ->> 'action', 'text', e.summary) order by e.id)
                                                                       from cb.events e where e.kind = 'ask' and (e.data ->> 'ask')::bigint = a.id
                                                                        and e.data ->> 'action' in ('open', 'say')
+                                                                       and not coalesce((e.data ->> 'terminal')::boolean, false) -- #951: the session's own note
                                                                        and e.id > case when i.delivered then coalesce(i.last_reply, 0) else a.delivered_upto end))
                                         order by a.id)
                         from cb.asks a cross join lateral cb._ask_info(a.id) i
@@ -2839,6 +2840,9 @@ begin
   perform cb.dashboard_only('Today');
   a := cb.set_actor(actor);
   r := cb._ask_get(id);
+  if r.from_terminal then  -- #951: its text is the session's note, not Ahmed's words; it must not reach another session as his
+    raise exception 'A% was asked in a terminal and recorded by %: ask the other session with Ask a session', r.id, r.to_actor;
+  end if;
   s := cb._ask_session(to_actor);
   was := r.to_actor;
   update cb.asks x set to_actor = s.actor, project = coalesce(s.project, x.project), delivered_at = null, delivered_to = null,
