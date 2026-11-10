@@ -82,7 +82,7 @@ export function Backlog({ route }: { route: Route }) {
     const list = lists[to].filter((x) => x.id !== t.id)
     const index = dropIndex(lists[to], t.id, e.over.id, to === t.status)
     if (index === null) return
-    try { await moveTask(t, to, bandRank(list, index, t.priority)) } catch (err: any) { toast.error(err.message) }
+    try { await moveTask(t, to, bandRank(list, index, t)) } catch (err: any) { toast.error(err.message) }
     await qc.invalidateQueries()
   }
 

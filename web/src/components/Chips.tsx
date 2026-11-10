@@ -1,9 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Bug, Milestone } from 'lucide-react'
+import { Bug, Milestone, Target } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { splitActor, STATUS } from '@/lib/format'
-import { rpc, useEpics, type Status, type Task } from '@/lib/api'
+import { rpc, useEpics, useGoals, type Status, type Task } from '@/lib/api'
 import { go } from '@/lib/route'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 
@@ -166,6 +166,22 @@ export function EpicChip({ id, className }: { id: number; className?: string }) 
       <Milestone className="size-3 shrink-0" aria-hidden />
       <span className="callsign shrink-0 text-[12px] text-foreground/85">E{id}</span>
       {e && <span className="truncate">{e.title}</span>}
+    </button>
+  )
+}
+
+/** The active goal that puts this card right after P0 (#663). Click opens the goal; it does not open the card. */
+export function GoalChip({ id, className }: { id: number; className?: string }) {
+  const { data: goals = [] } = useGoals()
+  const g = goals.find((x) => x.id === id)
+  return (
+    <button type="button" title={`In goal G${id}${g ? `: ${g.title}` : ''}. Its cards come right after P0`} aria-label={`Open goal G${id}${g ? `, ${g.title}` : ''}`}
+      onPointerDown={(ev) => ev.stopPropagation()}
+      onClick={(ev) => { ev.stopPropagation(); go({ view: 'goals', goal: id, task: undefined }) }}
+      className={cn('inline-flex h-5 max-w-[13rem] min-w-0 items-center gap-1 rounded-[4px] bg-raised px-1.5 text-[11.5px] leading-none text-muted-foreground transition-colors hover:text-foreground', className)}>
+      <Target className="size-3 shrink-0" aria-hidden />
+      <span className="callsign shrink-0 text-[12px] text-foreground/85">G{id}</span>
+      {g && <span className="truncate">{g.title}</span>}
     </button>
   )
 }

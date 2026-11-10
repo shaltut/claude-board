@@ -1251,7 +1251,8 @@ begin
                            and (t.assignee = me or e.data -> 'assignee' ->> 'from' = me)), '[]'),
     -- New work in my project's Next (unassigned or mine), only while I have nothing in progress.
     -- A new unassigned bug goes to triage ('bugs') instead: one decision, not every idle worker racing for it.
-    'next_work', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'priority', t.priority) order by t.priority, t.rank)
+    'next_work', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'title', t.title, 'priority', t.priority)
+                                            order by t.priority <> 'P0', case when t.priority <> 'P0' then cb._goal_rank(t.id) end nulls last, t.priority, t.rank, t.id)
                              from cb.tasks t
                             where me is not null and proj is not null and t.project = proj and t.status = 'next'
                               and (t.assignee is null or t.assignee = me) and not (t.type = 'bug' and t.assignee is null)
@@ -2452,8 +2453,13 @@ $$;
 -- Close the active goals among these whose in cards are all done or cancelled (at least one: an empty goal stays
 -- open), and tell their project. The board says it, not whoever finished the last card.
 create function cb._goal_autoclose(ids bigint[]) returns void language plpgsql as $$
-declare g cb.goals; n int;
+declare g cb.goals; n int; i bigint;
 begin
+  -- one closer per goal at a time (ids in order, so two closers never wait on each other): two sessions finishing
+  -- the last two cards at once each wait here, and the second one's check (a new snapshot) sees the first's card done
+  foreach i in array array(select distinct x from unnest(ids) x order by x) loop
+    perform pg_advisory_xact_lock(hashtext('cb.goal:' || i));
+  end loop;
   for g in update cb.goals x set status = 'done', closed_at = now()
             where x.id = any(ids) and x.status = 'active'
               and exists (select 1 from cb.goal_tasks gt where gt.goal_id = x.id and gt.state = 'in')

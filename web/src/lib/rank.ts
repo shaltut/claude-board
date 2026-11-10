@@ -24,18 +24,24 @@ export function dropIndex(column: { id: number }[], activeId: number, overId: nu
   return over === -1 ? column.length : over
 }
 
-type Queued = { id: number; priority: string; rank: number }
+type Queued = { id: number; priority: string; rank: number; goal_rank?: number | null }
 
-/** Queue order everywhere: priority first (P0 on top), then Ahmed's drag order. */
+/** A card's goal lift (#663): the rank of its top active goal; P0 and cards in no goal have none. */
+const lift = (x: Pick<Queued, 'priority' | 'goal_rank'>) => (x.priority === 'P0' ? null : x.goal_rank ?? null)
+
+/** Queue order everywhere, as cb next hands out: P0, then active goal cards in goal order, then priority, then Ahmed's drag order. */
 export function byQueue(a: Queued, b: Queued): number {
-  return a.priority.localeCompare(b.priority) || a.rank - b.rank || a.id - b.id
+  const la = lift(a), lb = lift(b)
+  return Number(a.priority !== 'P0') - Number(b.priority !== 'P0')
+    || (la === lb ? 0 : la === null ? 1 : lb === null ? -1 : la - lb)
+    || a.priority.localeCompare(b.priority) || a.rank - b.rank || a.id - b.id
 }
 
 /**
- * Rank for a card of `priority` dropped at `index` of `list` (queue-ordered, dragged card excluded).
- * Only same-priority cards count: dropping above the band lands at its top, below it at its bottom.
+ * Rank for card `t` dropped at `index` of `list` (queue-ordered, dragged card excluded). Only cards of its band
+ * count (same priority, same goal lift): dropping above the band lands at its top, below it at its bottom.
  */
-export function bandRank(list: Queued[], index: number, priority: string): number {
-  const band = list.filter((x) => x.priority === priority)
-  return rankAt(band, list.slice(0, index).filter((x) => x.priority === priority).length)
+export function bandRank(list: Queued[], index: number, t: Pick<Queued, 'priority' | 'goal_rank'>): number {
+  const same = (x: Queued) => x.priority === t.priority && lift(x) === lift(t)
+  return rankAt(list.filter(same), list.slice(0, index).filter(same).length)
 }

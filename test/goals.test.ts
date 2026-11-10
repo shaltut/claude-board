@@ -187,3 +187,40 @@ test('goal_propose: existing labels named in the description, plus its non-stopw
   const [{ p }] = await web`select cb.goal_preview(${web.json({ labels: ['ocr'] })}, 'demo') as p`;
   assert.equal(p.length, 1);
 });
+
+test('the Board query and the relay\'s next_work put a goal card where cb next would', async () => {
+  const web = await db();
+  await web`select cb.ensure_project('demo')`;
+  const plain = await add(web, 'plain p1', { priority: 'P1' });
+  const ocr = await add(web, 'ocr p3', { priority: 'P3' });
+  const g = await goal(web, 'OCR', { words: ['ocr'] });
+  await web`select cb.iam('mac', 'p9', 'W9@mac', 'demo')`;
+  const { tasks } = await import('../server/queries.ts');
+  const { sql: srv } = await import('../server/db.ts');
+  clients.push(srv);
+  const board = await tasks('demo', 'next');
+  assert.deepEqual(board.map((t: any) => t.id), [ocr, plain]);
+  assert.deepEqual(board.map((t: any) => t.goal_id), [g, null], 'the card says which goal lifts it');
+  const [{ i }] = await web`select cb.inbox('mac', 'p9', 0) as i`;
+  assert.deepEqual(i.next_work.map((t: any) => t.id), [ocr, plain]);
+  assert.equal(Number((await web`select * from cb.task_claim('demo', 'W1@pc')`)[0].id), ocr);
+});
+
+test('auto-close: two sessions finishing the last two cards at once still close the goal', async () => {
+  const web = await db();
+  await web`select cb.ensure_project('demo')`;
+  const a = await add(web, 'ocr a'), b = await add(web, 'ocr b');
+  const g = await goal(web, 'OCR', { words: ['ocr'] });
+  const ra = await session().reserve(), rb = await session().reserve();
+  try {
+    await ra`begin`; await rb`begin`;
+    await ra`select cb.task_done(${String(a)}, 'ok', '{}', 'W1@pc')`;
+    // B finishes the other card while A has not committed: without a per-goal lock each sees the other's card open
+    const pb = rb`select cb.task_done(${String(b)}, 'ok', '{}', 'W2@pc')`.execute();
+    await new Promise((r) => setTimeout(r, 300));
+    await ra`commit`;
+    await pb;
+    await rb`commit`;
+  } finally { ra.release(); rb.release(); }
+  assert.equal((await web`select status from cb.goals where id = ${g}`)[0].status, 'done');
+});

@@ -13,7 +13,12 @@ export function tasks(project?: string, status?: string) {
   const filter = status
     ? sql`status = ${status}`
     : sql`status <> 'cancelled' and (status <> 'done' or done_at > now() - interval '7 days')`;
-  return sql`select *, cb._waits_on(id) as waits_on from cb.tasks where ${filter} ${proj(project)} order by status, priority, rank, id`;
+  // goal_rank / goal_id (#663): the active goal that lifts a card; the order is cb.task_claim's (web/src/lib/rank.ts byQueue)
+  return sql`select *, cb._waits_on(id) as waits_on, cb._goal_rank(id) as goal_rank,
+      (select gt.goal_id from cb.goal_tasks gt join cb.goals g on g.id = gt.goal_id
+        where gt.task_id = t.id and gt.state = 'in' and g.status = 'active' order by g.rank, g.id limit 1) as goal_id
+    from cb.tasks t where ${filter} ${proj(project)}
+    order by status, priority <> 'P0', case when priority <> 'P0' then cb._goal_rank(id) end nulls last, priority, rank, id`;
 }
 
 export async function task(id: number) {

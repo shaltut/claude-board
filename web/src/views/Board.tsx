@@ -102,7 +102,7 @@ export function Board({ route }: { route: Route }) {
     const list = columns[to].filter((x) => x.id !== t.id)
     const index = dropIndex(columns[to], t.id, e.over.id, to === t.status)
     if (index === null) return
-    const rank = to === 'done' ? null : bandRank(list, index, t.priority)
+    const rank = to === 'done' ? null : bandRank(list, index, t)
     setOptimistic({ id: t.id, status: to, rank: rank ?? t.rank })
     try {
       await moveTask(t, to, rank)

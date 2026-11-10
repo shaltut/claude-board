@@ -3,7 +3,7 @@ import { GitCommitHorizontal, GitPullRequest, GitBranch } from 'lucide-react'
 import { useQuestions, type Task } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { ActorChip, EpicChip, PriorityPicker, ProjectChip, TagChip, TaskId, TypeChip, WaitsOn } from './Chips'
+import { ActorChip, EpicChip, GoalChip, PriorityPicker, ProjectChip, TagChip, TaskId, TypeChip, WaitsOn } from './Chips'
 
 type Props = { t: Task; showProject?: boolean; dragging?: boolean; overlay?: boolean } & React.HTMLAttributes<HTMLDivElement>
 
@@ -31,8 +31,9 @@ export const TaskCard = forwardRef<HTMLDivElement, Props>(function TaskCard({ t,
       </div>
       <p className={cn('mt-1 text-sm leading-snug font-medium text-pretty', t.status === 'done' && 'text-muted-foreground')}>{t.title}</p>
       {/* A bug's marker sits by the priority, where the eye scans; other types are a quiet word ahead of the tags. */}
-      {(t.labels.length > 0 || t.epic_id != null || (t.type && t.type !== 'task' && t.type !== 'bug')) && (
+      {(t.labels.length > 0 || t.epic_id != null || t.goal_id != null || (t.type && t.type !== 'task' && t.type !== 'bug')) && (
         <div className="mt-2 flex flex-wrap items-center gap-1">
+          {t.goal_id != null && <GoalChip id={t.goal_id} className="mr-1" />}
           {t.epic_id != null && <EpicChip id={t.epic_id} className="mr-1" />}
           {t.type !== 'bug' && <TypeChip type={t.type} className="mx-0 mr-1 px-0" />}
           {t.labels.map((g) => <TagChip key={g} tag={g} />)}
