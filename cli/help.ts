@@ -56,9 +56,9 @@ const GROUPS: [string, Record<string, Cmd>][] = [
       does: 'Your project\'s epics: E<n>, open or done, and how many of their steps are finished. Ahmed creates and closes epics; you put your tasks in one with --epic.',
       eg: 'cb epics' },
     lock: { use: 'cb lock take <name>\ncb lock release <name> [--force]\ncb lock queue [name]', topic: 'work',
-      does: 'Shared locks on the board (db = the shared DB test lock). take: you hold it, or you queue and a message tells you when it is yours. release: hands it to the next in line. --force: take it off a dead holder (logged; the holder is told). queue: who holds what.',
+      does: 'Shared locks on the board (db = the shared DB test lock). take: you hold it (exit 0), or you queue (exit 2) and a message tells you when it is yours; taking again while queued keeps your place. release: hands it to the next in line. --force: take it off a dead holder (logged; the holder is told). queue: who holds what.',
       eg: 'cb lock take db',
-      more: 'Release the moment your run ends, even if it failed: the next session waits on you. --force only on a holder that is gone (cb sessions shows it quiet), never to jump the queue.' },
+      more: 'In a script, never start on exit 0 alone from an older cb: wait with until cb lock take db; do sleep 30; done. Release the moment your run ends, even if it failed: the next session waits on you. --force only on a holder that is gone (cb sessions shows it quiet), never to jump the queue.' },
   }],
   ['REPORT', {
     log: { use: 'cb log <task id> "<what happened>"   or   cb log <project> "<note>" [-t <task id>]', topic: 'work',

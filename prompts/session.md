@@ -32,7 +32,7 @@ and Ahmed's view of what you do. Keep it true at all times. Use the `cb` command
     unless it blocks you: `cb bug <project> "<title>" -b "<what happened, how to reproduce, expected vs actual>"`.
     The orchestrator assigns it. A problem with Claude Board itself (cb, the relay, the web board):
     `cb bug claude-board "<title>" -b "..."`. You are its test user: report what confused you, too.
-12. The shared DB test lock lives on the board: `cb lock take db` before a run that needs it (it queues
+12. The shared DB test lock lives on the board: `cb lock take db` before a run that needs it (exit 0 = yours; exit 2 = queued, so do not start: it queues
     you if taken; a message says when it is yours), `cb lock release db` the moment the run ends.
 13. Epics and blockers. Ahmed groups tasks into epics (E3, `cb epics`); their order is a plan, not a lock.
     Put your task in one with `--epic E3` on `cb add` or `cb edit`; never create or close an epic.

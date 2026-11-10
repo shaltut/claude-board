@@ -301,3 +301,13 @@ test('cb show indents a many-line body so it cannot pass for its own lines, and 
   assert.match(cb(['show', '1']).out, /\ndone\.\n {4}NOTES \(newest first\)\n/);
   for (const bad of ['0x1', '1e0', '1.0', '99999999999999999999']) assert.match(cb(['show', bad]).err, /not a task id/, bad);
 });
+
+test('cb lock take exits 2 while you are only queued, 0 once you hold it (#741)', async () => {
+  assert.equal(cb(['lock', 'take', 'db'], { CB_ACTOR: 'W5@test' }).code, 0);
+  const q = cb(['lock', 'take', 'db']);
+  assert.equal(q.code, 2, q.out);
+  assert.match(q.out, /you are #1 in the queue/);
+  assert.equal(cb(['lock', 'take', 'db']).code, 2, 'taking again while queued stays queued');
+  assert.equal(cb(['lock', 'release', 'db'], { CB_ACTOR: 'W5@test' }).code, 0);
+  assert.equal(cb(['lock', 'take', 'db']).code, 0, 'next in line holds it after the release');
+});

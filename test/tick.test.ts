@@ -158,7 +158,7 @@ test('locks: take queues, release hands over and tells the next holder', async (
   assert.equal(r.out, 'you hold lock db');
   r = cb(['lock', 'take', 'db'], { CB_ACTOR: 'W3@m' });
   assert.match(r.out, /^lock db is held by W8@m \(\S+\); you are #1 in the queue/);
-  assert.equal(cb(['lock', 'take', 'db'], { CB_ACTOR: 'W3@m' }).code, 0); // idempotent
+  assert.equal(cb(['lock', 'take', 'db'], { CB_ACTOR: 'W3@m' }).code, 2); // idempotent: still queued (#741)
   r = cb(['lock', 'queue', 'db']);
   assert.match(r.out, /^lock db: W8@m holds it \S+, queue W3@m$/);
   assert.match(cb(['lock', 'release', 'db'], { CB_ACTOR: 'W5@m' }).err, /W5@m does not hold or wait for lock db/);

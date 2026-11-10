@@ -585,7 +585,8 @@ async function run(): Promise<unknown> {
         const l: any = await callFn('lock_take', { name, actor });
         const pos = l.queue.indexOf(actor) + 1;
         return { out: l.holder === actor ? `you hold lock ${l.name}`
-          : `lock ${l.name} is held by ${l.holder} (${dur((Date.now() - +new Date(l.held_at)) / 60000)}); you are #${pos} in the queue: a message tells you when it is yours`, json: l };
+          : `lock ${l.name} is held by ${l.holder} (${dur((Date.now() - +new Date(l.held_at)) / 60000)}); you are #${pos} in the queue: a message tells you when it is yours (exit 2 = queued, not held)`, json: l,
+          code: l.holder === actor ? 0 : 2 }; // #741: scripts read exit 0 as "I hold it"
       }
       if (sub === 'release') {
         const next: any = await callFn('lock_release', { name, actor, force: !!o.force });
@@ -647,6 +648,7 @@ async function main() {
   }
   if (o.json && 'json' in r) console.log(JSON.stringify(r.json, null, 2));
   else if (r.out) console.log(r.out);
+  if (r.code) process.exitCode = r.code;
 }
 
 try {
