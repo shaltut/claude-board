@@ -363,7 +363,8 @@ test('cb github: anyone lists; only Ahmed adds and removes; a new repo starts at
   const AHMED = { PGAPPNAME: 'cb-web' }; // what his dashboard connection says; sessions can't (cb.dashboard_only)
   const no = cb(['github', 'add', R, '--to', 'orch@macbook']);
   assert.equal(no.code, 1);
-  assert.match(no.err, /only Ahmed adds or removes watched repos\. Ahmed runs this himself: ! PGAPPNAME=cb-web cb github add TachyHealth\/iHop-Platform --to orch@macbook$/);
+  assert.match(no.err, /only Ahmed adds or removes watched repos: ask him/);
+  assert.doesNotMatch(no.err, /PGAPPNAME|cb-web/, 'the refusal never names the way past it');
   assert.equal((await sql`select count(*)::int as n from cb.settings`)[0].n, 0);
 
   const before = Date.now();
@@ -382,7 +383,7 @@ test('cb github: anyone lists; only Ahmed adds and removes; a new repo starts at
   assert.match(list.out, /^TachyHealth\/iHop-Platform → orch@shaltoot \(ihop\) · last poll never · since \S+ · last error: gh: HTTP 401 \(since 2026-11-11T10:00:00\.000Z\)\n {2}open PR cards: PR #3452 → card #9$/m);
   assert.match(list.out, /^TachyHealth\/ihop-reading-service → orch@macbook \(ihop\) · last poll never · since \S+$/m);
 
-  assert.match(cb(['github', 'remove', R]).err, /Ahmed runs this himself: ! PGAPPNAME=cb-web cb github remove TachyHealth\/iHop-Platform$/);
+  assert.match(cb(['github', 'remove', R]).err, /only Ahmed adds or removes watched repos: ask him/);
   assert.equal(cb(['github', 'remove', R], AHMED).code, 0);
   assert.equal(await state(sql), undefined);
   assert.match(cb(['github', 'remove', R], AHMED).err, /not watched/);

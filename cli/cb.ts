@@ -333,9 +333,9 @@ async function run(): Promise<unknown> {
         return await sql.begin(async (tx: any) => {
           // What the board watches, and whom it tells, is Ahmed's call: the same guard as his People and Epics pages
           // (a session pointing it at another repo Ahmed's gh reads would pour that text onto a board guests see)
-          const cmdLine = `cb github ${sub} ${repo}${o.to ? ` --to ${o.to}` : ''}${o.project ? ` --project ${o.project}` : ''}`;
+          // The refusal never names the way past it: a session (or a comment steering one) would learn it here.
           await tx`select cb.dashboard_only('GitHub')`.catch(() => {
-            throw new Error(`only Ahmed adds or removes watched repos. Ahmed runs this himself: ! PGAPPNAME=cb-web ${cmdLine}`);
+            throw new Error(`only Ahmed adds or removes watched repos: ask him to (cb ask), saying which repo and why`);
           });
           if (sub === 'remove') {
             if (!(await tx`delete from cb.settings where key = ${key} returning key`).length) throw new Error(`${repo} is not watched: cb github lists the repos`);
