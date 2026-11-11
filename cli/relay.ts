@@ -83,7 +83,8 @@ function format(raw: any): string {
     lines.push(`  → cb reply A${a.id} "<your reply>"   (Ahmed reads replies on the board, not here; add --done with the final one)`);
   }
   for (const b of i.broadcasts) lines.push(`Broadcast from ${b.actor}${b.project ? ` to ${b.project}` : ' to everyone'}: ${b.summary}`);
-  for (const m of i.messages) lines.push(`Message from ${m.actor}: ${m.summary}`, `  (reply: cb tell ${m.actor} "...")`);
+  // the GitHub watch (#1207) is not a session: nobody to reply to
+  for (const m of i.messages) lines.push(`Message from ${m.actor}: ${m.summary}`, ...(m.actor === 'github' ? [] : [`  (reply: cb tell ${m.actor} "...")`]));
   // Ahmed talks in huddles from the dashboard: his lines must read as him, not as a teammate.
   const huddles: any[] = i.huddles ?? [];
   const fromAhmed = huddles.filter((h) => h.actor === 'ahmed' && (h.action === 'open' || h.action === 'say'));
@@ -121,7 +122,10 @@ function format(raw: any): string {
     lines.push(`${b.actor} filed bug #${b.id} '${cut(b.title, 80)}' in ${b.project}${first ? `: ${first.replace(/([^.!?…])$/, '$1.')}` : '.'}` +
       ` Assign it: cb edit ${b.id} --assignee <worker> (or take it).`);
   }
+  // the GitHub watch writes its PR cards with the message that already says what happened: not echoed twice
+  const echo = i.messages.some((m: any) => m.actor === 'github');
   for (const e of i.events) {
+    if (echo && e.actor === 'github') continue;
     const what = ({ note: 'noted on', done: 'closed', moved: 'moved', task_created: 'created for you' } as any)[e.kind] ?? 'edited';
     lines.push(`${e.actor} ${what} #${e.task_id} "${cut(e.title, 80)}" (now ${e.status}): ${cut(e.summary, 200)}`);
   }

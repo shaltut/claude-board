@@ -9,6 +9,7 @@ import { sql, dotenv } from './db.ts';
 import { callFn, RpcError } from './rpc.ts';
 import * as q from './queries.ts';
 import { reconcile, startTelegram, telegramConnect, telegramDisconnect, telegramStatus } from './telegram.ts';
+import { startGithub } from './github.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const DIST = join(ROOT, 'web', 'dist');
@@ -273,6 +274,7 @@ export async function start() {
   serve({ fetch: app.fetch, port, hostname }, () => console.log(`Claude Board: http://localhost:${port}`));
   const token = process.env.TELEGRAM_BOT_TOKEN || dotenv('TELEGRAM_BOT_TOKEN');
   if (token) await startBot(token, process.env.TELEGRAM_API || dotenv('TELEGRAM_API') || 'https://api.telegram.org');
+  startGithub(); // #1207: polls the repos `cb github` lists (none: nothing is called)
 }
 
 if (import.meta.main) await start();

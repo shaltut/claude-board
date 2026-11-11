@@ -323,6 +323,39 @@ async function run(): Promise<unknown> {
         from cb.users u order by u.name`;
       return { out: rows.map((r: any) => `${r.name.padEnd(12)} ${r.display}: ${r.open_questions} questions, ${r.open_tasks} tasks open`).join('\n') || 'no users (cb user add omar "Omar")', json: rows };
     }
+    case 'github': {
+      // The GitHub watch (#1207): one cb.settings row per repo; the board server polls them (server/github.ts).
+      const sub = args[0];
+      if (sub === 'add' || sub === 'remove') {
+        need(2, 'github add <owner/repo> [--to orch@shaltoot] [--project ihop]   or   cb github remove <owner/repo>');
+        const repo = args[1], key = `github:${repo}`;
+        if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`"${repo}" is not owner/repo, e.g. cb github add TachyHealth/iHop-Platform`);
+        return await sql.begin(async (tx: any) => {
+          // What the board watches, and whom it tells, is Ahmed's call: the same guard as his People and Epics pages
+          await tx`select cb.dashboard_only('GitHub')`.catch(() => { throw new Error('only Ahmed adds or removes watched repos: ask him with cb ask'); });
+          if (sub === 'remove') {
+            if (!(await tx`delete from cb.settings where key = ${key} returning key`).length) throw new Error(`${repo} is not watched: cb github lists the repos`);
+            return { out: `stopped watching ${repo}; its cards stay on the board` };
+          }
+          const [{ p }] = await tx`select cb.read_project(${o.project ?? 'ihop'}) as p`;
+          const to = o.to ?? 'orch@shaltoot', patch = { ...(o.to ? { to } : {}), ...(o.project ? { project: p } : {}) };
+          // a new repo starts now (no backfill); adding it again changes only what was given and keeps its checkpoint
+          const [r] = await tx`insert into cb.settings (key, value)
+            values (${key}, ${tx.json({ since: new Date().toISOString(), to, project: p, last_ok: null, last_error: null, prs: {} })})
+            on conflict (key) do update set value = cb.settings.value || ${tx.json(patch)} returning value`;
+          return { out: `watching ${repo}: ${r.value.to} is told, PR cards go in ${r.value.project}, events from ${r.value.since} on`, json: r.value };
+        });
+      }
+      if (sub) throw new Error(`unknown github command "${sub}": cb github lists, cb github add <owner/repo>, cb github remove <owner/repo>`);
+      const rows = await sql`select key, value from cb.settings where key like 'github:%' order by key`;
+      const out = rows.map(({ key, value: v }: any) => {
+        const cards = Object.entries(v.prs ?? {});
+        return [`${key.slice(7)} → ${v.to} (${v.project}) · last poll ${v.last_ok ? `${dur((Date.now() - Date.parse(v.last_ok)) / 60000)} ago` : 'never'} · since ${v.since}` +
+          (v.last_error ? ` · last error: ${flat(v.last_error.message)} (since ${v.last_error.at})` : ''),
+          ...(cards.length ? [`  open PR cards: ${cards.map(([n, id]) => `PR #${n} → card #${id}`).join(', ')}`] : [])].join('\n');
+      });
+      return { out: out.join('\n') || 'no repos watched (Ahmed adds them: cb github add <owner/repo>)', json: rows.map((r: any) => ({ repo: r.key.slice(7), ...r.value })) };
+    }
     case 'assign': {
       need(2, 'assign <Q12|#34> <user|ahmed>   hand a question or task to a user (ahmed takes a question back)');
       const target = args[0], to = args[1] === 'ahmed' ? null : args[1];
