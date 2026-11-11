@@ -12,8 +12,11 @@ const CUT = '\n[context cut: the full text is on the dashboard]';
 
 type Q = { id: number; project: string; asked_by: string; body: string; context: string | null; multi: boolean;
   options: { label: string; description: string | null }[] | null; blocking?: boolean; task_id?: number | null;
-  versions?: { reason: string | null }[] | null };
+  versions?: { reason: string | null }[] | null; hands?: { name: string; display: string }[] };
 type Button = { text: string; callback_data: string };
+// The people a question can be handed to (#1200): those on its project, as the dashboard's For picker offers them.
+const HANDS = () => sql`(select coalesce(jsonb_agg(jsonb_build_object('name', u.name, 'display', u.display) order by u.name), '[]')
+  from cb.users u join cb.user_projects up on up.user_name = u.name where up.project = q.project) as hands`;
 
 let cfg: { token: string; api: string } | null = null;
 let bot: string | null = null; // the bot's username, from getMe
@@ -68,6 +71,7 @@ export function compose(q: Q, picked: string[] = [], outcome?: string) {
       ? { text: `${picked.includes(o.label) ? '[x]' : '[ ]'} ${o.label}`, callback_data: `t:${q.id}:${i}` }
       : { text: o.label, callback_data: `o:${q.id}:${i}` }]),
     ...(q.multi && opts.length ? [[{ text: picked.length ? `Send (${picked.length})` : 'Send', callback_data: `s:${q.id}` }]] : []),
+    ...(q.hands?.length ? [q.hands.map((u) => ({ text: `Hand to ${u.display}`, callback_data: `h:${q.id}:${u.name}` }))] : []),
     Object.entries(REASONS).map(([k, v]) => ({ text: v, callback_data: `b:${q.id}:${k}` })),
   ];
   return { text, reply_markup: { inline_keyboard: rows } };
@@ -105,7 +109,7 @@ async function pass() {
   const chat = await pairedChat();
   if (!chat) return;
   // 1. messages whose question is no longer open for Ahmed as sent (or whose answer changed): show the outcome
-  const moved = await sql`select q.*, m.message_id, m.chat_id as m_chat, m.state, m.desired from (
+  const moved = await sql`select q.*, ${HANDS()}, m.message_id, m.chat_id as m_chat, m.state, m.desired from (
       select m.*, case when q.status = 'open' and q.assigned_to is null and q.created_at = m.asked_at then 'open'
                        when q.status = 'open' and q.assigned_to is null then 'superseded'
                        when q.status in ('answered', 'delivered') then 'answered:' || q.answer
@@ -126,7 +130,7 @@ async function pass() {
   }
   // 2. open for Ahmed and not on Telegram as it stands: send it (new, rewritten, a follow-up that opened, handed back)
   // asked_at as text: created_at has microseconds, which a JS Date would drop (and every pass would re-send)
-  const fresh = await sql`select q.*, q.created_at::text as asked_at from cb.questions q left join cb.telegram_messages m on m.question_id = q.id
+  const fresh = await sql`select q.*, ${HANDS()}, q.created_at::text as asked_at from cb.questions q left join cb.telegram_messages m on m.question_id = q.id
     where q.status = 'open' and q.assigned_to is null and (m.question_id is null or m.state <> 'open' or m.chat_id <> ${chat})
     order by q.created_at, q.id`;
   for (const q of fresh) {
@@ -142,7 +146,7 @@ async function pass() {
 
 /** Answer or send back as Ahmed's dashboard, once: refused if it is no longer open for him. */
 // asked: the message's asked_at as text; a question rewritten since (cb.reask: same id, new options) is refused.
-async function act(id: number, asked: string, fn: 'answer' | 'send_back', args: Record<string, unknown>): Promise<string | null> {
+async function act(id: number, asked: string, fn: 'answer' | 'send_back' | 'question_assign', args: Record<string, unknown>): Promise<string | null> {
   try {
     const done = await sql.begin(async (tx: any) => {
       await tx`set local application_name = 'cb-web'`;
@@ -155,7 +159,7 @@ async function act(id: number, asked: string, fn: 'answer' | 'send_back', args: 
     await reconcile(); // the NOTIFY does this too; awaiting it shows the outcome before we reply
     return done;
   } catch (e: any) {
-    return `Could not ${fn === 'answer' ? 'answer' : 'send back'} Q${id}: ${e.message}`;
+    return `Could not ${{ answer: 'answer', send_back: 'send back', question_assign: 'hand on' }[fn]} Q${id}: ${e.message}`;
   }
 }
 
@@ -191,7 +195,7 @@ async function onButton(cb: any, chat: number) {
   if (kind === 't' && label(arg)) {
     const l = label(arg)!, picked: string[] = m.picked.includes(l) ? m.picked.filter((x: string) => x !== l) : [...m.picked, l];
     await sql`update cb.telegram_messages set picked = ${sql.json(picked)} where question_id = ${id}`;
-    const [q] = await sql`select * from cb.questions where id = ${id}`;
+    const [q] = await sql`select q.*, ${HANDS()} from cb.questions q where id = ${id}`;
     await tg('editMessageReplyMarkup', { chat_id: chat, message_id: m.message_id, reply_markup: compose(q as any, picked).reply_markup })
       .catch((e) => { if (!notModified(e)) throw e; });
     return toast(picked.includes(l) ? `Picked ${l}` : `Unpicked ${l}`);
@@ -200,6 +204,11 @@ async function onButton(cb: any, chat: number) {
     if (!m.picked.length) return toast('Pick at least one first, or reply with your own answer.', true);
     const r = await act(id, m.asked, 'answer', { answer: m.picked.join('; ') });
     return toast(r ?? 'Answered.', !!r);
+  }
+  if (kind === 'h' && arg) { // the trigger refuses anyone off the question's project
+    const r = await act(id, m.asked, 'question_assign', { to_user: arg });
+    const [u] = r ? [] : await sql`select display from cb.users where name = ${arg}`;
+    return toast(r ?? `Handed to ${u?.display ?? arg}.`, !!r);
   }
   if (kind === 'b' && REASONS[arg]) {
     if (arg === 'clarify') {

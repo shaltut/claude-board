@@ -70,6 +70,15 @@ test('compose: plain text, options as buttons, a send-back row, context cut to t
   assert.doesNotMatch(multi.text, /context cut/);
 });
 
+test('compose: a Hand to row, one button per person on the project, above the send-back row (#1200)', () => {
+  const q = { id: 7, project: 'demo', asked_by: 'W1', body: 'Ship it?', context: null, multi: false, options: [{ label: 'Yes', description: null }],
+    hands: [{ name: 'iman', display: 'Iman' }, { name: 'omar', display: 'Omar' }] };
+  const rows = tg.compose(q as any).reply_markup.inline_keyboard;
+  assert.deepEqual(rows.at(-2).map((b: any) => [b.text, b.callback_data]), [['Hand to Iman', 'h:7:iman'], ['Hand to Omar', 'h:7:omar']]);
+  assert.equal(rows.at(-1)[0].callback_data, 'b:7:details');
+  assert.equal(tg.compose({ ...q, hands: [] } as any).reply_markup.inline_keyboard.length, 2, 'nobody on the project: no row');
+});
+
 test('pairing: a dashboard code pairs the chat once; other chats are ignored; unpair stops it', async () => {
   assert.equal((await app.request('/api/telegram', { headers: { host: 'localhost:4747' } })).status, 403, 'the dashboard page only');
   const sql = await paired();
@@ -273,4 +282,26 @@ test('after Clarify, a reply to the question itself answers it; only a reply to 
   text('Yes', AHMED, m);
   await until(async () => (await status(sql, id)).status !== 'open', 'handled');
   assert.deepEqual([(await status(sql, id)).status, (await status(sql, id)).answer], ['answered', 'Yes']);
+});
+
+test('Hand to: one tap gives the question to that person; only people on its project are offered or accepted (#1200)', async () => {
+  const sql = await paired();
+  await sql`select cb.ensure_project('demo')`;
+  await sql`select cb.user_add('omar', 'Omar', 'ahmed'), cb.user_add('iman', 'Iman', 'ahmed')`;
+  await sql`select cb.user_project_add('omar', 'demo', 'ahmed')`; // iman is not on demo
+  const id = await ask(sql, 'Who reviews the import?', { options: ['Me', 'Omar'] });
+  const [sent] = await until(() => sentFor(id).length && sentFor(id), 'sent');
+  const hands = sent.body.reply_markup.inline_keyboard.flat().filter((b: any) => b.callback_data.startsWith('h:'));
+  assert.deepEqual(hands.map((b: any) => b.text), ['Hand to Omar'], 'only people on the project');
+  const msg = await msgOf(sql, id);
+
+  press(msg, `h:${id}:iman`); // a forged button for someone off the project: refused, nothing changes
+  await until(() => calls('answerCallbackQuery').some((c) => /not on project/.test(c.body.text ?? '')), 'refused');
+  assert.equal((await sql`select assigned_to from cb.questions where id = ${id}`)[0].assigned_to, null);
+
+  press(msg, `h:${id}:omar`);
+  await until(async () => (await sql`select assigned_to from cb.questions where id = ${id}`)[0].assigned_to === 'omar', 'handed');
+  assert.equal((await status(sql, id)).status, 'open', 'still open: now Omar answers it');
+  await until(() => calls('editMessageText').some((c) => c.body.message_id === msg && /Handed to omar/.test(c.body.text) && !c.body.reply_markup.inline_keyboard.length), 'message closed');
+  await until(() => calls('answerCallbackQuery').some((c) => c.body.text === 'Handed to Omar.'), 'toast');
 });
