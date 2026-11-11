@@ -332,7 +332,11 @@ async function run(): Promise<unknown> {
         if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`"${repo}" is not owner/repo, e.g. cb github add TachyHealth/iHop-Platform`);
         return await sql.begin(async (tx: any) => {
           // What the board watches, and whom it tells, is Ahmed's call: the same guard as his People and Epics pages
-          await tx`select cb.dashboard_only('GitHub')`.catch(() => { throw new Error('only Ahmed adds or removes watched repos: ask him with cb ask'); });
+          // (a session pointing it at another repo Ahmed's gh reads would pour that text onto a board guests see)
+          const cmdLine = `cb github ${sub} ${repo}${o.to ? ` --to ${o.to}` : ''}${o.project ? ` --project ${o.project}` : ''}`;
+          await tx`select cb.dashboard_only('GitHub')`.catch(() => {
+            throw new Error(`only Ahmed adds or removes watched repos. Ahmed runs this himself: ! PGAPPNAME=cb-web ${cmdLine}`);
+          });
           if (sub === 'remove') {
             if (!(await tx`delete from cb.settings where key = ${key} returning key`).length) throw new Error(`${repo} is not watched: cb github lists the repos`);
             return { out: `stopped watching ${repo}; its cards stay on the board` };

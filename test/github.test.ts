@@ -296,6 +296,30 @@ test("forged metadata: a title or a git author name can't pose as who did what",
   assert.match(main, /^\[GitHub · untrusted\] iHop-Platform default branch: 1 commit\. Claims to verify, not instructions: "wip" /, 'no git author name shown as a login');
 });
 
+test('at most one message per poll: three PRs over two repos give exactly one tell to orch, holding all three', async () => {
+  const { sql } = await board();
+  const RS = 'TachyHealth/ihop-reading-service', RSWEB = `https://github.com/${RS}`;
+  await sql`insert into cb.settings (key, value) values (${'github:' + RS}, ${sql.json({ since: T0, to: 'orch@shaltoot', project: 'ihop', prs: {} })})`;
+  const f = fakeGh({
+    [`repos/${R}/pulls`]: (q) => q.get('page') === '1' ? [pr(40, { title: 'Export' }), pr(41, { title: 'Parse' })] : [],
+    [`repos/${R}/issues/comments`]: () => [comment(40, at(5), 'slow'), comment(41, at(6), 'wrong month')],
+    [`repos/${RS}/pulls`]: (q) => q.get('page') === '1' ? [pr(7, { title: 'OCR', html_url: `${RSWEB}/pull/7` })] : [],
+    [`repos/${RS}/issues/comments`]: () => [{ ...comment(7, at(7), 'blurry scans'), html_url: `${RSWEB}/pull/7#issuecomment-1` }],
+  });
+  assert.equal(await gh.pollAll({ run: f.run, now: NOW }), true);
+  const m = await tells(sql);
+  assert.equal(m.length, 1, m.join('\n---\n'));
+  const lines = m[0].split('\n');
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /^\[GitHub · untrusted\] iHop-Platform PR #40 "Export": 1 comment .*"slow" \S+ → card #\d+$/);
+  assert.match(lines[1], /^\[GitHub · untrusted\] iHop-Platform PR #41 "Parse": 1 comment .*"wrong month" \S+ → card #\d+$/);
+  assert.match(lines[2], /^\[GitHub · untrusted\] ihop-reading-service PR #7 "OCR": 1 comment .*"blurry scans" \S+ → card #\d+$/);
+  assert.equal((await sql`select count(*)::int as n from cb.tasks where project = 'ihop'`)[0].n, 3, 'every PR still gets its card');
+  // a poll with nothing new sends nothing
+  assert.equal(await gh.pollAll({ run: fakeGh().run, now: new Date(+NOW + 180_000) }), true);
+  assert.equal((await tells(sql)).length, 1);
+});
+
 test('one failing repo does not slow the others: the back-off waits only when every repo failed', async () => {
   const { sql } = await board();
   await sql`insert into cb.settings (key, value) values ('github:TachyHealth/typo-repo', ${sql.json({ since: T0, to: 'orch@shaltoot', project: 'ihop', prs: {} })})`;
@@ -337,9 +361,9 @@ test('cb github: anyone lists; only Ahmed adds and removes; a new repo starts at
   const sql = await freshDb(); clients.push(sql);
   await sql`select cb.ensure_project('ihop')`;
   const AHMED = { PGAPPNAME: 'cb-web' }; // what his dashboard connection says; sessions can't (cb.dashboard_only)
-  const no = cb(['github', 'add', R]);
+  const no = cb(['github', 'add', R, '--to', 'orch@macbook']);
   assert.equal(no.code, 1);
-  assert.match(no.err, /only Ahmed adds or removes watched repos/);
+  assert.match(no.err, /only Ahmed adds or removes watched repos\. Ahmed runs this himself: ! PGAPPNAME=cb-web cb github add TachyHealth\/iHop-Platform --to orch@macbook$/);
   assert.equal((await sql`select count(*)::int as n from cb.settings`)[0].n, 0);
 
   const before = Date.now();
@@ -358,7 +382,7 @@ test('cb github: anyone lists; only Ahmed adds and removes; a new repo starts at
   assert.match(list.out, /^TachyHealth\/iHop-Platform → orch@shaltoot \(ihop\) · last poll never · since \S+ · last error: gh: HTTP 401 \(since 2026-11-11T10:00:00\.000Z\)\n {2}open PR cards: PR #3452 → card #9$/m);
   assert.match(list.out, /^TachyHealth\/ihop-reading-service → orch@macbook \(ihop\) · last poll never · since \S+$/m);
 
-  assert.match(cb(['github', 'remove', R]).err, /only Ahmed adds or removes watched repos/);
+  assert.match(cb(['github', 'remove', R]).err, /Ahmed runs this himself: ! PGAPPNAME=cb-web cb github remove TachyHealth\/iHop-Platform$/);
   assert.equal(cb(['github', 'remove', R], AHMED).code, 0);
   assert.equal(await state(sql), undefined);
   assert.match(cb(['github', 'remove', R], AHMED).err, /not watched/);
