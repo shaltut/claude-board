@@ -255,6 +255,42 @@ test('bots, successful CI and the default branch: bot authors dropped, only fail
   assert.deepEqual(Object.keys((await state(sql)).prs), ['14'], 'no card for the bot PR or the branch');
 });
 
+test('muted logins (Ahmed: shaltut, his own workers): what they open, say or commit is dropped; others on their PRs still reach orch', async () => {
+  const { sql, watch } = await board();
+  await sql`insert into cb.settings (key, value) values ('github-muted', ${sql.json(['shaltut'])})`;
+  const W = { user: { login: 'shaltut' } };
+  let pulls = [pr(20, { ...W, created_at: at(3) }),                                            // opened by shaltut, nothing else: nothing
+    pr(21, { ...W, title: 'Rulings' }),                                                        // asmaa comments on shaltut's PR: a card
+    pr(22, { ...W, state: 'closed', merged_at: at(20), closed_at: at(20) }),                    // shaltut's PR merged, no card: nothing
+    pr(23)];                                                                                    // dev1's PR, only Shaltut talks: nothing
+  let issueComments = [comment(21, at(5), 'done', 'shaltut'), comment(21, at(6), 'D8 is wrong', 'Asmaa-Ebed', 'MEMBER'),
+    comment(23, at(7), 'rebased', 'Shaltut')];                                                  // logins match case-blind
+  const f = fakeGh({
+    [`repos/${R}/pulls`]: (q) => q.get('page') === '1' ? pulls : [],
+    [`repos/${R}/issues/comments`]: () => issueComments,
+    [`repos/${R}/pulls/21/reviews`]: () => [review('APPROVED', at(8), '', 'shaltut')],
+    [`repos/${R}/actions/runs`]: () => ({ pages: [{ total_count: 1, workflow_runs: [run({ name: 'Deploy', actor: { login: 'shaltut' } })] }] }),
+    [`repos/${R}/commits`]: () => ({ pages: [[{ sha: 'a1b2c3d4e5', html_url: `${WEB}/commit/a1b2c3d4e5`, author: { login: 'shaltut' },
+      commit: { message: 'Merge #22', author: { name: 'x', date: at(21) }, committer: { date: at(21) } } }]] }),
+  });
+  await poll(f, watch);
+  const [m] = await tells(sql);
+  assert.deepEqual(m.split('\n'), ['[GitHub · untrusted] iHop-Platform: 2 updates', '  PR #21 "Rulings" → card #2: 1 comment by Asmaa-Ebed',
+    '  branch "main": 1 CI failure by shaltut', FOOTER], 'a failed run is GitHub saying so, whoever pushed: kept');
+  assert.deepEqual((await state(sql)).prs, { 21: 2 });
+  const log = (await notes(sql, 2)).join('\n');
+  assert.doesNotMatch(log, /shaltut/i, 'nor on the card');
+
+  // shaltut merges PR 21 later: the card it has closes (a merge carries no login of its own)
+  const t1 = new Date(+NOW + 60_000);
+  pulls = [pr(21, { ...W, title: 'Rulings', state: 'closed', merged_at: at(180.5), closed_at: at(180.5), updated_at: at(180.5) })];
+  issueComments = [];
+  await poll(f, watch, t1);
+  assert.equal((await sql`select status from cb.tasks where id = 2`)[0].status, 'done');
+  assert.deepEqual((await state(sql)).prs, {});
+});
+
+
 test('a card per PR: created once, reused, closed on merge or close with a note saying which', async () => {
   const { sql, watch } = await board();
   let pulls = [pr(7, { title: 'Hijri parse' }), pr(8, { title: 'Old idea' })];
@@ -586,6 +622,28 @@ test('cb github: anyone lists; only Ahmed adds and removes; a new repo starts at
   assert.equal(await state(sql), undefined);
   assert.match(cb(['github', 'remove', R], AHMED).err, /not watched/);
 });
+
+test('cb github mute/unmute: only Ahmed; logins kept lowercase, once; cb github shows them', async () => {
+  const sql = await freshDb(); clients.push(sql);
+  const AHMED = { PGAPPNAME: 'cb-web' };
+  const muted = async () => (await sql`select value from cb.settings where key = 'github-muted'`)[0]?.value;
+  const no = cb(['github', 'mute', 'shaltut']);
+  assert.equal(no.code, 1);
+  assert.match(no.err, /only Ahmed mutes or unmutes GitHub logins: ask him/);
+  assert.doesNotMatch(no.err, /PGAPPNAME|cb-web/);
+  assert.equal(await muted(), undefined);
+  assert.equal(cb(['github', 'mute', 'Shaltut'], AHMED).code, 0);
+  assert.equal(cb(['github', 'mute', 'shaltut'], AHMED).code, 0, 'twice: no error');
+  assert.match(cb(['github', 'mute', 'not a login'], AHMED).err, /is not a GitHub login/);
+  assert.deepEqual(await muted(), ['shaltut']);
+  assert.match(cb(['github']).out, /^muted \(their events are dropped\): shaltut$/m);
+  assert.match(cb(['github', 'unmute', 'shaltut']).err, /only Ahmed mutes or unmutes/);
+  assert.equal(cb(['github', 'unmute', 'SHALTUT'], AHMED).code, 0);
+  assert.deepEqual(await muted(), []);
+  assert.match(cb(['github', 'unmute', 'shaltut'], AHMED).err, /shaltut is not muted/);
+});
+
+
 
 // A stand-in for Claude Code's inbox (as in relay.test.ts): checks the auth line, collects messages.
 function fakeInbox(path: string, token: string) {
