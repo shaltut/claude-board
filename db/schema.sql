@@ -980,7 +980,9 @@ begin
     continue when h is null;
     -- put the task back as it was before this follow-up took it; a question that held it then and has since been
     -- delivered or withdrawn no longer holds it (released as its delivery would have)
-    live := (select x.id from cb.questions x where x.id = (h ->> 'blocked_on')::bigint and x.status in ('open', 'answered', 'sent_back'));
+    -- a correction (#1346) is answered again, but its task was released at its first delivery: it holds nothing
+    live := (select x.id from cb.questions x where x.id = (h ->> 'blocked_on')::bigint and x.status in ('open', 'answered', 'sent_back')
+               and x.answer_history is null);
     perform set_config('cb.note', 'Q' || c.id || ' waits again: back as before it asked', true);
     update cb.tasks x set blocked_on = live,
            status = case when live is not null then 'blocked'

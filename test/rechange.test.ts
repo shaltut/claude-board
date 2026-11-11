@@ -132,3 +132,20 @@ test('cb pending says CHANGED with the old answer', async () => {
     env: { ...process.env, CB_DATABASE_URL: TEST_URL, CB_ACTOR: 'W1', HERDR_PANE_ID: '' } });
   assert.match(r.stdout, new RegExp(`Q${id} → W1[\\s\\S]*answer: No\\n  CHANGED: was "Yes"\\. Undo or redo what you did based on the old answer\\.`), r.stdout + r.stderr);
 });
+
+test('a correction holds no task: a follow-up giving its task back does not hand it to the corrected question', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'build it', assignee => 'W1', status => 'in_progress', actor => 'W1')`;
+  await sql`select cb.iam('mac', 'w1:p3', 'W1', 'demo')`;
+  const q1 = await ask(sql, { body: 'Which DB?', options: ['PG', 'Mongo'], task: '1', blocking: true });
+  const p = await ask(sql, { body: 'Ship today?', options: ['Yes', 'No'] });
+  const f = await ask(sql, { body: 'Which env?', parent: 'Q' + p, if: 'Yes', task: '1', blocking: true });
+  await answer(sql, p, 'Yes');  // f opens and takes the task, remembering it was blocked on q1
+  assert.equal(Number((await sql`select blocked_on from cb.tasks where id = 1`)[0].blocked_on), f);
+  await answer(sql, q1, 'PG');
+  await deliver(sql, q1);
+  await answer(sql, q1, 'Mongo');  // q1 is answered again: a correction
+  await answer(sql, p, 'No');      // f waits again and gives the task back
+  const [t] = await sql`select status, blocked_on from cb.tasks where id = 1`;
+  assert.deepEqual([t.status, t.blocked_on], ['in_progress', null], 'not blocked on the corrected q1');
+});

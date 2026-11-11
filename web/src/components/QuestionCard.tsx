@@ -258,9 +258,14 @@ export function useScrollToRow(editing: number | null, rows: unknown) {
   }, [editing, rows])
 }
 
+/** Who answered, when not Ahmed. Its own component: the people list is the dashboard's (a guest gets 403 on it). */
+function AnsweredBy({ name }: { name: string }) {
+  const { data: users = [] } = useUsers()
+  return <span className="ml-2 text-xs text-muted-foreground">{users.find((u) => u.name === name)?.display ?? name} answered</span>
+}
+
 /** An answer, delivered or on its way, with Change (#1346). A guest doesn't see session names or make rules. */
 export function AnsweredRow({ q, editing, onEdit, guest }: { q: Question; editing: boolean; onEdit: (on: boolean) => void; guest?: boolean }) {
-  const { data: users = [] } = useUsers()
   const sent = q.status === 'delivered'
   return (
     <li id={`answered-${q.id}`} className="grid scroll-mt-20 grid-cols-[1.75rem_minmax(0,1fr)] py-3 sm:grid-cols-[2.5rem_minmax(0,1fr)]">
@@ -278,9 +283,7 @@ export function AnsweredRow({ q, editing, onEdit, guest }: { q: Question; editin
             <CornerDownRight className="mt-0.5 size-3.5 shrink-0 text-clear" aria-label="Answer" />
             <span className="min-w-0">
               {q.answer}
-              {!guest && q.answered_by && q.answered_by !== 'ahmed' && (
-                <span className="ml-2 text-xs text-muted-foreground">{users.find((u) => u.name === q.answered_by)?.display ?? q.answered_by} answered</span>
-              )}
+              {!guest && q.answered_by && q.answered_by !== 'ahmed' && <AnsweredBy name={q.answered_by} />}
               <span className="ml-2 text-xs text-muted-foreground tabular-nums">
                 {sent ? `delivered${!guest && q.delivered_to ? ` to ${q.delivered_to}` : ''} ${ago(q.delivered_at)}`
                   : q.status === 'withdrawn' ? 'withdrawn' : `on its way, ${ago(q.answered_at)}`}
