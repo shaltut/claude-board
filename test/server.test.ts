@@ -41,6 +41,17 @@ test('rpc error is 400 with message', async () => {
   assert.match(body.error, /use one of/);
 });
 
+test("Answered today (#1346): every undelivered answer, and delivered ones from the last 24 h", async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'seed')`;
+  for (const b of ['old pending', 'old delivered', 'fresh delivered', 'open']) await sql`select cb.ask(project => 'demo', body => ${b}, actor => 'W1')`;
+  await sql`select cb.answer('1', 'a'), cb.answer('2', 'b'), cb.answer('3', 'c')`;
+  await sql`select cb.answer_delivered('2', 'W1'), cb.answer_delivered('3', 'W1')`;
+  await sql`update cb.questions set answered_at = now() - interval '3 days' where id in (1, 2)`;
+  const rows = await (await app.request('/api/questions?status=answered_today')).json();
+  assert.deepEqual(rows.map((q: any) => q.body).sort(), ['fresh delivered', 'old pending']);
+});
+
 test('unknown rpc is 404 listing functions', async () => {
   const res = await rpc('drop_everything', {});
   assert.equal(res.status, 404);

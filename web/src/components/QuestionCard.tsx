@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronRight, CornerDownLeft, CornerDownRight, Loader2, Undo2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -217,46 +217,75 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
   )
 }
 
-/** Answered but not yet picked up by the orchestrator. Still editable. */
-export function AnsweredRow({ q, editing, onEdit }: { q: Question; editing: boolean; onEdit: (on: boolean) => void }) {
+export const changeable = (q: Question) => q.status === 'answered' || q.status === 'delivered'
+
+/** The box that changes an answer. A delivered one goes back to its session as a correction (#1346). */
+export function ChangeAnswer({ q, onDone }: { q: Question; onDone: () => void }) {
   const qc = useQueryClient()
   const [text, setText] = useState(q.answer ?? '')
-  const { data: users = [] } = useUsers()
   async function save() {
     try {
       await rpc('answer', { id: q.id, answer: text })
-      toast.success(`Changed the answer to Q${q.id}`)
-      onEdit(false)
+      toast.success(`Changed the answer to Q${q.id}`, q.status === 'delivered' ? { description: 'The session gets it as a correction.' } : undefined)
+      onDone()
       await qc.invalidateQueries()
-    } catch (e: any) { toast.error(e.message) }
+    } catch (e: any) { toast.error(`Could not change Q${q.id}`, { description: e.message }) }
   }
   return (
-    <li className="grid grid-cols-[1.75rem_minmax(0,1fr)] py-3 sm:grid-cols-[2.5rem_minmax(0,1fr)]">
-      <span className="mt-[5px] size-2.5 justify-self-center rounded-full border-2 border-clear" title="Answered, not yet delivered" />
+    <div className="mt-2">
+      <div className="flex gap-2">
+        <Textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} rows={2} className="text-sm" aria-label={`New answer to Q${q.id}`}
+          onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save(); if (e.key === 'Escape') onDone() }} />
+        <div className="flex flex-col gap-1">
+          <Button size="sm" onClick={save}>Save</Button>
+          <Button size="sm" variant="ghost" onClick={onDone}>Cancel</Button>
+        </div>
+      </div>
+      {q.status === 'delivered' && <p className="mt-1 text-xs text-muted-foreground">Already delivered: the session is told you changed it, with the old answer.</p>}
+    </div>
+  )
+}
+
+/** Scrolls the row being changed into view once it is on the page: the toast's Change (#1345) can open a row the
+ *  list only shows after the next fetch. */
+export function useScrollToRow(editing: number | null, rows: unknown) {
+  const done = useRef<number | null>(null)
+  useEffect(() => {
+    if (editing == null) { done.current = null; return }
+    if (done.current === editing) return
+    const el = document.getElementById(`answered-${editing}`)
+    if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); done.current = editing }
+  }, [editing, rows])
+}
+
+/** An answer, delivered or on its way, with Change (#1346). A guest doesn't see session names or make rules. */
+export function AnsweredRow({ q, editing, onEdit, guest }: { q: Question; editing: boolean; onEdit: (on: boolean) => void; guest?: boolean }) {
+  const { data: users = [] } = useUsers()
+  const sent = q.status === 'delivered'
+  return (
+    <li id={`answered-${q.id}`} className="grid scroll-mt-20 grid-cols-[1.75rem_minmax(0,1fr)] py-3 sm:grid-cols-[2.5rem_minmax(0,1fr)]">
+      <span className={cn('mt-[5px] size-2.5 justify-self-center rounded-full', sent ? 'bg-clear' : q.status === 'withdrawn' ? 'border-2 border-muted-foreground/50' : 'border-2 border-clear')}
+        title={sent ? 'Delivered' : q.status === 'withdrawn' ? 'Withdrawn' : 'Answered, not yet delivered'} />
       <div className="min-w-0">
         <div className="flex items-baseline gap-2 text-sm">
-          <ActorChip actor={q.asked_by} />
+          {!guest && <ActorChip actor={q.asked_by} />}
           <span className="min-w-0 flex-1 truncate text-muted-foreground">{q.body}</span>
-          {!editing && <MakeRule q={q} />}
-          {!editing && <button onClick={() => onEdit(true)} className="rounded px-1.5 text-xs text-muted-foreground hover:bg-raised hover:text-foreground">Change</button>}
+          {!editing && !guest && <MakeRule q={q} />}
+          {!editing && changeable(q) && <button onClick={() => onEdit(true)} className="rounded px-1.5 text-xs text-muted-foreground hover:bg-raised hover:text-foreground">Change</button>}
         </div>
-        {editing ? (
-          <div className="mt-2 flex gap-2">
-            <Textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} rows={2} className="text-sm" aria-label={`New answer to Q${q.id}`}
-              onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save(); if (e.key === 'Escape') onEdit(false) }} />
-            <div className="flex flex-col gap-1">
-              <Button size="sm" onClick={save}>Save</Button>
-              <Button size="sm" variant="ghost" onClick={() => onEdit(false)}>Cancel</Button>
-            </div>
-          </div>
-        ) : (
+        {editing ? <ChangeAnswer q={q} onDone={() => onEdit(false)} /> : (
           <p className="mt-1 flex items-start gap-1.5 text-sm">
             <CornerDownRight className="mt-0.5 size-3.5 shrink-0 text-clear" aria-label="Answer" />
             <span className="min-w-0">
               {q.answer}
-              {q.answered_by && q.answered_by !== 'ahmed' && (
+              {!guest && q.answered_by && q.answered_by !== 'ahmed' && (
                 <span className="ml-2 text-xs text-muted-foreground">{users.find((u) => u.name === q.answered_by)?.display ?? q.answered_by} answered</span>
               )}
+              <span className="ml-2 text-xs text-muted-foreground tabular-nums">
+                {sent ? `delivered${!guest && q.delivered_to ? ` to ${q.delivered_to}` : ''} ${ago(q.delivered_at)}`
+                  : q.status === 'withdrawn' ? 'withdrawn' : `on its way, ${ago(q.answered_at)}`}
+                {q.answer_history?.length ? ' · changed' : ''}
+              </span>
             </span>
           </p>
         )}

@@ -1,11 +1,10 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { CornerDownRight } from 'lucide-react'
 import { toast } from 'sonner'
 import { get, rpc, type Question, type Task, type User } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { QuestionCard, SentBackRow } from '@/components/QuestionCard'
+import { AnsweredRow, QuestionCard, SentBackRow, useScrollToRow } from '@/components/QuestionCard'
 import { PRIORITIES, ProjectChip } from '@/components/Chips'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -29,6 +28,8 @@ export function Guest({ user }: { user: User }) {
     .sort((a, b) => Number(b.blocking) - Number(a.blocking) || +new Date(a.created_at) - +new Date(b.created_at))
   const sentBack = data?.questions.filter((q) => q.status === 'sent_back') ?? []
   const done = data?.questions.filter((q) => q.status !== 'open' && q.status !== 'sent_back') ?? []
+  const [editing, setEditing] = useState<number | null>(null)
+  useScrollToRow(editing, done)
   const tasks = data?.tasks ?? []
   useTabLamp(open.length)
   useRing(data && open.map((q) => q.id))
@@ -65,7 +66,7 @@ export function Guest({ user }: { user: User }) {
               <h2 id="qs" className="sr-only">Questions for you</h2>
               {open.length === 0
                 ? <p className="rounded-lg border border-dashed px-5 py-6 text-sm text-muted-foreground">When someone needs you, the question appears here and the tab shows a number.</p>
-                : <div className="grid gap-3">{open.map((q) => <QuestionCard key={q.id} q={q} guest />)}</div>}
+                : <div className="grid gap-3">{open.map((q) => <QuestionCard key={q.id} q={q} guest onAnswered={setEditing} />)}</div>}
               {sentBack.length > 0 && <ul className="mt-4 divide-y" aria-label="Sent back">{sentBack.map((q) => <SentBackRow key={q.id} q={q} guest />)}</ul>}
             </section>
 
@@ -82,16 +83,7 @@ export function Guest({ user }: { user: User }) {
                 <h2 id="done" className="text-sm font-semibold">You answered this week</h2>
                 <ul className="mt-1 divide-y">
                   {done.map((q) => (
-                    <li key={q.id} className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-x-2 py-3">
-                      <span className="mt-[5px] size-2.5 justify-self-center rounded-full bg-clear" aria-hidden />
-                      <div className="min-w-0 text-sm">
-                        <p className="text-muted-foreground text-pretty">{q.body}</p>
-                        <p className="mt-1 flex items-start gap-1.5">
-                          <CornerDownRight className="mt-0.5 size-3.5 shrink-0 text-clear" aria-label="Your answer" />
-                          <span className="min-w-0">{q.answer} <span className="ml-1 text-xs text-muted-foreground tabular-nums">{ago(q.answered_at)}</span></span>
-                        </p>
-                      </div>
-                    </li>
+                    <AnsweredRow key={q.id} q={q} guest editing={editing === q.id} onEdit={(on) => setEditing(on ? q.id : null)} />
                   ))}
                 </ul>
               </section>

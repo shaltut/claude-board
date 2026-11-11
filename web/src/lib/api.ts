@@ -31,6 +31,8 @@ export interface Question {
   id: number; project: string; task_id: number | null; asked_by: string; body: string; context: string | null
   options: QOption[] | null; multi: boolean; blocking: boolean; status: 'open' | 'answered' | 'delivered' | 'withdrawn' | 'dormant' | 'sent_back'
   answer: string | null; answered_at: string | null; delivered_at: string | null; delivered_to: string | null
+  // a delivered answer changed (#1346): the answers the session was told before, oldest first
+  answer_history?: { answer: string; answered_by: string | null; delivered_to: string | null; changed_at: string }[] | null
   reply_to: { machine?: string; pane?: string } | null; created_at: string
   assigned_to: string | null; answered_by: string | null
   ruled_by: number | null // answered "Already ruled" with this memory entry (#553)

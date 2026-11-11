@@ -8,7 +8,7 @@ import { go, href, type Route } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { AnsweredRow, QuestionCard, SentBackRow } from '@/components/QuestionCard'
+import { AnsweredRow, ChangeAnswer, changeable, QuestionCard, SentBackRow, useScrollToRow } from '@/components/QuestionCard'
 import { MakeRule } from '@/components/MakeRule'
 import { Timeline } from '@/components/Timeline'
 import { ActorChip, ProjectChip } from '@/components/Chips'
@@ -65,7 +65,9 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
   const open = allOpen.filter((q) => !q.assigned_to)
   const others = allOpen.filter((q) => q.assigned_to)
   const { data: users = [] } = useUsers()
-  const { data: answered = [] } = useQuestions(route.project, 'answered')
+  const { data: recent = [] } = useQuestions(route.project, 'answered_today')
+  const answered = [...recent].sort((a, b) => +new Date(b.answered_at ?? 0) - +new Date(a.answered_at ?? 0))
+  useScrollToRow(editing, answered)
   const { data: sentBack = [] } = useQuestions(route.project, 'sent_back')
   const clearing = useClearing(open)
   // Strips already there on arrival sit still; only questions asked while you watch slide in.
@@ -139,8 +141,8 @@ function Briefing({ route, anchorState }: { route: Route; anchorState: ReturnTyp
 
         {answered.length > 0 && (
           <section className="mt-10" aria-labelledby="pickup">
-            <h2 id="pickup" className="text-sm font-semibold">Answered, on the way</h2>
-            <p className="text-xs text-muted-foreground">The orchestrator hasn't delivered these yet, so you can still change them.</p>
+            <h2 id="pickup" className="text-sm font-semibold">Answered today</h2>
+            <p className="text-xs text-muted-foreground">Change any of them. A delivered one reaches its session again, as a correction.</p>
             <ul className="mt-1 divide-y">
               {answered.map((q) => (
                 <AnsweredRow key={q.id} q={q} editing={editing === q.id} onEdit={(on) => setEditing(on ? q.id : null)} />
@@ -317,6 +319,7 @@ function AllQuestions({ route }: { route: Route }) {
 }
 
 function ClosedQuestion({ q }: { q: Question }) {
+  const [editing, setEditing] = useState(false)
   return (
     <li className="grid grid-cols-[1.75rem_minmax(0,1fr)] rounded-lg border bg-card/60 py-4 pr-4 sm:grid-cols-[2.5rem_minmax(0,1fr)]">
       <span className={cn('mt-[5px] size-2.5 justify-self-center rounded-full', q.status === 'withdrawn' ? 'border-2 border-muted-foreground/50' : q.status === 'delivered' ? 'bg-clear' : 'border-2 border-clear')} aria-hidden />
@@ -328,8 +331,12 @@ function ClosedQuestion({ q }: { q: Question }) {
           <span className="ml-auto capitalize">{q.status.replace('_', ' ')}{q.delivered_to ? ` to ${q.delivered_to}` : ''}</span>
         </div>
         <p className="mt-2 text-sm text-pretty">{q.body}</p>
-        {q.answer && <p className="mt-1.5 text-sm font-medium text-pretty">{q.answer}</p>}
-        {q.answer && <div className="mt-1.5 -ml-1.5"><MakeRule q={q} /></div>}
+        {editing ? <ChangeAnswer q={q} onDone={() => setEditing(false)} /> : <>
+          {q.answer && <p className="mt-1.5 text-sm font-medium text-pretty">{q.answer}</p>}
+          {q.answer && <div className="mt-1.5 -ml-1.5 flex items-center gap-1"><MakeRule q={q} />
+            {changeable(q) && <button onClick={() => setEditing(true)} className="rounded px-1.5 text-xs text-muted-foreground hover:bg-raised hover:text-foreground">Change</button>}
+          </div>}
+        </>}
       </div>
     </li>
   )

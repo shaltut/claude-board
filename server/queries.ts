@@ -71,8 +71,12 @@ const followups = (user?: string) => sql`
   (select jsonb_agg(jsonb_build_object('id', c.id, 'if_answer', c.if_answer, 'body', c.body) order by c.id) from cb.questions c
     where c.parent_id = q.id and c.status = 'dormant' ${user ? sql`and c.assigned_to = ${user}` : sql``}) as branches`;
 
+/** status 'answered_today' (#1346): every answer not yet delivered, and the ones delivered in the last 24 h. */
 export function questions(project?: string, status?: string) {
-  return sql`select q.*, ${followups()} from cb.questions q where true ${proj(project)} ${status ? sql`and status = ${status}` : sql``}
+  const which = status === 'answered_today'
+    ? sql`and (status = 'answered' or (status = 'delivered' and answered_at > now() - interval '24 hours'))`
+    : status ? sql`and status = ${status}` : sql``;
+  return sql`select q.*, ${followups()} from cb.questions q where true ${proj(project)} ${which}
     order by (status = 'open') desc, blocking desc, created_at`;
 }
 
