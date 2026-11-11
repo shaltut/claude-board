@@ -187,6 +187,37 @@ test('relay pushes an answer into its session and marks it delivered', { timeout
   }
 });
 
+test('a changed answer is pushed again as CHANGED, with the old one; the orchestrator copy says so too (#1346)', { timeout: 30_000 }, async () => {
+  const sql = await db();
+  const path = process.platform === 'win32' ? String.raw`\\.\pipe\cb-relay-chg-` + process.pid : join(tmpdir(), `cb-relay-chg-${process.pid}.sock`);
+  const inbox = fakeInbox(path, 'tok');
+  await sql`select cb.ask(project => 'demo', body => 'Rotate keys?', task_id => null, reply_to => ${sql.json({ machine: 'testbox', pane: 'p8' })}, actor => 'W9')`;
+  await sql`select cb.iam('pc', 'w2:p2', 'orch@shaltoot', 'demo')`; await sql`select cb.inbox('pc', 'w2:p2', 0)`;
+  await sql`select cb.answer('1', 'Rotate now')`;
+  await sql`select cb.answer_delivered('1', 'W9')`;
+  const relay = spawn('node', ['cli/relay.ts', '--child'], { stdio: 'ignore',
+    env: { ...process.env, CB_DATABASE_URL: TEST_URL, CB_MACHINE: 'testbox', HERDR_PANE_ID: 'p8', CLAUDE_CODE_MESSAGING_SOCKET: path, CLAUDE_CODE_MESSAGING_TOKEN: 'tok' } });
+  const exited = new Promise((r) => relay.on('exit', r));
+  try {
+    await new Promise((r) => setTimeout(r, 1500));
+    await sql`select cb.answer('1', 'Wait for Friday')`;
+    for (let i = 0; i < 50 && !inbox.got.length; i++) await new Promise((r) => setTimeout(r, 100));
+    assert.equal(inbox.got.length, 1);
+    const text: string = inbox.got[0].message.content;
+    assert.match(text, /^Ahmed CHANGED his answer to Q1: was "Rotate now", now "Wait for Friday"\. Undo or redo what you did based on the old answer\.$/m);
+    assert.doesNotMatch(text, /Ahmed answered Q1/);
+    let st: any;
+    for (let i = 0; i < 30 && st !== 'delivered'; i++) { [{ status: st }] = await sql`select status from cb.questions`; await new Promise((r) => setTimeout(r, 100)); }
+    assert.equal(st, 'delivered');
+  } finally {
+    await inbox.close();
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 8000))]);
+  }
+  // the orchestrator's copy
+  const [{ i }] = await sql`select cb.inbox('pc', 'w2:p2', 0) as i`;
+  assert.deepEqual(i.answer_copies.map((c: any) => c.was), [null, 'Rotate now']);
+});
+
 test('a session belongs to one project: cb next/brief default to it, never pull other work', async () => {
   const sql = await db();
   const env = { ...process.env, CB_DATABASE_URL: TEST_URL, CB_ACTOR: '', HERDR_PANE_ID: 'w1:p1', CB_MACHINE: 'pc' };

@@ -132,7 +132,7 @@ function printBrief(b: any) {
   sec('WAITING ON AHMED', b.open_questions, (q) => `Q${q.id}${q.blocking ? ' [blocking]' : ''} ${q.body}${q.assigned_to ? ` (for ${q.assigned_to})` : ''} · ${q.project}`);
   sec('BROADCASTS (24h)', b.broadcasts ?? [], (x) => `${x.actor}${x.project ? ` to ${x.project}` : ' to everyone'}: ${x.summary}`);
   sec('ANSWERED — DELIVER THESE', b.answered_pending, (q) =>
-    `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}: ${q.answer}`);
+    `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}: ${q.answer}${q.was != null ? ` (CHANGED, was: ${q.was})` : ''}`);
   sec('RULES & FACTS', b.memory?.entries ?? [], memLine);
 }
 
@@ -605,7 +605,8 @@ async function run(): Promise<unknown> {
           return `Q${q.id} sent back by ${by} to ${q.asked_by}: ${flat(backWhy(q.sent_back.reason, q.sent_back.note?.slice(0, 500)))}` +
             `\n  asked: ${flat(q.body)}\n  rewrite it: ${reaskHint(q.id)}`; }
         return `Q${q.id} → ${q.asked_by}${q.reply_to?.pane ? ` (pane ${q.reply_to.pane}@${q.reply_to.machine})` : ''}` +
-          `${p ? `\n  follow-up to Q${p.id} (answered ${flat(p.answer)}): ${flat(p.body)}` : ''}\n  asked: ${flat(q.body)}\n  answer: ${flat(q.answer)}`; }).join('\n')
+          `${p ? `\n  follow-up to Q${p.id} (answered ${flat(p.answer)}): ${flat(p.body)}` : ''}\n  asked: ${flat(q.body)}\n  answer: ${flat(q.answer)}` +
+          (q.answer_history?.length ? `\n  CHANGED: was "${flat(q.answer_history.at(-1).answer)}". Undo or redo what you did based on the old answer.` : ''); }).join('\n')
         : 'no answers waiting', json: rows };
     }
     case 'reask': {

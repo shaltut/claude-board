@@ -1,6 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { freshDb } from './helpers.ts';
+import postgres from 'postgres';
+import { freshDb, TEST_URL } from './helpers.ts';
 
 const clients: any[] = [];
 after(() => Promise.all(clients.map((c) => c.end())));
@@ -25,7 +26,7 @@ test('blocking ask blocks task', async () => {
   assert.equal(Number(e.question_id), q);
 });
 
-test('answer is editable until delivered', async () => {
+test('answer is editable until delivered; after that only from the dashboard (#1346)', async () => {
   const sql = await db();
   const q = await blockedTask(sql);
   await sql`select cb.answer(${String(q)}, 'now')`;
@@ -34,7 +35,8 @@ test('answer is editable until delivered', async () => {
   assert.equal(row.answer, 'friday');
   assert.equal(row.status, 'answered');
   await sql`select cb.answer_delivered(${String(q)}, 'W1')`;
-  await assert.rejects(sql`select cb.answer(${String(q)}, 'again')`, /already delivered/);
+  const session = postgres(TEST_URL, { onnotice: () => {} }); // a session: not the dashboard
+  try { await assert.rejects(session`select cb.answer(${String(q)}, 'again', 'W1')`, /already delivered/); } finally { await session.end(); }
 });
 
 test('pending then delivered unblocks', async () => {

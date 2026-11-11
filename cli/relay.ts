@@ -106,8 +106,12 @@ function format(raw: any): string {
       `If he says "make it a task", use cb add; "this is a bug", cb bug; then post the new task id back in the huddle. Whole thread: cb huddle show ${id})`);
   }
   if (otherIds.length) lines.push(`  (reply: cb huddle say ${otherIds[0]} "..."; whole thread: cb huddle show ${otherIds[0]})`);
+  // a changed answer (#1346): the session acted on the one it was told, so it hears both
+  const his = (a: any) => (!a.answered_by || a.answered_by === 'ahmed' ? 'his' : 'their');
   for (const a of i.answers)
-    lines.push(`${who(a)} answered Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: ${a.answer}`,
+    lines.push(a.was != null
+      ? `${who(a)} CHANGED ${his(a)} answer to Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: was "${cut(a.was, 300)}", now "${a.answer}". Undo or redo what you did based on the old answer.`
+      : `${who(a)} answered Q${a.id}${a.task_id ? ` (task #${a.task_id})` : ''}: ${a.answer}`,
       ...(a.parent_id ? [`  Follow-up to Q${a.parent_id} (${who({ answered_by: a.parent_answered_by })} answered ${cut(a.parent_answer, 120)}): ${cut(a.parent_body, 200)}`] : []),
       `  You asked: ${cut(a.body, 200)}`);
   // Sent back (#616): rewrite the same question. ?? []: a board whose schema predates it.
@@ -115,7 +119,9 @@ function format(raw: any): string {
     lines.push(`${who({ answered_by: s.by })} sent Q${s.id} back: ${backWhy(s.reason, s.note && cut(s.note, 500)).replace(/([^.!?…])$/, '$1.')} Rewrite it: ${reaskHint(s.id)}`,
       `  You asked: ${cut(s.body, 200)}`);
   for (const c of i.answer_copies ?? [])
-    lines.push(`${who(c)} answered ${c.asked_by}'s Q${c.id}${c.task_id ? ` (task #${c.task_id})` : ''}: ${c.answer}`,
+    lines.push(c.was != null
+      ? `${who(c)} CHANGED the answer to ${c.asked_by}'s Q${c.id}${c.task_id ? ` (task #${c.task_id})` : ''}: was "${cut(c.was, 300)}", now "${c.answer}"`
+      : `${who(c)} answered ${c.asked_by}'s Q${c.id}${c.task_id ? ` (task #${c.task_id})` : ''}: ${c.answer}`,
       `  They asked: ${cut(c.body, 200)}`, `  (copy for you as orchestrator; ${c.asked_by} gets it directly)`);
   for (const b of i.bugs ?? []) {
     const first = cut(String(b.body ?? '').split('\n')[0].trim(), 200);

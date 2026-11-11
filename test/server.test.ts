@@ -330,6 +330,27 @@ test('"Already ruled": the dashboard answers with a live memory entry; the sessi
   assert.equal((await rpc('answer', { id: '3', ruled_by: `M${glob}` })).status, 200, 'a global entry rules anywhere');
 });
 
+test('a guest changes a delivered answer only on their own question (#1346)', async () => {
+  const sql = await db();
+  const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;
+  await sql`select cb.user_add('iman', 'Iman')`;
+  await onProject(sql, 'omar', 'ihop');
+  await onProject(sql, 'iman', 'ihop');
+  await sql`select cb.task_add(project => 'ihop', title => 'seed')`;
+  for (const to of ['omar', 'iman']) {
+    await sql`select cb.ask(project => 'ihop', body => ${'E1 scope? ' + to}, to_user => ${to}, actor => 'orch@shaltoot')`;
+  }
+  await sql`select cb.answer('1', 'A', 'omar'), cb.answer('2', 'A', 'iman')`;
+  await sql`select cb.answer_delivered('1', 'orch@shaltoot'), cb.answer_delivered('2', 'orch@shaltoot')`;
+  const rpc = (args: object) => remote('/api/rpc/answer', { cookie: token, method: 'POST', body: JSON.stringify(args), headers: { 'content-type': 'application/json' } });
+  assert.equal((await rpc({ id: '2', answer: 'B' })).status, 403, "iman's question");
+  const r = await rpc({ id: '1', answer: 'B' });
+  assert.equal(r.status, 200, await r.text());
+  const [q] = await sql`select status, answer, answered_by, answer_history -> 0 ->> 'answer' as was from cb.questions where id = 1`;
+  assert.deepEqual({ ...q }, { status: 'answered', answer: 'B', answered_by: 'omar', was: 'A' });
+  assert.equal((await sql`select status from cb.questions where id = 2`)[0].status, 'delivered');
+});
+
 test('a guest answer ignores ruled_by in its body', async () => {
   const sql = await db();
   const [{ token }] = await sql`select cb.user_add('omar', 'Omar') as token`;

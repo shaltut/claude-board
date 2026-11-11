@@ -110,6 +110,10 @@ create index if not exists questions_parent on cb.questions (parent_id) where pa
 -- texts, oldest first, each with the send-back that led to its rewrite (reason null: rewritten while open).
 alter table cb.questions add column if not exists sent_back jsonb;
 alter table cb.questions add column if not exists versions jsonb;
+-- A delivered answer changed (#1346): the answers the session was told before, oldest first, each
+-- {answer, answered_by, answered_at, delivered_at, delivered_to, changed_at, changed_by}. Set: the answer now waiting is
+-- a correction, pushed as "CHANGED ... was <the last one>".
+alter table cb.questions add column if not exists answer_history jsonb;
 
 -- What kind of work a task is. 'task' (unclassified) is the default: existing rows were never typed,
 -- and calling them features would be a lie. The list lives in the check and in cb.norm_type.
@@ -728,6 +732,7 @@ drop function if exists cb.withdraw cascade;
 drop function if exists cb._label cascade;
 drop function if exists cb._dormant_withdraw cascade;
 drop function if exists cb._followups_route cascade;
+drop function if exists cb._skipped cascade;
 drop function if exists cb._picked cascade;
 drop function if exists cb.answers_pending cascade;
 drop function if exists cb.answer_delivered cascade;
@@ -748,7 +753,9 @@ begin
   elsif new.status = 'answered' and (old.status <> 'answered' or new.answer is distinct from old.answer) then
     insert into cb.events (actor, project, task_id, question_id, kind, summary, data)
     values (a, new.project, new.task_id, new.id, 'answered', left(new.answer, 120),
-            jsonb_build_object('edited', old.status = 'answered'));
+            jsonb_build_object('edited', old.status = 'answered')
+              || case when new.answer_history is null then '{}'::jsonb
+                      else jsonb_build_object('changed', true, 'was', new.answer_history -> -1 ->> 'answer') end);
   elsif new.status is distinct from old.status and new.status <> 'sent_back' and (new.status in ('delivered', 'withdrawn') or old.status = 'open') then
     -- open → dormant (the parent's answer changed) reads as a withdrawal: the question left the board
     insert into cb.events (actor, project, task_id, question_id, kind, summary, data)
@@ -835,7 +842,9 @@ create function cb._options(options jsonb) returns jsonb language sql immutable 
     from jsonb_array_elements(options) with ordinality as e(o, i)
 $$;
 
--- Editable until delivered. ruled_by (M12): "Already ruled" (#553): the answer is that live memory entry, so the asking
+-- Editable until delivered; after that a change is a correction (#1346), from the dashboard only (the server sends a
+-- guest's there once it has checked the question is theirs): the told answer moves to answer_history and the question
+-- is answered again, delivered as a change. The same answer again changes nothing. ruled_by (M12): "Already ruled" (#553): the answer is that live memory entry, so the asking
 -- session gets the rule itself; questions.ruled_by keeps the link for the weekly metric. A typed answer clears it.
 create function cb.answer(id text, answer text default null, actor text default 'ahmed', ruled_by text default null)
 returns void language plpgsql as $$
@@ -856,7 +865,21 @@ begin
     if rp is not null and rp <> qp then raise exception 'M% is in %, not %: only a global entry or one in Q%''s project', rid, rp, qp, qid; end if;
   end if;
   if coalesce(trim(answer), '') = '' then raise exception 'answer is required'; end if;
-  if cur in ('delivered', 'withdrawn') then raise exception 'question Q% is already %', qid, cur; end if;
+  if cur = 'withdrawn' then raise exception 'question Q% is already withdrawn', qid; end if;
+  if cur = 'delivered' then
+    if current_setting('application_name') <> 'cb-web' then
+      raise exception 'question Q% is already delivered: only Ahmed (or the person it is for) can change it, on the dashboard', qid;
+    end if;
+    if exists (select 1 from cb.questions q where q.id = qid and q.answer = trim(answer)) then return; end if;
+    update cb.questions q set status = 'answered',
+           answer_history = coalesce(q.answer_history, '[]') || jsonb_build_array(jsonb_build_object('answer', q.answer,
+             'answered_by', q.answered_by, 'answered_at', q.answered_at, 'delivered_at', q.delivered_at,
+             'delivered_to', q.delivered_to, 'changed_at', now(), 'changed_by', a)),
+           answer = trim(answer), answered_at = now(), answered_by = a, ruled_by = rid, delivered_at = null, delivered_to = null
+     where q.id = qid;
+    perform cb._followups_route(qid);
+    return;
+  end if;
   if cur = 'dormant' then raise exception 'Q% waits on Q%: it opens when that one is answered', qid, par; end if;
   if cur = 'sent_back' then raise exception 'Q% was sent back to %: it comes back when they rewrite it', qid, asker; end if;
   update cb.questions q set status = 'answered', answer = trim(answer), answered_at = now(), answered_by = a, ruled_by = rid where q.id = qid;
@@ -910,19 +933,37 @@ begin
   perform set_config('cb.note', '', true);
 end $$;
 
+-- Did Q pid's delivery skip follow-up Q qid (or one above it)? Its last withdrawal says so (cb._dormant_withdraw's note).
+create function cb._skipped(qid bigint, pid bigint) returns boolean language sql stable as $$
+  select coalesce((select e.summary from cb.events e where e.question_id = qid and e.kind = 'withdrawn' order by e.id desc limit 1)
+                  like 'skipped: Q' || pid || ' answered %', false)
+$$;
+
 -- Q pid's answer is new or changed (not delivered yet): its follow-ups follow it.
 --  - open, unanswered follow-ups it no longer picks go back to dormant, and give back the task they held;
 --  - dormant follow-ups it picks (or with no if_answer) open, asked now so they sort fresh; blocking ones hold the task;
 --  - a follow-up it no longer picks that is already answered refuses the change (withdraw it first).
 -- The rest stay dormant until the answer is delivered (cb.answer_delivered skips them).
+-- A correction (#1346: the session was told an earlier answer, answer_history): what the told answer opened stays as it
+-- is (the session withdraws what is moot); a branch it skipped at delivery that the new answer picks comes back, with
+-- its skipped follow-ups dormant under it. One withdrawn otherwise (by its session) stays withdrawn.
 create function cb._followups_route(pid bigint) returns void language plpgsql as $$
 #variable_conflict use_variable
-declare par cb.questions; picked text[]; c record; t cb.tasks; h jsonb; live bigint;
+declare par cb.questions; picked text[]; c record; t cb.tasks; h jsonb; live bigint; lv bigint[];
 begin
   select * into par from cb.questions q where q.id = pid;
   picked := cb._picked(par.options, par.answer, par.multi);
+  if par.answer_history is not null then
+    lv := array(select x.id from cb.questions x where x.parent_id = pid and x.status = 'withdrawn' and x.if_answer = any(picked)
+                  and cb._skipped(x.id, pid));
+    while cardinality(lv) > 0 loop
+      update cb.questions x set status = 'dormant' where x.id = any(lv);
+      lv := array(select x.id from cb.questions x where x.parent_id = any(lv) and x.status = 'withdrawn' and cb._skipped(x.id, pid));
+    end loop;
+  end if;
   select q.id, q.if_answer, q.status into c from cb.questions q
    where q.parent_id = pid and q.status in ('answered', 'delivered') and q.if_answer is not null and q.if_answer <> all(picked)
+     and par.answer_history is null
    order by q.id limit 1;
   if found then
     raise exception 'Q% (the "%" follow-up) is already %; %', c.id, c.if_answer, c.status,
@@ -933,6 +974,7 @@ begin
   perform set_config('cb.note', 'waiting again: Q' || pid || ' now answered ' || left(par.answer, 100), true);
   for c in update cb.questions q set status = 'dormant', sent_back = null
             where q.parent_id = pid and q.status in ('open', 'sent_back') and q.if_answer is not null and q.if_answer <> all(picked)
+              and par.answer_history is null
             returning q.id, q.hold_before loop
     h := c.hold_before;
     continue when h is null;
@@ -970,6 +1012,9 @@ returns void language plpgsql as $$
 declare qid bigint := cb.norm_id(id);
 begin
   perform cb.set_actor(actor);
+  if exists (select 1 from cb.questions q where q.id = qid and q.status = 'answered' and q.answer_history is not null) then
+    raise exception 'Q% has a changed answer on its way to you: take it (cb pending) instead of withdrawing it', qid;
+  end if;
   update cb.questions q set status = 'withdrawn' where q.id = qid and q.status in ('open', 'answered', 'dormant', 'sent_back');
   if not found then raise exception 'question Q% not found or already delivered/withdrawn', qid; end if;
   perform cb._dormant_withdraw(array(select q.id from cb.questions q where q.parent_id = qid and q.status = 'dormant'),
@@ -1105,6 +1150,8 @@ begin
   -- the answer is final now: follow-ups it did not pick are skipped, down the chain
   perform cb._dormant_withdraw(array(select q.id from cb.questions q where q.parent_id = qid and q.status = 'dormant'),
                                'skipped: Q' || qid || ' answered ' || left(ans, 100));
+  -- a correction (#1346): its task was released when the first answer was delivered; what holds it now is not this
+  if exists (select 1 from cb.questions q where q.id = qid and q.answer_history is not null) then return; end if;
   -- the blockers lock (see cb.tasks_unblock) before deciding: a blocker finishing at the same moment either has
   -- committed (the statements below see it) or waits for this transaction and then sees blocked_on cleared
   perform pg_advisory_xact_lock(hashtext('cb.blockers:' || x.project))
@@ -1134,7 +1181,8 @@ begin
         'blocking', q.blocking, 'asked_by', q.asked_by, 'task_id', q.task_id, 'options', q.options, 'assigned_to', q.assigned_to) order by q.blocking desc, q.id)
       from cb.questions q where q.status = 'open' and (p is null or q.project = p)), '[]'),
     'answered_pending', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body,
-        'answer', q.answer, 'asked_by', q.asked_by, 'reply_to', q.reply_to, 'task_id', q.task_id) order by q.id)
+        'answer', q.answer, 'asked_by', q.asked_by, 'reply_to', q.reply_to, 'task_id', q.task_id,
+        'was', q.answer_history -> -1 ->> 'answer') order by q.id)
       from cb.questions q where q.status = 'answered' and (p is null or q.project = p)), '[]'),
     'broadcasts', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'actor', e.actor, 'project', e.project, 'summary', e.summary, 'at', e.at)
                                                order by e.id desc)
@@ -1209,7 +1257,7 @@ begin
                              and e.at > now() - interval '24 hours'), '[]'),
     -- the orchestrator (orch@*, same convention as huddle admin) gets a copy of Ahmed's answers to its workers
     'answer_copies', coalesce((select jsonb_agg(jsonb_build_object('event_id', e.id, 'id', q.id, 'task_id', q.task_id, 'asked_by', q.asked_by, 'answered_by', q.answered_by,
-                                                                   'body', q.body, 'answer', q.answer) order by e.id)
+                                                                   'body', q.body, 'answer', q.answer, 'was', e.data ->> 'was') order by e.id)
                                  from cb.events e join cb.questions q on q.id = e.question_id
                                 where e.kind = 'answered' and (me like 'orch@%' or me = 'orch') and e.project = proj
                                   and q.asked_by <> me and e.id > seen and e.at > now() - interval '24 hours'), '[]'),
@@ -1231,7 +1279,8 @@ begin
     'answers', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'task_id', q.task_id, 'project', q.project,
                                                              'body', q.body, 'answer', q.answer, 'answered_by', q.answered_by,
                                                              'parent_id', q.parent_id, 'parent_body', pq.body, 'parent_answer', pq.answer,
-                                                             'parent_answered_by', pq.answered_by) order by q.id)
+                                                             'parent_answered_by', pq.answered_by,
+                                                             'was', q.answer_history -> -1 ->> 'answer') order by q.id)
                            from cb.questions q left join cb.questions pq on pq.id = q.parent_id  -- a follow-up quotes what it followed
                           where q.status = 'answered' and ((lower(q.reply_to ->> 'machine') = m and q.reply_to ->> 'pane' = pane)
                                  or (coalesce(q.reply_to ->> 'pane', '') = '' and q.asked_by = me))), '[]'),

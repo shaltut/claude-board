@@ -113,8 +113,8 @@ app.use('/api/*', async (c, next) => {
     const safe = fn === 'answer' ? { id: String(id), answer: args.answer, actor: u.name }
       : fn === 'send_back' ? { id: String(id), reason: args.reason, note: args.note ?? null, actor: u.name }
       : { project: mine.project, summary: args.summary, task_id: String(id), actor: u.name };
-    // cb.send_back is the dashboard's (cb.dashboard_only): the guest's question and name are checked above
-    return c.json({ ok: true, result: fn === 'send_back'
+    // cb.send_back and changing a delivered answer (#1346) are the dashboard's: the guest's question and name are checked above
+    return c.json({ ok: true, result: fn !== 'log'
       ? await sql.begin(async (tx) => { await tx`set local application_name = 'cb-web'`; return callFn(fn, safe, tx); })
       : await callFn(fn, safe) });
   } catch (e: any) {
