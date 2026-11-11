@@ -329,7 +329,8 @@ async function run(): Promise<unknown> {
       if (sub === 'add' || sub === 'remove') {
         need(2, 'github add <owner/repo> [--to orch@shaltoot] [--project ihop]   or   cb github remove <owner/repo>');
         const repo = args[1], key = `github:${repo}`;
-        if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`"${repo}" is not owner/repo, e.g. cb github add TachyHealth/iHop-Platform`);
+        // no part starting with a dot: ../.., .github/x and owner/.. never reach gh as a path
+        if (!/^[\w-][\w.-]*\/[\w-][\w.-]*$/.test(repo)) throw new Error(`"${repo}" is not owner/repo, e.g. cb github add TachyHealth/iHop-Platform`);
         return await sql.begin(async (tx: any) => {
           // What the board watches, and whom it tells, is Ahmed's call: the same guard as his People and Epics pages
           // (a session pointing it at another repo Ahmed's gh reads would pour that text onto a board guests see)
