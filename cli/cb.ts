@@ -351,7 +351,7 @@ async function run(): Promise<unknown> {
         });
       }
       if (sub) throw new Error(`unknown github command "${sub}": cb github lists, cb github add <owner/repo>, cb github remove <owner/repo>`);
-      const rows = await sql`select key, value from cb.settings where key like 'github:%' order by key`;
+      const rows = await sql`select key, value from cb.settings where key like 'github:%' and key not like 'github:outbox:%' order by key`;
       const out = rows.map(({ key, value: v }: any) => {
         const cards = Object.entries(v.prs ?? {});
         return [`${key.slice(7)} → ${v.to} (${v.project}) · last poll ${v.last_ok ? `${dur((Date.now() - Date.parse(v.last_ok)) / 60000)} ago` : 'never'} · since ${v.since}` +

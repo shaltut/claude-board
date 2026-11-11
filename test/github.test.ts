@@ -320,6 +320,27 @@ test('at most one message per poll: three PRs over two repos give exactly one te
   assert.equal((await tells(sql)).length, 1);
 });
 
+test('a tell that fails keeps the outbox: its lines are sent with the next cycle, once; the outbox is no watched repo', async () => {
+  const { sql } = await board();
+  await sql`update cb.settings set value = value || ${sql.json({ to: 'orch@nowhere' })} where key = ${'github:' + R}`;
+  const f = fakeGh({ [`repos/${R}/commits`]: () => ({ pages: [[{ sha: 'abc', html_url: `${WEB}/commit/abc`, author: { login: 'dev1' },
+    commit: { message: 'hotfix', author: { name: 'x', date: at(9) }, committer: { date: at(9) } } }]] }) });
+  assert.equal(await gh.pollAll({ run: f.run, now: NOW }), true, 'the repo itself polled fine');
+  const held = (await sql`select value from cb.settings where key = 'github:outbox:orch@nowhere'`)[0]?.value;
+  assert.equal(held?.length, 1, 'tell refused (unknown session): the lines wait in the outbox');
+  assert.match(held[0], /default branch: 1 commit by dev1\. .*"hotfix"/);
+  assert.equal((await state(sql)).since, NEXT, 'the repo checkpoint moved: its lines are safe in the outbox');
+  assert.doesNotMatch(cb(['github']).out, /outbox/);
+  const calls = f.calls.length;
+  await sql`select cb.iam('shaltoot', 'p2', 'orch@nowhere', null)`;
+  await gh.pollAll({ run: fakeGh().run, now: new Date(+NOW + 180_000) });
+  assert.equal(f.calls.length, calls, 'the outbox is not polled as a repo');
+  const m = (await sql`select summary from cb.events where kind = 'message' and data ->> 'to' = 'orch@nowhere'`).map((e: any) => e.summary);
+  assert.equal(m.length, 1);
+  assert.match(m[0], /"hotfix"/);
+  assert.equal((await sql`select count(*)::int as n from cb.settings where key like 'github:outbox:%'`)[0].n, 0, 'sent, then cleared');
+});
+
 test('one failing repo does not slow the others: the back-off waits only when every repo failed', async () => {
   const { sql } = await board();
   await sql`insert into cb.settings (key, value) values ('github:TachyHealth/typo-repo', ${sql.json({ since: T0, to: 'orch@shaltoot', project: 'ihop', prs: {} })})`;
