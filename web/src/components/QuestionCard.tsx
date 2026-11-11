@@ -29,6 +29,7 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
   const [busy, setBusy] = useState<string | null>(null)
   const [cleared, setCleared] = useState(false)
   const [showPrev, setShowPrev] = useState(false)
+  const [armed, setArmed] = useState<BackReason | null>(null) // a send-back that would take typed text as its note asks twice
   const prev = q.versions?.at(-1)
   const rewrote = prev && BACK_REASONS.find((r) => r.key === prev.reason)?.past
 
@@ -58,6 +59,9 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
     if (busy) return
     const note = text.trim()
     if (reason === 'clarify' && !note) return toast.error('Type your question for the session in the box first, then tap Ask a question.')
+    // review: a mis-tap aimed at Send would turn a typed answer into a send-back note; the first tap only arms it
+    if (note && reason !== 'clarify' && armed !== reason) { setArmed(reason); setTimeout(() => setArmed((r) => (r === reason ? null : r)), 4000); return }
+    setArmed(null)
     setBusy(`__back:${reason}`)
     try {
       await rpc('send_back', { id: String(q.id), reason, note: note || null })
@@ -194,15 +198,16 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
           </Button>
         </div>
         {!cleared && (
-          <div className="mt-1.5 -ml-1.5 flex flex-wrap items-center gap-1">
+          <div className="mt-1.5 -ml-1.5 flex flex-wrap items-center gap-1.5">
             {!guest && <AlreadyRuled q={q} disabled={!!busy} onPick={(m) => send(`Already ruled: M${m.id} ${m.title}`, '__ruled', m.id)} />}
             <span className="ml-1.5 inline-flex items-center gap-1 px-0.5 text-xs text-muted-foreground" title={`Back to ${guest ? 'whoever asked' : q.asked_by} to rewrite; it comes back here. A note typed above rides along.`}>
               <Undo2 className="size-3" /> Send back:
             </span>
             {BACK_REASONS.map((r) => (
               <button key={r.key} disabled={!!busy} onClick={() => sendBack(r.key)}
-                className="inline-flex items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-raised hover:text-foreground disabled:opacity-50">
-                {busy === `__back:${r.key}` && <Loader2 className="size-3 animate-spin" />}{r.label}
+                className={cn('inline-flex min-h-8 items-center gap-1 rounded px-2 text-xs text-muted-foreground hover:bg-raised hover:text-foreground disabled:opacity-50',
+                  armed === r.key && 'bg-raised font-medium text-foreground')}>
+                {busy === `__back:${r.key}` && <Loader2 className="size-3 animate-spin" />}{armed === r.key ? `${r.label}: tap again, your text goes as the note` : r.label}
               </button>
             ))}
           </div>

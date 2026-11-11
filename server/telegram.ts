@@ -71,10 +71,18 @@ export function compose(q: Q, picked: string[] = [], outcome?: string) {
       ? { text: `${picked.includes(o.label) ? '[x]' : '[ ]'} ${o.label}`, callback_data: `t:${q.id}:${i}` }
       : { text: o.label, callback_data: `o:${q.id}:${i}` }]),
     ...(q.multi && opts.length ? [[{ text: picked.length ? `Send (${picked.length})` : 'Send', callback_data: `s:${q.id}` }]] : []),
-    ...(q.hands?.length ? [q.hands.map((u) => ({ text: `Hand to ${u.display}`, callback_data: `h:${q.id}:${u.name}` }))] : []),
+    ...hands(q),
     Object.entries(REASONS).map(([k, v]) => ({ text: v, callback_data: `b:${q.id}:${k}` })),
   ];
   return { text, reply_markup: { inline_keyboard: rows } };
+}
+
+/** Hand to rows, 3 a row: Telegram refuses the whole message for a row over 8 or callback_data over 64 bytes (a name
+ *  too long for that is left to the dashboard's For picker). */
+function hands(q: Q): Button[][] {
+  const b = (q.hands ?? []).map((u) => ({ text: `Hand to ${u.display}`, callback_data: `h:${q.id}:${u.name}` }))
+    .filter((x) => Buffer.byteLength(x.callback_data) <= 64);
+  return Array.from({ length: Math.ceil(b.length / 3) }, (_, i) => b.slice(i * 3, i * 3 + 3));
 }
 
 /** What a closed message says, from the question as it is now. */
