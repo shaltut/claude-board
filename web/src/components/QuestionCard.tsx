@@ -286,12 +286,16 @@ export function SentBackRow({ q, guest }: { q: Question; guest?: boolean }) {
 function AssignPicker({ q }: { q: Question }) {
   const qc = useQueryClient()
   const { data: all = [] } = useUsers()
-  const users = onProject(all, q.project, q.assigned_to) // only people on this question's project can take it
-  if (!users.length) return null
+  // Everyone is offered (#1369); only people on the question's project can answer it, so picking someone who isn't
+  // adds them to that project first, and the option says so (they then see that project's board, not just this one).
+  const on = new Set(onProject(all, q.project, q.assigned_to).map((u) => u.name))
+  if (!all.length) return null
   async function assign(to: string) {
+    const u = all.find((x) => x.name === to)
     try {
+      if (to && !on.has(to)) await rpc('user_project_add', { name: to, project: q.project })
       await rpc('question_assign', { id: String(q.id), to_user: to || null })
-      toast.success(to ? `Q${q.id} is now for ${users.find((u) => u.name === to)?.display ?? to}` : `Q${q.id} is back with you`)
+      toast.success(to ? `Q${q.id} is now for ${u?.display ?? to}${on.has(to) ? '' : `, added to ${q.project}`}` : `Q${q.id} is back with you`)
       await qc.invalidateQueries()
     } catch (e: any) {
       toast.error(`Could not reassign Q${q.id}`, { description: e.message })
@@ -303,7 +307,7 @@ function AssignPicker({ q }: { q: Question }) {
       <select value={q.assigned_to ?? ''} onChange={(e) => assign(e.target.value)}
         className="h-6 rounded border bg-card px-1 text-xs text-foreground hover:border-input">
         <option value="">Ahmed</option>
-        {users.map((u) => <option key={u.name} value={u.name}>{u.display}</option>)}
+        {all.map((u) => <option key={u.name} value={u.name}>{u.display}{on.has(u.name) ? '' : ` (adds to ${q.project})`}</option>)}
       </select>
     </label>
   )
