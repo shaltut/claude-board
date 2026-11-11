@@ -886,6 +886,10 @@ begin
   end if;
   if cur = 'dormant' then raise exception 'Q% waits on Q%: it opens when that one is answered', qid, par; end if;
   if cur = 'sent_back' then raise exception 'Q% was sent back to %: it comes back when they rewrite it', qid, asker; end if;
+  -- Ahmed's answer is his until delivered too: a guest (or session) answering after him would overwrite it
+  if cur = 'answered' and cb.ahmed_like(prev) and not cb.ahmed_like(a) then
+    raise exception 'Q% was answered by Ahmed: only he can change it', qid;
+  end if;
   update cb.questions q set status = 'answered', answer = trim(answer), answered_at = now(), answered_by = a, ruled_by = rid where q.id = qid;
   perform cb._followups_route(qid);  -- first answer or a change: the follow-ups follow it
 end $$;

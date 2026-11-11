@@ -100,6 +100,21 @@ test("a guest changes only a delivered answer they gave: not Ahmed's on their qu
   assert.equal((await q(sql, mine)).answer, 'C');
 });
 
+test("Ahmed's answer, not yet delivered, is his: a guest's answer to it is refused; their own stays theirs to edit", async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'seed')`;
+  await sql`select cb.user_add('omar', 'Omar')`;
+  await onProject(sql, 'omar', 'demo');
+  const his = await ask(sql, { body: 'E3?', to: 'omar' });
+  const mine = await ask(sql, { body: 'E4?', to: 'omar' });
+  await sql`select cb.answer(${String(his)}, 'A', 'ahmed')`;
+  await assert.rejects(sql`select cb.answer(${String(his)}, 'B', 'omar')`, /Q\d+ was answered by Ahmed: only he can change it/);
+  assert.deepEqual([(await q(sql, his)).answer, (await q(sql, his)).answered_by], ['A', 'ahmed']);
+  await sql`select cb.answer(${String(mine)}, 'A', 'omar')`;
+  await sql`select cb.answer(${String(mine)}, 'B', 'omar')`;
+  assert.equal((await q(sql, mine)).answer, 'B');
+});
+
 test('a pending correction edited again: the branch it opened waits again (giving its task back); the new one opens', async () => {
   const sql = await db();
   await sql`select cb.task_add(project => 'demo', title => 'build it', assignee => 'W1', status => 'in_progress', actor => 'W1')`;
