@@ -28,9 +28,6 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
   const [showContext, setShowContext] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [cleared, setCleared] = useState(false)
-  const [backing, setBacking] = useState(false) // the send-back picker is open (#616)
-  const [reason, setReason] = useState<BackReason | null>(null)
-  const [note, setNote] = useState('')
   const [showPrev, setShowPrev] = useState(false)
   const prev = q.versions?.at(-1)
   const rewrote = prev && BACK_REASONS.find((r) => r.key === prev.reason)?.past
@@ -55,12 +52,15 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
     }
   }
 
-  /** Back to the asking session for a rewrite: it leaves the list like an answer does. clarify carries his question. */
-  async function sendBack() {
-    if (!reason || busy || (reason === 'clarify' && !note.trim())) return
-    setBusy('__back')
+  /** Back to the asking session for a rewrite, one tap per reason like Telegram (#1206): it leaves the list like an
+   *  answer does. Whatever is typed in the box rides along as the note; clarify needs it (it is his question). */
+  async function sendBack(reason: BackReason) {
+    if (busy) return
+    const note = text.trim()
+    if (reason === 'clarify' && !note) return toast.error('Type your question for the session in the box first, then tap Ask a question.')
+    setBusy(`__back:${reason}`)
     try {
-      await rpc('send_back', { id: String(q.id), reason, note: note.trim() || null })
+      await rpc('send_back', { id: String(q.id), reason, note: note || null })
       onClearing?.(q)
       setCleared(true)
       toast.success(`Sent Q${q.id} back`, { description: 'It comes back here once the session rewrites it.' })
@@ -196,33 +196,15 @@ export function QuestionCard({ q, onAnswered, onClearing, onCleared, guest }: {
         {!cleared && (
           <div className="mt-1.5 -ml-1.5 flex flex-wrap items-center gap-1">
             {!guest && <AlreadyRuled q={q} disabled={!!busy} onPick={(m) => send(`Already ruled: M${m.id} ${m.title}`, '__ruled', m.id)} />}
-            <button disabled={!!busy} onClick={() => setBacking((b) => !b)} aria-expanded={backing}
-              className="inline-flex items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-raised hover:text-foreground disabled:opacity-50">
-              <Undo2 className="size-3" /> Send back
-            </button>
-          </div>
-        )}
-        {backing && !cleared && (
-          <div className="mt-2 grid gap-2 rounded-md border bg-background/50 p-3">
-            <p className="text-xs text-muted-foreground">Not answerable yet? It goes back to {guest ? 'whoever asked' : q.asked_by} to rewrite, and comes back here.</p>
-            <div className="flex w-fit flex-wrap rounded-md border bg-card p-0.5" role="radiogroup" aria-label="Why it goes back">
-              {BACK_REASONS.map((r) => (
-                <button key={r.key} role="radio" aria-checked={reason === r.key} onClick={() => setReason(r.key)}
-                  className={cn('rounded px-2.5 py-1 text-sm transition-colors', reason === r.key ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground')}>
-                  {r.label}
-                </button>
-              ))}
-            </div>
-            <div className="flex items-end gap-2">
-              <VoiceTextarea value={note} onValue={setNote} voice={!guest} rows={1} aria-label={`Note sending Q${q.id} back`}
-                onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendBack() } }}
-                placeholder={reason === 'clarify' ? 'Your question (required)…' : 'A note for the session (optional)…'}
-                className="min-h-9 resize-y bg-background/50 text-sm" />
-              <Button variant="outline" disabled={!reason || !!busy || (reason === 'clarify' && !note.trim())} onClick={sendBack} className="h-9 shrink-0 gap-1.5">
-                {busy === '__back' && <Loader2 className="size-3.5 animate-spin" />}
-                Send back
-              </Button>
-            </div>
+            <span className="ml-1.5 inline-flex items-center gap-1 px-0.5 text-xs text-muted-foreground" title={`Back to ${guest ? 'whoever asked' : q.asked_by} to rewrite; it comes back here. A note typed above rides along.`}>
+              <Undo2 className="size-3" /> Send back:
+            </span>
+            {BACK_REASONS.map((r) => (
+              <button key={r.key} disabled={!!busy} onClick={() => sendBack(r.key)}
+                className="inline-flex items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-raised hover:text-foreground disabled:opacity-50">
+                {busy === `__back:${r.key}` && <Loader2 className="size-3 animate-spin" />}{r.label}
+              </button>
+            ))}
           </div>
         )}
       </div>
