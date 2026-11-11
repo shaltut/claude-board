@@ -13,6 +13,8 @@ export type Run = (args: string[]) => Promise<string>;
 type Opts = { run?: Run; now?: Date; logTask?: number };
 
 const KEY = 'github:', ACTOR = 'github', LABEL = '[GitHub · untrusted]';
+// [logins] Ahmed muted (cb github mute): his own iHop workers post as one; what they open, say or commit is dropped
+const MUTED = 'github-muted';
 const OUTBOX = 'github:outbox:'; // + target session: [message parts] written by the repos, not yet told (no '/': never a repo)
 // ponytail: a fixed margin for GitHub's indexing lag and clock skew; an event GitHub shows later than this is missed.
 const LAG = 10_000;
@@ -24,7 +26,8 @@ const FOOTER = 'Read each on its card (cb show <card>) or with gh pr view <n> --
 const WATCH_TASK = 1207; // failures and recoveries are noted here
 const KINDS = ['opened', 'merged', 'closed', 'comment', 'review comment', 'approval', 'change request', 'review', 'CI failure', 'commit'] as const;
 type Kind = (typeof KINDS)[number];
-type Ev = { pr: number | null; branch?: string; kind: Kind; login: string | null; assoc: string | null; text: string; url: string; at: number };
+// quiet: the merge or close of a muted login's PR, told only when the PR has a card (someone else spoke on it)
+type Ev = { pr: number | null; branch?: string; kind: Kind; login: string | null; assoc: string | null; text: string; url: string; at: number; quiet?: boolean };
 
 let stop: AbortController | null = null;
 let loop: Promise<void> | null = null;
@@ -59,7 +62,7 @@ const cut = (v: string, n: number) => v.length > n ? v.slice(0, n - 1).replace(/
 const isBot = (login: unknown) => /\[bot\]$/i.test(String(login ?? ''));
 
 /** Everything GitHub has in [since, until), read into memory first: a failure here writes nothing. */
-async function fetchEvents(repo: string, since: number, until: number, run: Run) {
+async function fetchEvents(repo: string, since: number, until: number, run: Run, muted: Set<string>) {
   const api = async (path: string, all = true) => pages(await run(['api', ...(all ? ['--paginate', '--slurp'] : []), `repos/${repo}/${path}`]));
   // whole seconds, as GitHub writes them, rounded down: the window above does the exact cut
   const iso = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).toISOString().replace('.000Z', 'Z');
@@ -85,15 +88,18 @@ async function fetchEvents(repo: string, since: number, until: number, run: Run)
   const commits = await api(`commits?since=${s}&per_page=100`);
 
   const evs: Ev[] = [];
+  // a failed run is GitHub's own report, whoever pushed: never muted
+  const mute = (e: Omit<Ev, 'at'>) => e.kind !== 'CI failure' && muted.has(String(e.login ?? '').toLowerCase());
   const add = (e: Omit<Ev, 'at'> & { at: unknown }, bot = isBot(e.login)) => {
     const t = Date.parse(String(e.at));
-    if (t >= since && t < until && !bot) evs.push({ ...e, at: t, text: String(e.text ?? '') });
+    if (t >= since && t < until && !bot && !mute(e)) evs.push({ ...e, at: t, text: String(e.text ?? '') });
   };
   for (const p of pulls.values()) {
     const pr = p.number, bot = isBot(p.user?.login); // a bot's PR: its opening, merge and close are noise
+    const quiet = muted.has(String(p.user?.login ?? '').toLowerCase());
     add({ pr, kind: 'opened', login: p.user?.login, assoc: p.author_association, text: p.body, url: p.html_url, at: p.created_at }, bot);
-    if (p.merged_at) add({ pr, kind: 'merged', login: null, assoc: null, text: '', url: p.html_url, at: p.merged_at }, bot);
-    else if (p.closed_at) add({ pr, kind: 'closed', login: null, assoc: null, text: '', url: p.html_url, at: p.closed_at }, bot);
+    if (p.merged_at) add({ pr, kind: 'merged', login: null, assoc: null, text: '', url: p.html_url, at: p.merged_at, quiet }, bot);
+    else if (p.closed_at) add({ pr, kind: 'closed', login: null, assoc: null, text: '', url: p.html_url, at: p.closed_at, quiet }, bot);
   }
   for (const [p, rs] of reviews) for (const r of rs) {
     const kind = r.state === 'APPROVED' ? 'approval' : r.state === 'CHANGES_REQUESTED' ? 'change request'
@@ -189,7 +195,7 @@ async function write(tx: any, f: Fetched, until: number, now: Date, task: number
   // closed only if it closed inside this slice or before: a merge GitHub already shows but after the slice's end is
   // the next slice's event, and closing now would make that slice open a second card for it
   const shut = (p: any) => p?.state === 'closed' && Date.parse(p.closed_at) < until;
-  const lines: string[] = [], gs = groups(evs, pulls);
+  const lines: string[] = [], gs = groups(evs, pulls).filter((g) => g.pr === null || prs[g.pr] || !g.evs.every((e) => e.quiet));
   for (const g of gs) {
     const l = line(name, g, pulls);
     let card = g.pr !== null ? prs[g.pr] : undefined, closed = false;
@@ -268,12 +274,14 @@ async function poll(o: Opts, only?: string): Promise<Map<string, Result>> {
   const now = o.now ?? new Date(), until = +now - LAG, task = o.logTask ?? WATCH_TASK, results = new Map<string, Result>();
   const rows = only ? await sql`select key, value from cb.settings where key = ${KEY + only}`
     : await sql`select key, value from cb.settings where key like ${KEY + '%'} and key not like ${OUTBOX + '%'} order by key`;
+  const [m] = await sql`select value from cb.settings where key = ${MUTED}`;
+  const muted = new Set<string>((m?.value ?? []).map((x: string) => String(x).toLowerCase()));
   for (const r of rows) {
     const repo = r.key.slice(KEY.length), since = Date.parse(r.value.since), slice = Math.min(until, since + SLICE);
     results.set(repo, { ok: true, events: 0 });
     if (!(slice > since)) continue; // just added: nothing to ask for yet
     try {
-      const f: Fetched = { repo, since: r.value.since, ...(await fetchEvents(repo, since, slice, o.run ?? ghRun)) };
+      const f: Fetched = { repo, since: r.value.since, ...(await fetchEvents(repo, since, slice, o.run ?? ghRun, muted)) };
       await sql.begin((tx: any) => write(tx, f, slice, now, task));
       results.set(repo, { ok: true, events: f.evs.length });
     } catch (e) { results.set(repo, await failed(repo, e, now, task)); }

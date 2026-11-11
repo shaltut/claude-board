@@ -351,14 +351,35 @@ async function run(): Promise<unknown> {
           return { out: `watching ${repo}: ${r.value.to} is told, PR cards go in ${r.value.project}, events from ${r.value.since} on`, json: r.value };
         });
       }
-      if (sub) throw new Error(`unknown github command "${sub}": cb github lists, cb github add <owner/repo>, cb github remove <owner/repo>`);
+      if (sub === 'mute' || sub === 'unmute') {
+        // a login whose PRs, comments, reviews and commits the watch drops (Ahmed's own workers post as one): his call
+        need(2, 'github mute <login>   or   cb github unmute <login>');
+        const login = args[1].toLowerCase();
+        if (!/^[a-z0-9](?:[a-z0-9-]{0,38})$/.test(login)) throw new Error(`"${args[1]}" is not a GitHub login`);
+        return await sql.begin(async (tx: any) => {
+          await tx`select cb.dashboard_only('GitHub')`.catch(() => {
+            throw new Error(`only Ahmed mutes or unmutes GitHub logins: ask him to (cb ask), saying which login and why`);
+          });
+          const [r] = await tx`select value from cb.settings where key = 'github-muted' for update`;
+          const cur: string[] = r?.value ?? [];
+          if (sub === 'unmute' && !cur.includes(login)) throw new Error(`${login} is not muted: cb github lists the muted logins`);
+          const next = sub === 'mute' ? [...new Set([...cur, login])].sort() : cur.filter((x) => x !== login);
+          await tx`insert into cb.settings (key, value) values ('github-muted', ${tx.json(next)})
+                   on conflict (key) do update set value = excluded.value`;
+          return { out: sub === 'mute' ? `muted ${login}: its PRs, comments, reviews and commits no longer reach the watch (failed CI runs still do)`
+            : `unmuted ${login}`, json: next };
+        });
+      }
+      if (sub) throw new Error(`unknown github command "${sub}": cb github lists, cb github add <owner/repo>, cb github remove <owner/repo>, cb github mute <login>`);
       const rows = await sql`select key, value from cb.settings where key like 'github:%' and key not like 'github:outbox:%' order by key`;
+      const [mu] = await sql`select value from cb.settings where key = 'github-muted'`;
       const out = rows.map(({ key, value: v }: any) => {
         const cards = Object.entries(v.prs ?? {});
         return [`${key.slice(7)} → ${v.to} (${v.project}) · last poll ${v.last_ok ? `${dur((Date.now() - Date.parse(v.last_ok)) / 60000)} ago` : 'never'} · since ${v.since}` +
           (v.last_error ? ` · last error: ${flat(v.last_error.message)} (since ${v.last_error.at})` : ''),
           ...(cards.length ? [`  open PR cards: ${cards.map(([n, id]) => `PR #${n} → card #${id}`).join(', ')}`] : [])].join('\n');
       });
+      if (mu?.value?.length) out.push(`muted (their events are dropped): ${mu.value.join(', ')}`);
       return { out: out.join('\n') || 'no repos watched (Ahmed adds them: cb github add <owner/repo>)', json: rows.map((r: any) => ({ repo: r.key.slice(7), ...r.value })) };
     }
     case 'assign': {
