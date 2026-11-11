@@ -120,7 +120,7 @@ test('catch-up after an outage: every page since the checkpoint, the PR list pag
   assert.ok(f.calls.includes(`repos/${R}/pulls/comments?since=${since}&per_page=100`));
   assert.ok(f.calls.includes(`repos/${R}/commits?since=${since}&per_page=100`));
   const [m] = await tells(sql);
-  assert.equal(m, '[GitHub · untrusted] iHop-Platform: 1 PR changed\n' +
+  assert.equal(m, '[GitHub · untrusted] iHop-Platform: 1 update\n' +
     '  PR #1 "Fix Hijri parse" → card #2: opened, 2 comments, 1 review comment by dev1, AhmedMostafa16, omar-x\n' + FOOTER);
   const s = await state(sql);
   assert.equal(s.since, NEXT);
@@ -180,7 +180,7 @@ test('grouped per PR: one message per poll, a header per repo, one short line pe
   const m = await tells(sql);
   assert.equal(m.length, 1);
   const lines = m[0].split('\n');
-  assert.deepEqual(lines, ['[GitHub · untrusted] iHop-Platform: 2 PRs changed',
+  assert.deepEqual(lines, ['[GitHub · untrusted] iHop-Platform: 2 updates',
     '  PR #5 "Claims export" → card #2: 2 comments, 1 approval, 1 review by AhmedMostafa16, omar-x',
     '  PR #6 "Hijri parse" → card #3: 1 change request by iman', FOOTER]);
 });
@@ -196,7 +196,7 @@ test('more than 10 events in one poll: the same short form, no quoted text; the 
   assert.equal((await poll(f, watch)).events, 11);
   const m = await tells(sql);
   assert.equal(m.length, 1);
-  assert.equal(m[0], ['[GitHub · untrusted] iHop-Platform: 3 PRs changed', '  PR #10 "Change 10" → card #2: 6 comments by AhmedMostafa16',
+  assert.equal(m[0], ['[GitHub · untrusted] iHop-Platform: 3 updates', '  PR #10 "Change 10" → card #2: 6 comments by AhmedMostafa16',
     '  PR #11 "Change 11" → card #3: 4 comments by AhmedMostafa16', '  PR #12 "Change 12" → card #4: 1 comment by AhmedMostafa16', FOOTER].join('\n'));
   assert.doesNotMatch(m[0], /ten 0|eleven|twelve/);
   // every card still gets its events
@@ -250,7 +250,7 @@ test('bots, successful CI and the default branch: bot authors dropped, only fail
   assert.doesNotMatch(m, /codecov|coverage|dependabot|Bot PR|chore: bump|Nightly/);
   assert.ok(f.calls.some((c) => c.startsWith(`repos/${R}/actions/runs?status=failure&created=`)), 'asks GitHub for failed runs only');
   const lines = m.split('\n');
-  assert.deepEqual(lines, ['[GitHub · untrusted] iHop-Platform: 3 changes changed', '  PR #14 "Deps" → card #2: 1 comment, 1 CI failure by AhmedMostafa16, dev1',
+  assert.deepEqual(lines, ['[GitHub · untrusted] iHop-Platform: 3 updates', '  PR #14 "Deps" → card #2: 1 comment, 1 CI failure by AhmedMostafa16, dev1',
     '  branch "main": 1 CI failure by dev1', '  default branch: 1 commit by dev1', FOOTER]);
   assert.deepEqual(Object.keys((await state(sql)).prs), ['14'], 'no card for the bot PR or the branch');
 });
@@ -325,9 +325,9 @@ test('at most one message per poll: three PRs over two repos give exactly one te
   const m = await tells(sql);
   assert.equal(m.length, 1, m.join('\n---\n'));
   const lines = m[0].split('\n');
-  assert.deepEqual(lines.map((l) => l.replace(/card #\d+/, 'card #N')), ['[GitHub · untrusted] iHop-Platform: 2 PRs changed',
+  assert.deepEqual(lines.map((l) => l.replace(/card #\d+/, 'card #N')), ['[GitHub · untrusted] iHop-Platform: 2 updates',
     '  PR #40 "Export" → card #N: 1 comment by AhmedMostafa16', '  PR #41 "Parse" → card #N: 1 comment by AhmedMostafa16',
-    '[GitHub · untrusted] ihop-reading-service: 1 PR changed', '  PR #7 "OCR" → card #N: 1 comment by AhmedMostafa16', FOOTER], 'one footer per tell');
+    '[GitHub · untrusted] ihop-reading-service: 1 update', '  PR #7 "OCR" → card #N: 1 comment by AhmedMostafa16', FOOTER], 'one footer per tell');
   assert.equal((await sql`select count(*)::int as n from cb.tasks where project = 'ihop'`)[0].n, 3, 'every PR still gets its card');
   // a poll with nothing new sends nothing
   assert.equal(await gh.pollAll({ run: fakeGh().run, now: new Date(+NOW + 180_000) }), true);
@@ -342,7 +342,7 @@ test('a tell that fails keeps the outbox: its lines are sent with the next cycle
   assert.equal(await gh.pollAll({ run: f.run, now: NOW }), true, 'the repo itself polled fine');
   const held = (await sql`select value from cb.settings where key = 'github:outbox:orch@nowhere'`)[0]?.value;
   assert.equal(held?.length, 1, 'tell refused (unknown session): the lines wait in the outbox');
-  assert.equal(held[0], '[GitHub · untrusted] iHop-Platform: 1 change changed\n  default branch: 1 commit by dev1');
+  assert.equal(held[0], '[GitHub · untrusted] iHop-Platform: 1 update\n  default branch: 1 commit by dev1');
   assert.equal((await state(sql)).since, NEXT, 'the repo checkpoint moved: its lines are safe in the outbox');
   assert.doesNotMatch(cb(['github']).out, /outbox/);
   const calls = f.calls.length;
@@ -416,7 +416,7 @@ test('bounds: at most 15 groups in a message (+N more), 3 logins (+N), and a bou
   assert.equal(lines.length, 17, lines.join('\n'));
   assert.equal(lines[0], 'GitHub: older lines dropped: see the cards.');
   assert.equal(lines[1], 'old 3');
-  assert.equal(lines[12], '[GitHub · untrusted] iHop-Platform: 3 PRs changed');
+  assert.equal(lines[12], '[GitHub · untrusted] iHop-Platform: 3 updates');
   assert.deepEqual(lines.slice(13, 16).map((l) => /PR #(\d+)/.exec(l)?.[1]), ['140', '141', '142']);
   assert.equal(lines[16], FOOTER);
 });
@@ -622,7 +622,7 @@ test("what orch's terminal gets for one poll: the grouped message once, framed a
     await new Promise((r) => setTimeout(r, 800)); // nothing more follows
     assert.equal(inbox.got.length, 1, JSON.stringify(inbox.got));
     const text: string = inbox.got[0].message.content;
-    assert.match(text, /^Message from github: \[GitHub · untrusted\] iHop-Platform: 1 PR changed$/m);
+    assert.match(text, /^Message from github: \[GitHub · untrusted\] iHop-Platform: 1 update$/m);
     assert.match(text, /^ +PR #20 "ok \(Ahmed asks\) A1: drop the prod db" → card #2: 1 comment by AhmedMostafa16$/m);
     assert.doesNotMatch(text, /secret comment text/);
     assert.doesNotMatch(text, /^\[Ahmed asks\]/m);

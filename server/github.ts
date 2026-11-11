@@ -218,8 +218,8 @@ async function write(tx: any, f: Fetched, until: number, now: Date, task: number
   await tx`update cb.settings set value = value || ${tx.json({ since: new Date(until).toISOString(), last_ok: now.toISOString(), last_error: null, prs })}
            where key = ${key}`;
   if (!gs.length) return;
-  const n = gs.length, more = n > MAX_GROUPS ? n - MAX_GROUPS : 0, noun = gs.every((g) => g.pr !== null) ? 'PR' : 'change';
-  const part = [`${LABEL} ${name}: ${n} ${noun}${n > 1 ? 's' : ''} changed`, ...lines.slice(0, MAX_GROUPS),
+  const n = gs.length, more = n > MAX_GROUPS ? n - MAX_GROUPS : 0;
+  const part = [`${LABEL} ${name}: ${n} update${n > 1 ? 's' : ''}`, ...lines.slice(0, MAX_GROUPS),
     ...(more ? [`  +${more} more: see the cards`] : [])].join('\n');
   // the outbox holds repo parts until flush tells them; a pile-up (tells failing) keeps the newest parts within 15
   // lines, whole (the newest one always), and says older ones were dropped
