@@ -850,10 +850,10 @@ create function cb.answer(id text, answer text default null, actor text default 
 returns void language plpgsql as $$
 #variable_conflict use_variable
 -- no cb.memories row type: it is created further down
-declare qid bigint := cb.norm_id(id); cur text; a text; par bigint; qp text; rid bigint; rst text; rp text; stale boolean; asker text;
+declare qid bigint := cb.norm_id(id); cur text; a text; par bigint; qp text; rid bigint; rst text; rp text; stale boolean; asker text; prev text;
 begin
   a := cb.set_actor(actor);
-  select q.status, q.parent_id, q.project, q.asked_by into cur, par, qp, asker from cb.questions q where q.id = qid for update;
+  select q.status, q.parent_id, q.project, q.asked_by, q.answered_by into cur, par, qp, asker, prev from cb.questions q where q.id = qid for update;
   if cur is null then raise exception 'question Q% not found', qid; end if;
   if nullif(trim(ruled_by), '') is not null then
     perform cb.dashboard_only('Today');  -- the metric counts Ahmed's "Already ruled", and the answer carries his authority
@@ -869,6 +869,10 @@ begin
   if cur = 'delivered' then
     if current_setting('application_name') <> 'cb-web' then
       raise exception 'question Q% is already delivered: only Ahmed (or the person it is for) can change it, on the dashboard', qid;
+    end if;
+    -- a guest corrects their own answer, never Ahmed's (or another's) on a question handed to them
+    if not cb.ahmed_like(a) and a is distinct from prev then
+      raise exception 'Q% was answered by %: only they or Ahmed can change it', qid, coalesce(prev, 'someone else');
     end if;
     if exists (select 1 from cb.questions q where q.id = qid and q.answer = trim(answer)) then return; end if;
     update cb.questions q set status = 'answered',
@@ -949,11 +953,14 @@ $$;
 -- its skipped follow-ups dormant under it. One withdrawn otherwise (by its session) stays withdrawn.
 create function cb._followups_route(pid bigint) returns void language plpgsql as $$
 #variable_conflict use_variable
-declare par cb.questions; picked text[]; c record; t cb.tasks; h jsonb; live bigint; lv bigint[];
+declare par cb.questions; picked text[]; c record; t cb.tasks; h jsonb; live bigint; lv bigint[]; opened bigint[] := '{}';
 begin
   select * into par from cb.questions q where q.id = pid;
   picked := cb._picked(par.options, par.answer, par.multi);
   if par.answer_history is not null then
+    -- what this correction opened so far (answer_history's last entry, the told answer, keeps it): edited again, the
+    -- ones it no longer picks wait again below, as an undelivered answer's do
+    opened := array(select x::bigint from jsonb_array_elements_text(coalesce(par.answer_history -> -1 -> 'opened', '[]')) x);
     lv := array(select x.id from cb.questions x where x.parent_id = pid and x.status = 'withdrawn' and x.if_answer = any(picked)
                   and cb._skipped(x.id, pid));
     while cardinality(lv) > 0 loop
@@ -974,7 +981,7 @@ begin
   perform set_config('cb.note', 'waiting again: Q' || pid || ' now answered ' || left(par.answer, 100), true);
   for c in update cb.questions q set status = 'dormant', sent_back = null
             where q.parent_id = pid and q.status in ('open', 'sent_back') and q.if_answer is not null and q.if_answer <> all(picked)
-              and par.answer_history is null
+              and (par.answer_history is null or q.id = any(opened))
             returning q.id, q.hold_before loop
     h := c.hold_before;
     continue when h is null;
@@ -996,6 +1003,7 @@ begin
   for c in update cb.questions q set status = 'open', created_at = now(), hold_before = null, sent_back = null
             where q.parent_id = pid and q.status = 'dormant' and (q.if_answer is null or q.if_answer = any(picked))
             returning q.id, q.blocking, q.task_id loop
+    opened := opened || c.id;
     if c.blocking and c.task_id is not null then  -- as cb.ask does, unless the task finished while it waited
       select * into t from cb.tasks x where x.id = c.task_id for update;
       if found and t.status not in ('done', 'cancelled') then
@@ -1006,6 +1014,11 @@ begin
       end if;
     end if;
   end loop;
+  if par.answer_history is not null then
+    update cb.questions q set answer_history = jsonb_set(q.answer_history, '{-1,opened}',
+             to_jsonb(array(select x.id from cb.questions x where x.id = any(opened) and x.status in ('open', 'sent_back') order by x.id)))
+     where q.id = pid;
+  end if;
 end $$;
 
 create function cb.withdraw(id text, actor text default null)
@@ -1014,7 +1027,7 @@ returns void language plpgsql as $$
 declare qid bigint := cb.norm_id(id);
 begin
   perform cb.set_actor(actor);
-  if exists (select 1 from cb.questions q where q.id = qid and q.status = 'answered' and q.answer_history is not null) then
+  if not cb._is_dashboard() and exists (select 1 from cb.questions q where q.id = qid and q.status = 'answered' and q.answer_history is not null) then
     raise exception 'Q% has a changed answer on its way to you: take it (cb pending) instead of withdrawing it', qid;
   end if;
   update cb.questions q set status = 'withdrawn' where q.id = qid and q.status in ('open', 'answered', 'dormant', 'sent_back');
@@ -1131,14 +1144,16 @@ end $$;
 
 -- Orchestrator: answer handed to the session. Idempotent. Unblocks the task.
 -- sent_back_at (#616): the relay delivers that send-back only (its sent_back.at); a question rewritten (or sent back
--- again) since is left as it is, quietly.
-create function cb.answer_delivered(id text, delivered_to text default null, actor text default null, sent_back_at text default null)
+-- again) since is left as it is, quietly. answered_at (#1346), likewise: the answer it pushed; one changed since is
+-- left answered, and the next push carries it. Without it (cb delivered), the answer as it is now.
+create function cb.answer_delivered(id text, delivered_to text default null, actor text default null, sent_back_at text default null,
+                                    answered_at text default null)
 returns void language plpgsql as $$
 #variable_conflict use_variable
-declare qid bigint := cb.norm_id(id); cur text; ans text;
+declare qid bigint := cb.norm_id(id); cur text; ans text; at_ timestamptz;
 begin
   perform cb.set_actor(actor);
-  select q.status, q.answer into cur, ans from cb.questions q where q.id = qid for update;
+  select q.status, q.answer, q.answered_at into cur, ans, at_ from cb.questions q where q.id = qid for update;
   if cur is null then raise exception 'question Q% not found', qid; end if;
   if cur = 'delivered' then return; end if;
   if cur = 'sent_back' then  -- the asker was told (#616); the question waits for its rewrite and keeps holding its task
@@ -1148,6 +1163,7 @@ begin
   end if;
   if sent_back_at is not null then return; end if;
   if cur <> 'answered' then raise exception 'question Q% is %, not answered', qid, cur; end if;
+  if answered_at is not null and at_ is distinct from answered_at::timestamptz then return; end if;
   update cb.questions q set status = 'delivered', delivered_at = now(), delivered_to = delivered_to where q.id = qid;
   -- the answer is final now: follow-ups it did not pick are skipped, down the chain
   perform cb._dormant_withdraw(array(select q.id from cb.questions q where q.parent_id = qid and q.status = 'dormant'),
@@ -1282,7 +1298,7 @@ begin
                                                              'body', q.body, 'answer', q.answer, 'answered_by', q.answered_by,
                                                              'parent_id', q.parent_id, 'parent_body', pq.body, 'parent_answer', pq.answer,
                                                              'parent_answered_by', pq.answered_by,
-                                                             'was', q.answer_history -> -1 ->> 'answer') order by q.id)
+                                                             'was', q.answer_history -> -1 ->> 'answer', 'answered_at', q.answered_at) order by q.id)
                            from cb.questions q left join cb.questions pq on pq.id = q.parent_id  -- a follow-up quotes what it followed
                           where q.status = 'answered' and ((lower(q.reply_to ->> 'machine') = m and q.reply_to ->> 'pane' = pane)
                                  or (coalesce(q.reply_to ->> 'pane', '') = '' and q.asked_by = me))), '[]'),

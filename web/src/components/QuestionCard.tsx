@@ -224,6 +224,7 @@ export function ChangeAnswer({ q, onDone }: { q: Question; onDone: () => void })
   const qc = useQueryClient()
   const [text, setText] = useState(q.answer ?? '')
   async function save() {
+    if (text.trim() === (q.answer ?? '').trim()) { toast('No change: same answer'); return onDone() }
     try {
       await rpc('answer', { id: q.id, answer: text })
       toast.success(`Changed the answer to Q${q.id}`, q.status === 'delivered' ? { description: 'The session gets it as a correction.' } : undefined)

@@ -129,7 +129,7 @@ export async function huddle(id: number) {
 
 /** A guest's own page: questions handed to them (open, and answered this week) and their open tasks, on their projects. */
 export async function me(user: string, scope: ReturnType<typeof sql>) {
-  const [questions, tasks] = await Promise.all([
+  const [rows, tasks] = await Promise.all([
     sql`select q.*, ${followups(user)} from cb.questions q where assigned_to = ${user} and ${scope}
           and (status in ('open', 'sent_back') or answered_at > now() - interval '7 days') order by status = 'open' desc, id desc`,
     // only the guest's own notes come back: session notes on the same task can hold anything
@@ -137,6 +137,8 @@ export async function me(user: string, scope: ReturnType<typeof sql>) {
           from cb.events e where e.task_id = t.id and e.kind = 'note' and e.actor = ${user}), '[]') as my_notes
         from cb.tasks t where t.assignee = ${user} and ${scope} and t.status not in ('done', 'cancelled') order by t.priority, t.rank, t.id`,
   ]);
+  // earlier answers and who they were delivered to are the board's (#1346), not the guest's
+  const questions = rows.map(({ answer_history, delivered_to, ...q }: any) => q);
   return { questions, tasks };
 }
 

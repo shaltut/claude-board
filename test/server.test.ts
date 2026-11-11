@@ -360,6 +360,10 @@ test('a guest changes a delivered answer only on their own question (#1346)', as
   const [q] = await sql`select status, answer, answered_by, answer_history -> 0 ->> 'answer' as was from cb.questions where id = 1`;
   assert.deepEqual({ ...q }, { status: 'answered', answer: 'B', answered_by: 'omar', was: 'A' });
   assert.equal((await sql`select status from cb.questions where id = 2`)[0].status, 'delivered');
+  // the guest's own page carries neither the earlier answers nor who they were delivered to
+  const me = await (await remote('/api/me', { cookie: token })).json();
+  assert.ok(me.questions.length > 0);
+  for (const x of me.questions) assert.ok(!('answer_history' in x) && !('delivered_to' in x), JSON.stringify(x));
 });
 
 test('a guest answer ignores ruled_by in its body', async () => {

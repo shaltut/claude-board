@@ -4,7 +4,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import postgres from 'postgres';
-import { freshDb, TEST_URL } from './helpers.ts';
+import { freshDb, onProject, TEST_URL } from './helpers.ts';
 
 const clients: any[] = [];
 after(() => Promise.all(clients.map((c) => c.end())));
@@ -75,11 +75,64 @@ test('only the dashboard changes a delivered answer; the same answer again chang
   await assert.rejects(answer(sql, w, 'x'), /Q\d+ is already withdrawn/);
 });
 
-test('a pending correction cannot be withdrawn: the session takes it instead', async () => {
+test('a pending correction: its session cannot withdraw it (it takes it instead); Ahmed can', async () => {
   const sql = await db();
   const id = await delivered(sql);
   await answer(sql, id, 'No');
-  await assert.rejects(sql`select cb.withdraw(${String(id)}, 'W1')`, /changed answer on its way/);
+  await assert.rejects(session()`select cb.withdraw(${String(id)}, 'W1')`, /changed answer on its way/);
+  await sql`select cb.withdraw(${String(id)}, 'ahmed')`;
+  assert.equal((await q(sql, id)).status, 'withdrawn');
+});
+
+test("a guest changes only a delivered answer they gave: not Ahmed's on their question", async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'seed')`;
+  await sql`select cb.user_add('omar', 'Omar')`;
+  await onProject(sql, 'omar', 'demo');
+  const mine = await ask(sql, { body: 'E1?', to: 'omar' });
+  const his = await ask(sql, { body: 'E2?', to: 'omar' });
+  await sql`select cb.answer(${String(mine)}, 'A', 'omar'), cb.answer(${String(his)}, 'A', 'ahmed')`;
+  await deliver(sql, mine); await deliver(sql, his);
+  await assert.rejects(sql`select cb.answer(${String(his)}, 'B', 'omar')`, /Q\d+ was answered by ahmed: only they or Ahmed can change it/);
+  await sql`select cb.answer(${String(mine)}, 'B', 'omar')`;
+  assert.deepEqual([(await q(sql, mine)).answer, (await q(sql, his)).answer], ['B', 'A']);
+  await sql`select cb.answer(${String(mine)}, 'C', 'ahmed')`;  // Ahmed may change anyone's
+  assert.equal((await q(sql, mine)).answer, 'C');
+});
+
+test('a pending correction edited again: the branch it opened waits again (giving its task back); the new one opens', async () => {
+  const sql = await db();
+  await sql`select cb.task_add(project => 'demo', title => 'build it', assignee => 'W1', status => 'in_progress', actor => 'W1')`;
+  const p = await ask(sql, { body: 'Which plan?', options: ['A', 'B', 'C'] });
+  const fa = await ask(sql, { body: 'A detail?', parent: 'Q' + p, if: 'A' });
+  const fb = await ask(sql, { body: 'B detail?', parent: 'Q' + p, if: 'B', task: '1', blocking: true });
+  const fc = await ask(sql, { body: 'C detail?', parent: 'Q' + p, if: 'C' });
+  await answer(sql, p, 'A');
+  await deliver(sql, p);
+  await answer(sql, p, 'B');
+  assert.deepEqual(await Promise.all([fa, fb, fc].map(async (x) => (await q(sql, x)).status)), ['open', 'open', 'withdrawn']);
+  assert.equal(Number((await sql`select blocked_on from cb.tasks where id = 1`)[0].blocked_on), fb);
+  await answer(sql, p, 'C');
+  assert.deepEqual(await Promise.all([fa, fb, fc].map(async (x) => (await q(sql, x)).status)), ['open', 'dormant', 'open'],
+    "B's branch waits again; A's (the told answer's) stays");
+  const [t] = await sql`select status, blocked_on from cb.tasks where id = 1`;
+  assert.deepEqual([t.status, t.blocked_on], ['in_progress', null], 'B gave its task back');
+  await deliver(sql, p);
+  assert.equal((await q(sql, fb)).status, 'withdrawn', 'skipped at the redelivery');
+});
+
+test('a change while the relay delivers: the delivery of the older answer does nothing; the newer one is delivered next', async () => {
+  const sql = await db();
+  const id = await delivered(sql);
+  await answer(sql, id, 'No');
+  const pushed = (await inbox(sql)).answers[0];  // the relay reads it and pushes it...
+  await answer(sql, id, 'Maybe');                 // ...Ahmed changes it again meanwhile...
+  await sql`select cb.answer_delivered(${String(id)}, 'W1', 'relay', null, ${pushed.answered_at})`;  // ...then it marks what it pushed
+  assert.deepEqual([(await q(sql, id)).status, (await q(sql, id)).answer], ['answered', 'Maybe'], 'still to deliver');
+  const again = (await inbox(sql)).answers[0];
+  assert.deepEqual([again.answer, again.was], ['Maybe', 'Yes']);
+  await sql`select cb.answer_delivered(${String(id)}, 'W1', 'relay', null, ${again.answered_at})`;
+  assert.equal((await q(sql, id)).status, 'delivered');
 });
 
 test('follow-ups: the new answer opens its branch (skipped at delivery); the old branch stays; one withdrawn by hand stays withdrawn', async () => {
@@ -100,7 +153,7 @@ test('follow-ups: the new answer opens its branch (skipped at delivery); the old
     ['answered', 'open', 'withdrawn', 'dormant'], 'No opens; Yes stays; the hand-withdrawn stays; the deeper one waits again');
   // edit again before delivery, then deliver: the old branch is still open, "was" is what the session was told
   const fy2 = await ask(sql, { body: 'Notify QA?', parent: 'Q' + fn });
-  await answer(sql, p, 'No, next week');
+  await answer(sql, p, 'No — next week');  // still picks No (the dashboard's "Label — note")
   assert.equal((await q(sql, fn)).status, 'open');
   assert.equal((await inbox(sql)).answers.find((a: any) => a.id === p)?.was, 'Yes');
   await deliver(sql, p);
