@@ -4,7 +4,8 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 
-/** For guests coming in through the tunnel without a cookie: name and password, or the private link. Guest style: calm, one column. */
+/** For everyone reaching the board without a cookie (on the VPS: everyone): name and password; members can also use
+ *  their private link. Guest style: calm, one column. */
 export function Login() {
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
@@ -34,7 +35,7 @@ export function Login() {
       <main id="main" className="mx-auto max-w-sm px-4 pt-14 pb-20 sm:pt-20">
         <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em]">Sign in</h1>
         <p className="mt-2 text-sm text-muted-foreground text-pretty">
-          Use the name and password Ahmed gave you. The private link he sent signs you in too.
+          Use your name and password. If Ahmed sent you a private link, opening it signs you in too.
         </p>
         <form onSubmit={signIn} className="mt-8 grid gap-4">
           <label className="grid gap-1.5 text-sm">

@@ -11,13 +11,10 @@ import { Textarea } from '@/components/ui/textarea'
 import { Mark, useTabLamp } from '@/components/Mark'
 import { RingToggle, ThemeToggle } from '@/components/ThemeToggle'
 import { useRing } from '@/lib/ring'
+import { Account } from '@/components/Account'
 
 type GuestTask = Task & { my_notes: { summary: string; at: string }[] }
 
-async function signOut() {
-  await fetch('/api/logout', { method: 'POST' }).catch(() => {})
-  location.replace('/login')
-}
 
 /** What a guest (Omar, Iman) sees through their link: only what Ahmed handed to them.
  *  Tower with the engineering taken out: one column, no callsigns or task numbers, the same lamp. */
@@ -40,8 +37,8 @@ export function Guest({ user }: { user: User }) {
         <div className="mx-auto flex h-13 max-w-2xl items-center gap-2.5 px-4 sm:px-6">
           <Mark lit={open.length > 0} />
           <span className="text-[15px] font-semibold tracking-tight [font-stretch:88%]">Claude Board</span>
-          <span className="ml-auto truncate text-sm text-muted-foreground">Signed in as <span className="text-foreground">{user.display}</span></span>
-          <button onClick={signOut} className="shrink-0 rounded-md px-1.5 py-1 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Sign out</button>
+          <span className="ml-auto" />
+          <Account user={user} />
           <RingToggle />
           <ThemeToggle />
         </div>

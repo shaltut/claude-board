@@ -8,6 +8,7 @@ import { ProjectSwitcher } from './ProjectSwitcher'
 import { Mark, useTabLamp } from './Mark'
 import { RingToggle, ThemeToggle } from './ThemeToggle'
 import { useRing } from '@/lib/ring'
+import { Account, useWho } from './Account'
 
 const TABS: { view: View; label: string; key: string }[] = [
   { view: 'today', label: 'Today', key: '1' },
@@ -16,7 +17,7 @@ const TABS: { view: View; label: string; key: string }[] = [
   { view: 'sessions', label: 'Sessions', key: '4' },
   { view: 'huddles', label: 'Huddles', key: '5' },
   { view: 'history', label: 'History', key: '6' },
-  { view: 'people', label: 'People', key: '7' },
+  { view: 'people', label: 'Users', key: '7' },
   { view: 'epics', label: 'Epics', key: '8' },
   { view: 'memory', label: 'Memory', key: '9' },
   { view: 'goals', label: 'Goals', key: '0' },
@@ -34,6 +35,7 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
   // a session's reply to one of Ahmed's asks (#936) rings too, on any view
   const { data: asks } = useAsks(undefined)
   useRing(asks && replyIds(asks))
+  const { data: who } = useWho()
 
   return (
     <header className="sticky top-0 z-30 border-b bg-background/85 backdrop-blur-md backdrop-saturate-150">
@@ -78,6 +80,7 @@ export function TopBar({ route, live, onSearch }: { route: Route; live: 'live' |
             <span className={cn('size-1.5 rounded-full', live === 'live' ? 'bg-clear shadow-[0_0_8px_var(--clear)]' : 'animate-pulse bg-st-blocked')} />
             <span className="hidden md:inline">{live === 'live' ? 'Live' : 'Reconnecting…'}</span>
           </span>
+          {who?.role === 'admin' && <Account user={who.user} compact />}
           <RingToggle />
           <ThemeToggle />
           <button onClick={onSearch} aria-label="Jump to a task, project or view"

@@ -11,7 +11,7 @@ const VIEWS: { view: View; label: string; icon: typeof History }[] = [
   { view: 'sessions', label: 'Sessions', icon: Radio },
   { view: 'huddles', label: 'Huddles', icon: MessagesSquare },
   { view: 'history', label: 'History', icon: History },
-  { view: 'people', label: 'People', icon: Users },
+  { view: 'people', label: 'Users', icon: Users },
   { view: 'epics', label: 'Epics', icon: Milestone },
   { view: 'memory', label: 'Memory', icon: BookMarked },
   { view: 'goals', label: 'Goals', icon: Target },

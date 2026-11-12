@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { get, type Task, type User } from '@/lib/api'
+import { type Task, type User } from '@/lib/api'
+import { useWho } from '@/components/Account'
 import { Guest } from '@/views/Guest'
 import { Login } from '@/views/Login'
 import { useLive } from '@/lib/live'
@@ -23,13 +23,15 @@ import { Goals } from '@/views/Goals'
 import { TagChip, TypeChip } from '@/components/Chips'
 
 
-type Who = { role: 'local' } | { role: 'guest'; user: User } | { role: 'anonymous' }
-
-/** The full board only on this machine; a signed-in guest gets the guest page; anyone else gets the login page. */
+/** The full board for an admin (or on the PC board's own screen); a signed-in member gets the guest page; anyone
+ *  else gets the login page. */
 export function Gate() {
-  const { data } = useQuery({ queryKey: ['whoami'], queryFn: () => get<Who>('/api/whoami'), staleTime: Infinity })
+  const { data } = useWho()
   if (!data) return null
-  if (data.role === 'local') return <App />
+  if (data.role === 'local' || data.role === 'admin') {
+    if (location.pathname === '/login') history.replaceState(null, '', '/')
+    return <App />
+  }
   if (data.role === 'guest') {
     if (location.pathname === '/login') history.replaceState(null, '', '/')
     return <GuestLive user={data.user} />

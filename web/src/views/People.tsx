@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Copy, KeyRound, UserPlus, UserX, X } from 'lucide-react'
+import { Copy, KeyRound, ShieldCheck, UserPlus, UserX, X } from 'lucide-react'
 import { get, rpc, useProjects, type Task } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { go, type Route } from '@/lib/route'
@@ -12,12 +12,13 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 
 interface Person {
-  name: string; display: string; token: string; created_at: string; last_active: string | null; projects: string[]; has_password: boolean
+  // token: a member's link; null for an admin (admins sign in by password, and the token is their cookie)
+  name: string; display: string; role: 'admin' | 'member'; token: string | null; created_at: string; last_active: string | null; projects: string[]; has_password: boolean
   questions: { id: number; project: string; body: string; blocking: boolean; created_at: string }[]
   tasks: { id: number; project: string; title: string; status: Task['status']; priority: Task['priority'] }[]
 }
 
-// Local only: the server refuses /api/people to anything but this PC, since it carries the link tokens.
+// Admins only (and only the page itself): it carries members' link tokens.
 const usePeople = () => useQuery({ queryKey: ['people'], queryFn: () => get<{ public_url: string | null; people: Person[] }>('/api/people') })
 const linkOf = (base: string, token: string) => `${base}/?u=${token}`
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
@@ -34,18 +35,20 @@ export function People(_: { route: Route }) {
   const people = data?.people ?? []
   const base = data?.public_url ?? location.origin
   const waiting = people.reduce((n, p) => n + p.questions.length, 0)
+  const admins = people.filter((p) => p.role === 'admin').length
 
   return (
     <div>
       <header className="mb-6 flex flex-wrap items-end gap-x-6 gap-y-3">
         <div className="min-w-0">
-          <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em]">People</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            People who answer questions through a private link.
-            {people.length > 0 && ` ${plural(people.length, 'person', 'people')}, ${plural(waiting, 'question')} waiting on them.`}
+          <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em]">Users</h1>
+          <p className="mt-1 max-w-[80ch] text-sm text-muted-foreground text-pretty">
+            Everyone who signs in. Admins get the whole board and sign in with a password; members see only the questions and
+            tasks handed to them, signing in with a password or a private link.
+            {people.length > 0 && ` ${plural(admins, 'admin')}, ${plural(people.length - admins, 'member')}, ${plural(waiting, 'question')} waiting on members.`}
           </p>
         </div>
-        <Button className="ml-auto" onClick={() => setAdding(true)}><UserPlus /> Add person</Button>
+        <Button className="ml-auto" onClick={() => setAdding(true)}><UserPlus /> Add user</Button>
       </header>
       <TunnelNote publicUrl={data?.public_url ?? null} loaded={!!data} />
       <AddPerson open={adding} onOpenChange={setAdding} base={base} people={people} />
@@ -72,7 +75,6 @@ function TunnelNote({ publicUrl, loaded }: { publicUrl: string | null; loaded: b
   if (!loaded) return null
   return (
     <p className="mb-5 max-w-[80ch] text-[13px] text-muted-foreground text-pretty">
-      A link works only from outside this PC, through the board's tunnel. Opened here, it shows your own board.
       {publicUrl ? <> Links point at <span className="font-mono text-xs text-foreground">{publicUrl}</span>.</>
         : <> <span className="font-medium text-foreground">PUBLIC_URL isn't set</span>, so links point at this PC: set it in the board's <code className="font-mono text-xs">.env</code> (see docs/users.md).</>}
     </p>
@@ -95,7 +97,8 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
   // The whole link, shown after a new link is made or when the clipboard refused a copy.
   const [shown, setShown] = useState<{ link: string; why: 'new' | 'copy' } | null>(null)
   const [busy, setBusy] = useState(false)
-  const link = linkOf(base, p.token)
+  const link = p.token ? linkOf(base, p.token) : ''
+  const owner = p.name === 'ahmed'
   const holding = p.questions.filter((q) => q.blocking).length
   const working = p.tasks.filter((t) => t.status === 'in_progress').length
 
@@ -125,6 +128,7 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
           <h2 className="flex items-baseline gap-2">
             <span className="truncate text-[20px] leading-tight font-semibold tracking-[-0.01em]">{p.display}</span>
             <span className="font-mono text-xs text-muted-foreground" translate="no">{p.name}</span>
+            {p.role === 'admin' && <span className="inline-flex items-center gap-1 self-center rounded border px-1.5 text-[11px] text-muted-foreground"><ShieldCheck className="size-3" />admin</span>}
           </h2>
           <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
             {p.questions.length > 0 && <span className="size-2 shrink-0 rounded-full border-2 border-muted-foreground/60" aria-hidden title="Waiting on someone else" />}
@@ -193,11 +197,11 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
         ) : (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
             <code className="mr-auto min-w-0 basis-full truncate font-mono text-xs text-muted-foreground sm:basis-auto" title="The link is a secret: Copy it, don't show it">
-              …/?u=••••{p.token.slice(-4)}
+              {p.token ? <>…/?u=••••{p.token.slice(-4)}</> : owner ? 'The owner: signs in with his password' : 'Admin: signs in with a password, no link'}
             </code>
-            <Button size="sm" variant="secondary" onClick={async () => { if (!(await copy(link, p.display))) setShown({ link, why: 'copy' }) }}><Copy /> Copy link</Button>
-            <Button size="sm" variant="ghost" onClick={() => setConfirm('rotate')}><KeyRound /> New link</Button>
-            <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive" onClick={() => setConfirm('remove')}><UserX /> Remove</Button>
+            {p.token && <Button size="sm" variant="secondary" onClick={async () => { if (!(await copy(link, p.display))) setShown({ link, why: 'copy' }) }}><Copy /> Copy link</Button>}
+            {p.token && <Button size="sm" variant="ghost" onClick={() => setConfirm('rotate')}><KeyRound /> New link</Button>}
+            {!owner && <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive" onClick={() => setConfirm('remove')}><UserX /> Remove</Button>}
           </div>
         )}
       </div>
@@ -213,6 +217,7 @@ function Access({ p }: { p: Person }) {
   const [pw, setPw] = useState<string | null>(null) // the new password while it's being typed
   const free = projects.filter((x) => !p.projects.includes(x.slug))
   const waiting = (slug: string) => [p.questions.filter((q) => q.project === slug).length, p.tasks.filter((t) => t.project === slug).length]
+  const owner = p.name === 'ahmed'
 
   async function run(fn: string, args: object, ok: (r: any) => string) {
     try { const r = await rpc(fn, { name: p.name, ...args }); toast.success(ok(r)); await qc.invalidateQueries(); return true }
@@ -228,7 +233,15 @@ function Access({ p }: { p: Person }) {
 
   return (
     <div className="grid gap-2 border-t pt-3 text-sm">
-      <div className="flex flex-wrap items-center gap-1.5">
+      {!owner && <div className="flex flex-wrap items-center gap-1.5">
+        <span className="w-18 shrink-0 text-xs text-muted-foreground">Role</span>
+        <span>{p.role === 'admin' ? 'Admin: the whole board, under their own name' : 'Member: what is handed to them'}</span>
+        <Button size="xs" variant="ghost" onClick={() => run('user_set_role', { role: p.role === 'admin' ? 'member' : 'admin' },
+          () => p.role === 'admin' ? `${p.display} is a member now` : `${p.display} is an admin now: they sign in with a password${p.has_password ? '' : ' (set one below)'}`)}>
+          {p.role === 'admin' ? 'Make member' : 'Make admin'}
+        </Button>
+      </div>}
+      {!owner && <div className="flex flex-wrap items-center gap-1.5">
         <span className="w-18 shrink-0 text-xs text-muted-foreground">Projects</span>
         {p.projects.length === 0 && <span className="text-muted-foreground">None yet, so nothing can be handed to {p.display}.</span>}
         {p.projects.map((slug) => (
@@ -246,7 +259,7 @@ function Access({ p }: { p: Person }) {
             {free.map((x) => <option key={x.slug} value={x.slug}>{x.name}</option>)}
           </select>
         )}
-      </div>
+      </div>}
       {off && (() => {
         const [nq, nt] = waiting(off)
         return (
@@ -266,7 +279,8 @@ function Access({ p }: { p: Person }) {
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="w-18 shrink-0 text-xs text-muted-foreground">Password</span>
         {pw === null ? <>
-          <span className={cn(!p.has_password && 'text-muted-foreground')}>{p.has_password ? 'Set' : 'None, link only'}</span>
+          <span className={cn(!p.has_password && (p.role === 'admin' ? 'text-destructive' : 'text-muted-foreground'))}>
+            {p.has_password ? 'Set' : p.role === 'admin' ? 'None: they cannot sign in yet' : 'None, link only'}</span>
           <Button size="xs" variant="ghost" onClick={() => setPw('')}>{p.has_password ? 'Reset password' : 'Set password'}</Button>
         </> : (
           // Shown as text, not dots: Ahmed types it to send it on. autoComplete off keeps it out of his own password manager.
@@ -289,20 +303,24 @@ function AddPerson({ open, onOpenChange, base, people }: { open: boolean; onOpen
   const qc = useQueryClient()
   const [display, setDisplay] = useState('')
   const [name, setName] = useState('')
-  const [made, setMade] = useState<{ display: string; link: string } | null>(null)
+  const [role, setRole] = useState<'member' | 'admin'>('member')
+  const [password, setPassword] = useState('')
+  const [made, setMade] = useState<{ display: string; link: string | null } | null>(null)
   const auto = display.trim().split(/\s+/)[0]?.toLowerCase().replace(/[^a-z0-9_-]/g, '') ?? ''
   const handle = name || auto
   const existing = people.find((p) => p.name === handle)
 
   function close(o: boolean) {
     onOpenChange(o)
-    if (!o) { setDisplay(''); setName(''); setMade(null) }
+    if (!o) { setDisplay(''); setName(''); setRole('member'); setPassword(''); setMade(null) }
   }
   async function add(e: React.FormEvent) {
     e.preventDefault()
     try {
-      const token = await rpc<string>('user_add', { name: handle, display })
-      setMade({ display: display.trim() || handle, link: linkOf(base, token) })
+      // an admin signs in by password only: set it with the account, or they could never sign in
+      const token = await rpc<string | null>('user_add', { name: handle, display, role })
+      if (role === 'admin') await rpc('user_password', { name: handle, password })
+      setMade({ display: display.trim() || handle, link: token ? linkOf(base, token) : null })
       await qc.invalidateQueries()
     } catch (err: any) { toast.error(err.message) }
   }
@@ -310,11 +328,21 @@ function AddPerson({ open, onOpenChange, base, people }: { open: boolean; onOpen
   return (
     <Dialog open={open} onOpenChange={close}>
       <DialogContent className="sm:max-w-lg">
-        {made ? (
+        {made && !made.link ? (
+          <div className="grid gap-4">
+            <DialogHeader>
+              <DialogTitle>{made.display} is an admin</DialogTitle>
+              <DialogDescription>They sign in at <span className="font-mono text-xs text-foreground">{base}/login</span> with
+                the name <span className="font-mono text-xs text-foreground">{handle}</span> and the password you set. Send the password
+                separately from the name. They can change it after signing in.</DialogDescription>
+            </DialogHeader>
+            <DialogFooter><Button variant="ghost" onClick={() => close(false)}>Done</Button></DialogFooter>
+          </div>
+        ) : made?.link ? (
           <div className="grid gap-4">
             <DialogHeader>
               <DialogTitle>{made.display}'s link</DialogTitle>
-              <DialogDescription>Send it in a direct message, not a group chat: anyone with it can answer {made.display}'s questions. You can copy it again from People any time.
+              <DialogDescription>Send it in a direct message, not a group chat: anyone with it can answer {made.display}'s questions. You can copy it again from Users any time.
                 Next, put {made.display} on a project on their card: questions and tasks reach them only there.</DialogDescription>
             </DialogHeader>
             <LinkBox link={made.link} who={made.display} />
@@ -323,9 +351,20 @@ function AddPerson({ open, onOpenChange, base, people }: { open: boolean; onOpen
         ) : (
           <form onSubmit={add} className="grid gap-4">
             <DialogHeader>
-              <DialogTitle>Add a person</DialogTitle>
-              <DialogDescription>They answer the questions you hand them, through a private link.</DialogDescription>
+              <DialogTitle>Add a user</DialogTitle>
+              <DialogDescription>A member answers the questions you hand them, through a private link or a password. An admin gets the whole board.</DialogDescription>
             </DialogHeader>
+            <fieldset className="grid gap-1.5 text-sm">
+              <legend className="mb-1.5 font-medium">Role</legend>
+              <div className="flex gap-4">
+                {(['member', 'admin'] as const).map((r) => (
+                  <label key={r} className="flex items-center gap-2">
+                    <input type="radio" name="role" value={r} checked={role === r} onChange={() => setRole(r)} className="accent-foreground" />
+                    {r === 'member' ? 'Member: what you hand them' : 'Admin: the whole board'}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
             <label className="grid gap-1.5 text-sm">
               <span className="font-medium">Display name</span>
               <Input autoFocus required value={display} onChange={(e) => setDisplay(e.target.value)} placeholder="Omar Khaled…" />
@@ -339,6 +378,14 @@ function AddPerson({ open, onOpenChange, base, people }: { open: boolean; onOpen
                   : <>Lowercase. Sessions use it: <code className="font-mono">cb ask … --to {handle || 'omar'}</code></>}
               </span>
             </div>
+            {role === 'admin' && (
+              // Shown as text, as on a card's Set password: Ahmed types it to send it on.
+              <label className="grid gap-1.5 text-sm">
+                <span className="font-medium">Password</span>
+                <Input required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="off" spellCheck={false}
+                  placeholder="8 characters or more" className="font-mono" />
+              </label>
+            )}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => close(false)}>Cancel</Button>
               <Button type="submit">{existing ? 'Update' : 'Add'}</Button>
