@@ -5,16 +5,17 @@
 #   bash deploy/copy-to-vps.sh            # snapshot: the PC board keeps running; run it again any time to refresh
 #   bash deploy/copy-to-vps.sh --final    # the cutover (docs/ops/deploy.md step 8): stop the PC board server first
 #
-# --final freezes the PC's Postgres (restarted on port 5499, which no session uses) so nothing is written after the
-# dump, and leaves it stopped: from then on the VPS is the board. It also marks the VPS, and this script refuses to
-# copy over a VPS marked final: that would throw away everything written there since.
+# --final freezes the PC's board: its database turns read-only (every session's write fails from then on) and open
+# connections are closed, so nothing is written after the dump. Postgres keeps running, a read-only copy; going back is
+#   psql -h 127.0.0.1 -p 5434 -U cb -d postgres -c "alter database claude_board reset default_transaction_read_only"
+# It also marks the VPS, and this script refuses to copy over a VPS marked final: that would throw away everything
+# written there since.
 # The dump holds client work: it goes only to the VPS (VPS=vps2, Ahmed's choice) and is deleted on both ends.
 set -euo pipefail
 
 VPS=${VPS:-vps2}
 DIR=/opt/claude-board/deploy
 PGBIN=${PGBIN:-"/c/Program Files/PostgreSQL/16/bin"}
-PGDATA_PC=${PGDATA_PC:-"F:/Work/claude-board/.pgdata"}
 DB=${DB:-claude_board}   # the PC database to copy (tests: DB=claude_board_test_upgrade)
 FINAL=0; [ "${1:-}" = --final ] && FINAL=1
 DUMP="$(mktemp -d)/cb-copy.dump"
@@ -34,18 +35,16 @@ if [ $FINAL = 1 ]; then
   if curl -s -o /dev/null --max-time 3 http://localhost:4747/healthz; then
     echo "the PC board server still answers on :4747. Stop it first (Ctrl+C in its window), then run this again."; exit 1
   fi
-  "$PGBIN/pg_ctl.exe" -D "$PGDATA_PC" stop -m fast
-  "$PGBIN/pg_ctl.exe" -D "$PGDATA_PC" -o "-p 5499" -w start
-  PORT=5499
-else
-  PORT=5434
+  # read-only, not a Postgres restart: a Postgres started from an agent's session on this PC once crashed (no desktop)
+  "$PGBIN/psql.exe" -h 127.0.0.1 -p 5434 -U cb -d postgres -Atq -c "alter database \"$DB\" set default_transaction_read_only = on" \
+    -c "select count(pg_terminate_backend(pid)) from pg_stat_activity where datname = '$DB' and pid <> pg_backend_pid()" >/dev/null
+  echo "the PC's $DB is read-only now"
 fi
 
-say "dumping the PC's board (port $PORT)"
-"$PGBIN/pg_dump.exe" -h 127.0.0.1 -p "$PORT" -U cb -d "$DB" -Fc -f "$DUMP"
-[ $FINAL = 1 ] && "$PGBIN/pg_ctl.exe" -D "$PGDATA_PC" stop -m fast
+say "dumping the PC's board"
+"$PGBIN/pg_dump.exe" -h 127.0.0.1 -p 5434 -U cb -d "$DB" -Fc -f "$DUMP"
 COUNTS="select (select count(*) from cb.tasks)||' tasks, '||(select count(*) from cb.questions)||' questions, '||(select count(*) from cb.events)||' events'"
-[ $FINAL = 1 ] || echo "PC: $("$PGBIN/psql.exe" -h 127.0.0.1 -p 5434 -U cb -d "$DB" -Atc "$COUNTS")"
+echo "PC: $("$PGBIN/psql.exe" -h 127.0.0.1 -p 5434 -U cb -d "$DB" -Atc "$COUNTS")"
 SUM=$(md5sum "$DUMP" | cut -d' ' -f1)
 echo "$(du -h "$DUMP" | cut -f1) dump, md5 $SUM"
 

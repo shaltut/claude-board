@@ -135,8 +135,8 @@ call, made when he asked for the move.
 1. **Warn the sessions** (PC): `cb broadcast "The board moves to the VPS now: cb is unreachable for about 20 minutes. Keep working; register what you did after."`
 2. **Stop the PC's board server** (Ahmed's terminal, Ctrl+C). Nothing polls Telegram or GitHub now.
 3. **Copy the board, frozen** (PC, Git Bash, in the repo): `bash deploy/copy-to-vps.sh --final`. It refuses while the
-   PC board still answers on :4747; restarts the PC's Postgres on port 5499 (no session can write after the dump),
-   dumps, stops it; copies the dump to vps2 (md5 checked), replaces the VPS's database, starts the board (which applies
+   PC board still answers on :4747; makes the PC's database read-only and closes its connections (no session can write after the dump; Postgres keeps running),
+   dumps it; copies the dump to vps2 (md5 checked), replaces the VPS's database, starts the board (which applies
    the schema over it), deletes the dump on both ends, prints the counts, and marks the VPS as the board
    (`deploy/.cutover`). From then on it refuses to copy again.
 
