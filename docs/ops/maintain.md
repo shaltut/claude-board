@@ -1,7 +1,7 @@
 # Running the board on the VPS
 
-Everything here runs in `/opt/claude-board/deploy` on the VPS unless it says otherwise. `dc` below is
-`docker compose`.
+Everything here runs in `/opt/claude-board/deploy` on the VPS (vps2) unless it says otherwise. `dc` below is
+`docker compose`. The https side is Nginx Proxy Manager's proxy host `board.shaltoot.cloud` ([deploy.md](deploy.md#5-https-in-front)).
 
 ## Is it up?
 
@@ -22,7 +22,7 @@ dc restart board          # the server; sessions and browsers reconnect by thems
 dc restart db             # Postgres; the board and every relay reconnect (give it a minute)
 ```
 
-Never `dc down -v`: `-v` deletes the database volume.
+Never `dc down -v`: `-v` deletes the database volume (and gh's login).
 
 ## Upgrade
 
@@ -37,8 +37,16 @@ dc logs --tail 20 board                 # "claude_board ready", then the listen 
 Then the workers, right away, because their `cb` must match the schema:
 
 - **PC:** `git -C F:\Work\claude-board pull --ff-only`
-- **MacBook:** the copy in `~/Work/claude-board` (from the PC: tar `bin cli db prompts server hooks`, scp, untar, as in
-  the board's release notes), then `node --check cli/relay.ts` there.
+- **MacBook:** `~/Work/claude-board` is a copy, not a clone. From the PC (Git Bash, in the updated checkout):
+
+  ```bash
+  tar czf /tmp/cb.tgz bin cli db prompts server hooks && sum=$(md5sum /tmp/cb.tgz | cut -d' ' -f1)
+  scp /tmp/cb.tgz macbook:Work/claude-board/cb.tgz
+  ssh macbook "cd ~/Work/claude-board && [ \"\$(md5 -q cb.tgz)\" = $sum ] && tar xzf cb.tgz && rm cb.tgz && zsh -lc 'node cli/cb.ts sessions' | head -3"
+  ```
+
+  Extract only when the checksums match: a Tailscale hiccup once delivered half an archive, and a partial extract
+  broke every `cb` on the Mac for 15 minutes.
 - Relays restart themselves when their code changes.
 
 If the schema change drops or renames a function the old CLI calls, a worker's `cb` fails until it is updated: that
@@ -107,9 +115,13 @@ All in `deploy/.env` (mode 600). After changing one: `dc up -d` (recreates what 
   `CB_PG_PASSWORD` in `.env`, `dc up -d`, then every worker's URL (the PC's `.env`, the Mac's `~/.zshrc`) and their
   relays. Do it if a worker machine is lost or the password leaks.
 - **Telegram bot token:** revoke in @BotFather, new token in `.env`, `dc up -d board`.
-- **GitHub token:** a fine-grained token, read-only, the watched repos only, with an expiry: renew it before it
-  expires (`dc logs board | grep github` shows HTTP 401 when it has).
-- **The tunnel's credentials** (option A): `/etc/cloudflared/<tunnel-id>.json`, mode 600.
+- **GitHub:** gh's own login inside the board container (`dc exec board gh auth status`), stored by gh in the
+  `ghconfig` volume as a plain file (no keyring in a container): anyone with root on vps2 can read it, and it has
+  the signed-in account's scopes. Rotate: `dc exec board gh auth logout`, then the login in
+  [deploy.md](deploy.md#8-the-move-ahmeds-live-board-from-the-pc-to-the-vps) step 7. Narrower option: a fine-grained,
+  read-only `GH_TOKEN` in `.env` (it overrides the login). `dc logs board | grep github` shows HTTP 401 when the
+  login stopped working.
+- **Nginx Proxy Manager:** its admin account and Let's Encrypt certificates are NPM's (it renews them itself).
 
 ## Disk and housekeeping
 
@@ -126,16 +138,19 @@ a new volume and a restore, never just a new image tag.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Every POST says "cross-site request refused" | the proxy rewrites `Host` (cloudflared `httpHostHeader`, or a proxy without Host passthrough) | pass the public Host through |
+| Every POST says "cross-site request refused" | the proxy rewrites `Host`, or the board is served on a port other than 443 (NPM drops the port from `Host`) | serve on 443; pass the public Host through |
+| The public URL says 502 Bad Gateway | the board is down, or not on NPM's network | `dc ps`; `docker network inspect nginx-proxy-manager_default` lists `claude-board-board-1`; `dc up -d board` |
+| Pages load but nothing updates live | a proxy buffering the event stream | the board sends `X-Accel-Buffering: no`; another proxy: turn its buffering off for `/api/stream` |
 | Signed in, but sent back to the login page | the cookie isn't kept: https page with a non-Secure cookie blocked, or a proxy dropping `Set-Cookie` | check `X-Forwarded-Proto: https` reaches the board |
 | "That name and password don't match" for the right password | 5 failures from that address in 2 minutes, or no password set | wait 2 minutes or `dc restart board`; set a password from the shell |
 | `healthz` 503, board logs `ECONNREFUSED db` | Postgres is down or still starting | `dc ps`, `dc logs db` |
 | db won't start: "cannot assign requested address" | Tailscale wasn't up when Docker started, so `CB_PG_BIND` doesn't exist yet | `sudo systemctl enable tailscaled`; `dc up -d db` |
-| A worker's `cb` says "board unreachable at 100.x.y.z" | the VPS, Tailscale or Postgres is down, or the URL/password is wrong | `tailscale ping <vps>`; `dc ps`; check the worker's URL |
+| A worker's `cb` says "board unreachable at 100.x.y.z" | the VPS, Tailscale or Postgres is down, or the URL/password is wrong | `tailscale ping vps2`; `dc ps`; check the worker's URL |
 | A worker's `cb` errors "function cb.x(...) does not exist" | the worker's code is older or newer than the VPS's schema | update the worker's checkout (Upgrade) |
 | No Telegram pushes | no token, or another server polls with it (409 in the logs) | `TELEGRAM_BOT_TOKEN` in `.env`; stop the other server |
 | Log: "another board server polls Telegram and GitHub" | a second server (the PC's?) holds the poller lock | stop it; this one takes over within a minute |
-| GitHub watch silent | `GH_TOKEN` missing or expired | `dc exec board cb github` shows the last error |
+| GitHub watch silent | gh signed out, or its token expired or was revoked | `dc exec board gh auth status`; `dc exec board cb github` shows the last error; log in again |
+| The board or db restarted on its own at night | Watchtower, if the opt-out label was lost | `docker inspect -f '{{.Config.Labels}}' claude-board-board-1` shows `watchtower.enable:false` |
 
 ## Tests
 

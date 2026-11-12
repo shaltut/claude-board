@@ -19,6 +19,10 @@ Open http://localhost:4747.
 - `pnpm dev` runs the Vite dev server (proxies `/api` to 4747; run `pnpm start` alongside).
 - `pnpm test` runs the suite against the `claude_board_test` database.
 
+**On a server** (the VPS, always on, everyone signs in): Docker, `deploy/compose.yml`. What it is and how the parts
+fit: [docs/ops/README.md](docs/ops/README.md); install and the move from the PC: [docs/ops/deploy.md](docs/ops/deploy.md);
+day to day: [docs/ops/maintain.md](docs/ops/maintain.md). Agents working on this repo: [CLAUDE.md](CLAUDE.md).
+
 ## The `cb` CLI
 
 `cb` is an agent tool, and it documents itself:

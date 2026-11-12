@@ -3,9 +3,14 @@
 Two parts: a fresh install (1 to 7), then the one-time move of Ahmed's live board from his PC (8). Commands run on
 the VPS unless a step says PC or Mac. About an hour the first time, most of it waiting on the image build and DNS.
 
-**What the VPS needs:** Linux on amd64 or arm64, 1 GB of RAM free and 5 GB of disk, Docker Engine with the compose
-plugin (`docker compose version`), git, and Tailscale joined to Ahmed's tailnet (`tailscale ip -4` prints its
-address). The board stores client work, so the VPS is Ahmed's choice (open question Q470 on the board).
+**The VPS is vps2** (Oracle Cloud, Linux arm64; Ahmed's choice, Q470). It already has what the board needs: Docker
+with the compose plugin, git, gh, Tailscale on Ahmed's tailnet, and Nginx Proxy Manager on ports 80/443 (Q471). The
+board takes about 300 MB of RAM and 2 GB of disk. Another VPS works the same way: Linux on amd64 or arm64, Docker,
+Tailscale, and a proxy (step 5).
+
+vps2 also runs **Watchtower**, which restarts any container with a newer image. The compose file opts both of the
+board's containers out (`com.centurylinklabs.watchtower.enable=false`): upgrades are done by hand ([maintain.md](maintain.md#upgrade)).
+It also has its own `postgres` container on 5432: unrelated, leave it alone; the board's database is separate (5434).
 
 ## 1. Get the code
 
@@ -29,7 +34,8 @@ nano .env
 ```
 
 `env.example` explains every line. `CB_PUBLIC_URL` is the https address people will use (step 5). Leave
-`TELEGRAM_BOT_TOKEN` and `GH_TOKEN` empty until the move (step 8): the PC's board still polls with them.
+`TELEGRAM_BOT_TOKEN` empty until the move (step 8): the PC's board still polls with it. Leave `GH_TOKEN` empty: the
+GitHub watch signs in with `gh auth login` instead (step 8.7). `CB_PROXY_NETWORK` stays as it is on vps2.
 
 ## 3. Start it
 
@@ -61,35 +67,36 @@ Skip this on the move (step 8) until after the restore: the restored board repla
 
 ## 5. HTTPS in front
 
-The board listens on the VPS's loopback only (127.0.0.1:4747). Put one of these in front. Either way the proxy must
-pass the `Host` header through unchanged and say `X-Forwarded-Proto: https`, or every POST is refused as cross-site
-and the cookie is not Secure.
+The board isn't reachable from outside: its port is on the VPS's loopback (127.0.0.1:4747), and it sits on Nginx Proxy
+Manager's docker network as `claude-board`. NPM serves it over https. Do this during the move (step 8), not before:
+today `board.shaltoot.cloud` points at the PC's Cloudflare tunnel, and one hostname can't point at two boards.
 
-### Option A: the Cloudflare tunnel (board.shaltoot.cloud today)
+1. **DNS:** in Cloudflare (the `shaltoot.cloud` zone), replace the `board` record (today a CNAME to the tunnel) with an
+   A record to vps2's public IP. **DNS only (grey cloud)** is the simple choice: NPM gets its own certificate and
+   `CB_BEHIND_CLOUDFLARE` stays 0. Orange cloud works too (SSL mode Full (strict)), but leave `CB_BEHIND_CLOUDFLARE=0`
+   unless vps2's 80/443 only accept Cloudflare's addresses.
+2. **NPM's admin page** listens on the VPS's loopback: from the PC, `ssh -L 8181:127.0.0.1:81 vps2`, then open
+   http://localhost:8181 and sign in (Ahmed's NPM account).
+3. **Hosts → Proxy Hosts → Add Proxy Host:**
+   - Details: domain `board.shaltoot.cloud`; scheme `http`; forward hostname `claude-board`; port `4747`; turn on
+     Block Common Exploits. Websockets Support can stay off (live updates are server-sent events; the board tells
+     nginx not to buffer them). No Access List, and don't put Authelia in front: the board has its own sign-in, and
+     members' links must open without another login.
+   - SSL: Request a new Let's Encrypt certificate; Force SSL; HTTP/2.
+4. **Check** (from anywhere): `curl -s https://board.shaltoot.cloud/healthz` says `{"ok":true}`; the address shows the
+   login page.
+5. **Retire the PC's tunnel** (admin PowerShell on the PC): `Stop-Service cloudflared; Set-Service cloudflared
+   -StartupType Disabled`. Keep its files (`C:\Windows\System32\config\systemprofile\.cloudflared\`) for the way back.
 
-The PC runs a locally managed named tunnel, `claude-board`, as the `cloudflared` Windows service with
-`C:\Windows\System32\config\systemprofile\.cloudflared\config.yml` and its credentials file
-(`<tunnel-id>.json`). To move it, do this during the move (step 8), not before, since one hostname can't point at two boards:
+What NPM must do, and does by default (its `proxy.conf`): pass `Host`, set `X-Forwarded-Proto` and add the client to
+`X-Forwarded-For`. NPM sends `Host` without a port, so serve the board on 443 only: on any other port every sign-in
+and POST is refused as cross-site. NPM on vps2 also adds a strict Content-Security-Policy to every site; the board
+loads nothing from other origins, so it is unaffected (tested).
 
-1. On the VPS, install cloudflared (Cloudflare's apt repo, `cloudflared --version`).
-2. Ahmed copies `config.yml` and the credentials `.json` from the PC to `/etc/cloudflared/` on the VPS (`chmod 600`
-   the json: it is the tunnel's secret). In `config.yml`, fix `credentials-file:` to the new path and make the
-   ingress service `http://localhost:4747`. Don't add `httpHostHeader`.
-3. `sudo cloudflared service install && sudo systemctl enable --now cloudflared`
-4. On the PC (admin PowerShell): `Stop-Service cloudflared; Set-Service cloudflared -StartupType Disabled`
-5. `cloudflared tunnel info claude-board` shows the VPS's connector only.
-
-### Option B: Caddy with its own domain
-
-Point a DNS A record at the VPS, open ports 80 and 443, and use this `/etc/caddy/Caddyfile`:
-
-```
-board.example.com {
-    reverse_proxy 127.0.0.1:4747
-}
-```
-
-Caddy gets the certificate itself, passes `Host`, and sets `X-Forwarded-For` and `X-Forwarded-Proto`.
+**Without NPM** (another VPS): any reverse proxy that does the same (Caddy: `reverse_proxy 127.0.0.1:4747`), or the
+Cloudflare tunnel moved from the PC (copy `config.yml` and `<tunnel-id>.json` to `/etc/cloudflared/`, ingress
+`http://localhost:4747`, no `httpHostHeader`, set `CB_BEHIND_CLOUDFLARE=1`). Set `CB_PROXY_NETWORK` to the proxy's
+docker network, or to one made with `docker network create cb-proxy` if the proxy isn't in docker.
 
 ## 6. Backups
 
@@ -136,9 +143,9 @@ call, made when he asked for the move.
    & "$bin\pg_ctl.exe" -D F:\Work\claude-board\.pgdata stop
    ```
 
-4. **Copy it to the VPS** (PC): `scp $env:TEMP\cb-move.dump <vps>:/tmp/cb-move.dump`
-5. **Restore into an empty database** (VPS). `down -v` deletes the empty board from step 3 (and only that: check
-   nothing real was added to it):
+4. **Copy it to vps2** (PC): `scp $env:TEMP\cb-move.dump vps2:/tmp/cb-move.dump`
+5. **Restore into an empty database** (VPS). `down -v` deletes the empty board from step 3 and gh's login volume
+   (and only those: check nothing real was added to the board):
 
    ```bash
    cd /opt/claude-board/deploy
@@ -150,17 +157,28 @@ call, made when he asked for the move.
    ```
 
 6. **The first admin** (VPS): step 4 above.
-7. **The pollers:** put `TELEGRAM_BOT_TOKEN` (from the PC's `.env`) and a read-only `GH_TOKEN` (open question Q472)
-   in `deploy/.env`, then `docker compose up -d board`. `docker compose exec board cb github` shows both iHop repos;
-   a minute later `last poll` is recent.
-8. **HTTPS:** step 5 (option A moves the tunnel now).
+7. **The pollers.** Telegram: put `TELEGRAM_BOT_TOKEN` (from the PC's `.env`) in `deploy/.env`, then
+   `docker compose up -d board`. GitHub (Q472: gh's own login, kept in the `ghconfig` volume, so rebuilds keep it):
+
+   ```bash
+   docker compose exec board gh auth login --hostname github.com --git-protocol https --web
+   # "Authenticate Git with your GitHub credentials?": n (the board only calls gh api; there is no git in the image)
+   # then a one-time code and https://github.com/login/device: press Enter (no browser here, that's fine), open the
+   # address on the PC, sign in as the account that can read the watched iHop repos, enter the code
+   docker compose exec board gh auth status          # Logged in to github.com
+   docker compose restart board
+   ```
+
+   `docker compose exec board cb github` shows both iHop repos; a minute later `last poll` is recent.
+8. **HTTPS:** step 5, now.
 9. **Workers:** step 7. On the PC, don't start the old board again; if someone does, it serves pages but does not poll
    (the poller lock), and it shows the old, frozen database unless its `.env` points at the VPS.
 10. **Check:** sign in at the public URL as ahmed; Today shows the open questions; answer one and see the session get
     it; `cb start` on the Mac; a member's link signs them in; `cb broadcast "The board is on the VPS. Restart your relay: cb relay --restart"`.
 
 **Going back** (if the VPS fails during the move): stop the VPS board (`docker compose stop board`), start the PC's
-Postgres and board again (`pnpm start` in `F:\Work\claude-board`), restore `.env` and the tunnel. Anything written on
-the VPS since the move is not on the PC: dump it first if it matters.
+Postgres and board again (`pnpm start` in `F:\Work\claude-board`), restore `.env`, point the `board` DNS record back at
+the tunnel (a CNAME to `<tunnel-id>.cfargotunnel.com`) and start the PC's cloudflared service again. Anything written
+on the VPS since the move is not on the PC: dump it first if it matters.
 
 Afterwards the PC's `.pgdata` is a frozen copy of the board as it was. Keep it a week, then Ahmed deletes it.

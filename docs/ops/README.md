@@ -26,8 +26,8 @@ his PC and MacBook and the people he shares it with all use one board.
   Ahmed, Omar, Iman (browsers, Telegram)              Claude sessions on the PC and the MacBook
           │ HTTPS                                             │ cb CLI + relay, Postgres protocol over Tailscale
           ▼                                                   ▼
-  ┌── VPS ─────────────────────────────────────────────────────────────────────────┐
-  │  proxy (cloudflared tunnel or Caddy) ──► board :4747 ─────► Postgres 16 :5434   │
+  ┌── VPS (vps2) ──────────────────────────────────────────────────────────────────┐
+  │  Nginx Proxy Manager :443 ──► board :4747 ────────► Postgres 16 :5434           │
   │                                          (container)        (container, volume) │
   │                                          Telegram bot ─► api.telegram.org       │
   │                                          GitHub watch ─► api.github.com (gh)    │
@@ -77,7 +77,8 @@ signed-in admin (or the dashboard on Ahmed's PC, before the move) can act as `ah
 
 - Passwords: bcrypt (pgcrypto, cost 10), at least 8 characters. The cookie `cb_user` is HttpOnly, SameSite=Lax, and
   Secure when the proxy says `X-Forwarded-Proto: https`. 5 wrong passwords for one name from one address lock that
-  pair for 2 minutes (the address is `cf-connecting-ip`, else the proxy's X-Forwarded-For hop).
+  pair for 2 minutes (the address is the last X-Forwarded-For hop, the one the proxy adds; `cf-connecting-ip` only
+  with `CB_BEHIND_CLOUDFLARE=1`, since a client reaching nginx directly could send it).
 - CSRF: a POST whose `Origin` is not the board's own `Host` is refused. The proxy must pass `Host` through unchanged.
 - An admin's token (their cookie) is never shown or sent anywhere; a member's link is their token, shown only on the
   Users page, to admins.
