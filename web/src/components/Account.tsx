@@ -20,12 +20,13 @@ export function Account({ user, compact }: { user: User; compact?: boolean }) {
   const [open, setOpen] = useState(false)
   return (
     <>
-      <span className="hidden truncate text-sm text-muted-foreground md:inline">Signed in as <span className="text-foreground">{user.display}</span></span>
+      {/* the board's top bar is full at laptop widths: there the name is in Sign out's tooltip */}
+      <span className={`hidden truncate text-sm text-muted-foreground ${compact ? '2xl:inline' : 'md:inline'}`}>Signed in as <span className="text-foreground">{user.display}</span></span>
       <Button size="sm" variant="ghost" onClick={() => setOpen(true)} aria-label="Change your password" title="Change your password"
         className="text-muted-foreground">
         <KeyRound />{!compact && <span className="hidden sm:inline">Password</span>}
       </Button>
-      <Button size="sm" variant="ghost" onClick={signOut} className="text-muted-foreground" title="Sign out">
+      <Button size="sm" variant="ghost" onClick={signOut} className="text-muted-foreground" title={`Sign out ${user.display}`}>
         <LogOut /><span className="hidden sm:inline">Sign out</span>
       </Button>
       <ChangePassword open={open} onOpenChange={setOpen} />

@@ -34,6 +34,8 @@ RUN printf '#!/bin/sh\nexec node /app/cli/cb.ts "$@"\n' > /usr/local/bin/cb && c
 # HOST 0.0.0.0 inside the container (compose publishes it on the VPS's loopback only); CB_TRUST_LOCAL=0: everyone signs in
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=4747 CB_TRUST_LOCAL=0
 EXPOSE 4747
+# gh's login lives in a volume here (compose's ghconfig); made now so the volume starts owned by node
+RUN mkdir -p /home/node/.config/gh && chown -R node:node /home/node/.config
 USER node
 # The schema is applied on every start (idempotent), then the server runs: an upgrade is build + up.
 CMD ["sh", "-c", "node db/setup.ts && exec node server/main.ts"]

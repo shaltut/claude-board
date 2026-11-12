@@ -37,9 +37,10 @@ async function userOf(c: Context<any>): Promise<Who | null> {
   const [u] = await sql`select name, display, role from cb.users where token = ${t}`;
   return (u as Who | undefined) ?? null;
 }
-// The address a login is counted against: Cloudflare's cf-connecting-ip (the client can't set it through the tunnel),
-// else the hop our own proxy added (the last X-Forwarded-For entry), else a direct connection.
-const clientIp = (c: Context<any>) => c.req.header('cf-connecting-ip')?.trim()
+// The address a login is counted against: the hop our own proxy added (the last X-Forwarded-For entry), else a direct
+// connection. Cloudflare's cf-connecting-ip only with CB_BEHIND_CLOUDFLARE=1 (a tunnel, or a proxied DNS record): when
+// nginx is reachable directly, a client can send that header itself and get a fresh lockout on every try.
+const clientIp = (c: Context<any>) => (process.env.CB_BEHIND_CLOUDFLARE === '1' && c.req.header('cf-connecting-ip')?.trim())
   || c.req.header('x-forwarded-for')?.split(',').at(-1)?.trim() || 'direct';
 
 app.use('*', async (c, next) => {
@@ -266,6 +267,7 @@ export function ensureListen(listen = () => sql.listen('cb', fan, () => fan('lis
 
 app.get('/api/stream', async (c) => {
   await ensureListen();
+  c.header('X-Accel-Buffering', 'no'); // nginx (the VPS's proxy) would otherwise hold the events back
   return streamSSE(c, async (stream) => {
     const send: Client = (table) => { stream.writeSSE({ event: 'change', data: table }).catch(() => {}); };
     clients.add(send);

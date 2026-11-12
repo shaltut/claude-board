@@ -417,7 +417,7 @@ You own
   priorities          P0 rare; re-rate with cb edit <id> --priority P1
   the queue order     never reorder Next yourself; propose an order with cb ask
   tags                short lowercase work streams (ocr, tawuniya, sc64); reuse before inventing; cb tag <id> ocr; cb brief --tag ocr
-  users               cb user add omar "Omar" (Ahmed sends the link from People); cb assign Q12 omar; cb ask ... --to omar
+  users               cb user add omar "Omar" (Ahmed sends the link from Users); cb assign Q12 omar; cb ask ... --to omar
 
 Don't
   - touch another project's tasks or workers: they have their own orchestrator

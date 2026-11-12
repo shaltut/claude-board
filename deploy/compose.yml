@@ -8,6 +8,10 @@ services:
   db:
     image: postgres:16
     restart: unless-stopped
+    # Watchtower (running on vps2) restarts whatever has a newer image: never the database or the board, whose
+    # upgrades are deliberate (maintain.md)
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
     environment:
       POSTGRES_USER: cb
       POSTGRES_PASSWORD: ${CB_PG_PASSWORD:?set CB_PG_PASSWORD in deploy/.env}
@@ -30,6 +34,8 @@ services:
       dockerfile: Dockerfile
     image: claude-board:latest
     restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
     depends_on:
       db:
         condition: service_healthy
@@ -39,8 +45,17 @@ services:
       CB_MACHINE: ${CB_MACHINE:-vps}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       GH_TOKEN: ${GH_TOKEN:-}
+      CB_BEHIND_CLOUDFLARE: ${CB_BEHIND_CLOUDFLARE:-0}
       CB_TRUST_LOCAL: "0"
-    # The proxy on the VPS (cloudflared or Caddy) reaches the board here; nothing else can.
+    # gh's login (`dc exec board gh auth login`) lives here, so it survives rebuilds
+    volumes:
+      - ghconfig:/home/node/.config/gh
+    # Nginx Proxy Manager reaches the board on its own network as http://claude-board:4747 (deploy.md, step 4).
+    # The loopback port is for curl and healthz on the VPS itself; nothing else can reach it.
+    networks:
+      default: {}
+      proxy:
+        aliases: [claude-board]
     ports:
       - "127.0.0.1:${CB_PORT:-4747}:4747"
     healthcheck:
@@ -52,3 +67,11 @@ services:
 
 volumes:
   pgdata:
+  ghconfig:
+
+networks:
+  # The proxy's network, made by Nginx Proxy Manager's own compose (`docker network ls`). Another proxy: its network,
+  # or `docker network create cb-proxy` and CB_PROXY_NETWORK=cb-proxy.
+  proxy:
+    external: true
+    name: ${CB_PROXY_NETWORK:-nginx-proxy-manager_default}

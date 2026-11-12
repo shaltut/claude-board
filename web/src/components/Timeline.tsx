@@ -15,7 +15,7 @@ const TONE: Partial<Record<CbEvent['kind'], string>> = {
 }
 const VERB: Partial<Record<CbEvent['kind'], string>> = {
   task_created: 'created', updated: 'edited', done: 'finished', note: 'noted', asked: 'asked', answered: 'answered',
-  delivered: 'delivered', withdrawn: 'withdrew', broadcast: 'broadcast', message: 'messaged', huddle: 'in a huddle', user: 'changed People', epic: 'changed an epic', goal: 'changed a goal', memory: 'changed memory',
+  delivered: 'delivered', withdrawn: 'withdrew', broadcast: 'broadcast', message: 'messaged', huddle: 'in a huddle', user: 'changed Users', epic: 'changed an epic', goal: 'changed a goal', memory: 'changed memory',
   sent_back: 'sent back', rewritten: 'rewrote', ask: 'in an ask',
 }
 

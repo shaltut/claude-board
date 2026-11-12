@@ -9,7 +9,7 @@ const { sql: serverSql } = await import('../server/db.ts');
 
 const clients: any[] = [];
 after(() => Promise.all([...clients.map((c) => c.end()), serverSql.end()]));
-afterEach(() => { delete process.env.CB_TRUST_LOCAL; delete process.env.HOST; loginFails.clear(); });
+afterEach(() => { delete process.env.CB_TRUST_LOCAL; delete process.env.HOST; delete process.env.CB_BEHIND_CLOUDFLARE; loginFails.clear(); });
 async function db() { const s = await freshDb(); clients.push(s); return s; }
 
 const SITE = 'board.example.com';
@@ -145,10 +145,27 @@ test('lockout is per name and address: a stranger cannot lock the owner out', as
   for (let i = 0; i < 5; i++) await login('ahmed', 'nope-nope', '198.51.100.9');
   assert.equal((await login('ahmed', 'owner-pass-1', '198.51.100.9')).status, 429, 'that address is locked');
   assert.equal((await login('ahmed', 'owner-pass-1', '203.0.113.7')).status, 200, 'Ahmed, elsewhere, is not');
-  // behind Cloudflare the address is cf-connecting-ip, which the client can't set
+  loginFails.clear();
+  // nginx (NPM) in front, reachable directly: the address is the last X-Forwarded-For hop (the one nginx adds);
+  // a cf-connecting-ip the client made up is ignored, so rotating it does not get past the lockout
+  for (let i = 0; i < 5; i++) await web('/api/login', { body: { name: 'ahmed', password: 'nope-nope' }, headers: { 'cf-connecting-ip': `192.0.2.${i}`, 'x-forwarded-for': '198.51.100.20' } });
+  let r = await web('/api/login', { body: { name: 'ahmed', password: 'owner-pass-1' }, headers: { 'cf-connecting-ip': '192.0.2.99', 'x-forwarded-for': '198.51.100.20' } });
+  assert.equal(r.status, 429, 'a made-up cf-connecting-ip does not get past it');
+  loginFails.clear();
+  // CB_BEHIND_CLOUDFLARE=1 (every request comes through Cloudflare): the address is cf-connecting-ip, which Cloudflare sets
+  process.env.CB_BEHIND_CLOUDFLARE = '1';
   for (let i = 0; i < 5; i++) await web('/api/login', { body: { name: 'ahmed', password: 'nope-nope' }, headers: { 'cf-connecting-ip': '192.0.2.1', 'x-forwarded-for': `10.0.0.${i}` } });
-  const r = await web('/api/login', { body: { name: 'ahmed', password: 'owner-pass-1' }, headers: { 'cf-connecting-ip': '192.0.2.1', 'x-forwarded-for': '10.9.9.9' } });
+  r = await web('/api/login', { body: { name: 'ahmed', password: 'owner-pass-1' }, headers: { 'cf-connecting-ip': '192.0.2.1', 'x-forwarded-for': '10.9.9.9' } });
   assert.equal(r.status, 429, 'a rotating X-Forwarded-For does not get past it');
+});
+
+test('live updates through nginx: the stream tells the proxy not to buffer it', async () => {
+  const sql = await db();
+  await owner(sql);
+  const r = await web('/api/stream', { cookie: (await login('ahmed', 'owner-pass-1')).cookie });
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('x-accel-buffering'), 'no');
+  await r.body?.cancel();
 });
 
 test('anyone signed in changes their own password; the current one is required', async () => {
