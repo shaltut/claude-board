@@ -206,6 +206,7 @@ test('device: every way a person loses access ends their devices', async () => {
   assert.equal(await auth(sql, off), null, 'switching back on does not revive an old token');
 
   const role = await add(sql, 'omar-b');
+  await sql`select cb.user_add('ahmed', 'Ahmed', 'ahmed', 'admin')`; // omar must not be the last admin when made member again
   await sql`select cb.user_set_role('omar', 'admin', 'ahmed')`;
   assert.equal(await auth(sql, role), null, 'a role change ends every sign-in, devices included');
   await sql`select cb.user_set_role('omar', 'member', 'ahmed')`;

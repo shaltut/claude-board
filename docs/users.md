@@ -57,6 +57,17 @@ Questions handed to someone move from "Waiting on you" to "Waiting on others" an
 - What other admins can't do: change another admin's password, sign-ins or role, or remove an admin (yours included:
   only you can, for any admin), or pair Telegram (the bot is yours). They manage members, and can step down themselves.
 
+## Sessions from a teammate's machine (not available yet)
+
+The groundwork is in the database; nothing on the board uses it until the session API ships
+([the design](superpowers/specs/2026-11-12-multi-user-sessions-design.md)).
+
+- Each person has a switch, **can connect sessions**, off by default. Turning it on is your OK for work on their
+  projects to be read on their machine and by their Claude account. It leaves a line in History.
+- A person's machine is a **device**: it gets a token, shown once, that the board keeps only as a hash.
+- **Revoke** cuts one device off at once. Turning the switch off, changing their role or removing them ends all of
+  their devices; turning the switch back on does not bring old ones back.
+
 ## Stop sharing
 
 - **A member's link leaked:** Users → **New link**. The old link stops working at once, and every browser signed in as

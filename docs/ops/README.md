@@ -82,6 +82,8 @@ signed-in admin (or the dashboard on Ahmed's PC, before the move) can act as `ah
 - CSRF: a POST whose `Origin` is not the board's own `Host` is refused. The proxy must pass `Host` through unchanged.
 - An admin's token (their cookie) is never shown or sent anywhere; a member's link is their token, shown only on the
   Users page, to admins.
+- A teammate's device token (not in use yet) is shown once and stored only as a SHA-256 hash (`cb.devices`); backups
+  hold the hashes.
 - The server trusts "plainly local" requests only on Ahmed's PC (HOST on loopback, no proxy headers). In the container
   `HOST=0.0.0.0` and `CB_TRUST_LOCAL=0`, so everyone signs in.
 - Secrets live in `deploy/.env` on the VPS (mode 600, git-ignored): the database password, the Telegram bot token, the

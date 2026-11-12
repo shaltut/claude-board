@@ -44,6 +44,24 @@ create table if not exists cb.user_projects (
   primary key (user_name, project)
 );
 
+-- Teammates' sessions (docs/superpowers/specs/2026-11-12-multi-user-sessions-design.md). sessions_on: this person may
+-- connect Claude sessions from their own machine. Turning it on is Ahmed's recorded OK for work on their projects to
+-- reach that machine (spec 4.6); off by default.
+alter table cb.users add column if not exists sessions_on boolean not null default false;
+-- A person's machine. Its token is shown once (cb.device_add) and kept only as a SHA-256 hash. The label is the
+-- machine part of its sessions' names (W1@<label>), so it is unique across everyone and a revoked device keeps it:
+-- an old History line never points at a new machine.
+create table if not exists cb.devices (
+  id         bigint generated always as identity primary key,
+  user_name  text not null references cb.users(name) on update cascade on delete cascade,
+  label      text not null unique,
+  token_hash text not null unique,
+  created_at timestamptz not null default now(),
+  last_seen  timestamptz,
+  revoked_at timestamptz
+);
+create index if not exists devices_user on cb.devices (user_name);
+
 create table if not exists cb.questions (
   id           bigint generated always as identity primary key,
   project      text not null references cb.projects(slug) on update cascade,
@@ -94,6 +112,10 @@ create table if not exists cb.events (
 );
 alter table cb.events drop constraint if exists events_kind_check;
 alter table cb.events add constraint events_kind_check check (kind in ('task_created','moved','updated','done','note','asked','answered','delivered','withdrawn','broadcast','message','huddle','user','epic','memory','sent_back','rewritten','goal','ask'));
+-- The person a write was made for, when a teammate's session made it (the session API sets cb.owner for the
+-- transaction; cb.events_owner copies it). Null: the past, and Ahmed's own sessions. No foreign key: History outlives the person.
+alter table cb.events add column if not exists owner text;
+create index if not exists events_owner on cb.events (owner) where owner is not null;
 
 alter table cb.questions add column if not exists multi boolean not null default false;
 
@@ -203,6 +225,9 @@ create table if not exists cb.sessions (
 alter table cb.sessions add column if not exists project text references cb.projects(slug) on update cascade on delete set null;
 -- last broadcast event this session was given
 alter table cb.sessions add column if not exists broadcast_seen bigint not null default 0;
+-- Whose session: null = one of Ahmed's own (connected with the database password); else the person and the device.
+alter table cb.sessions add column if not exists user_name text references cb.users(name) on update cascade on delete cascade;
+alter table cb.sessions add column if not exists device_id bigint references cb.devices(id) on delete cascade;
 
 create table if not exists cb.settings (
   key   text primary key,
@@ -225,6 +250,7 @@ drop function if exists cb.set_actor cascade;
 drop function if exists cb.not_ahmed cascade;
 drop function if exists cb.dashboard_only cascade;
 drop function if exists cb.ahmed_like cascade;
+drop function if exists cb.events_owner cascade;
 drop function if exists cb.norm_status cascade;
 drop function if exists cb.norm_priority cascade;
 drop function if exists cb.norm_type cascade;
@@ -319,6 +345,13 @@ begin
   if current_setting('application_name') <> 'cb-web' then
     raise exception 'only Ahmed can do this, on the % page of the dashboard', page;
   end if;
+end $$;
+
+-- Stamps an event with the person it was made for (see cb.events.owner).
+create function cb.events_owner() returns trigger language plpgsql as $$
+begin
+  if new.owner is null then new.owner := nullif(current_setting('cb.owner', true), ''); end if;
+  return new;
 end $$;
 
 -- Effective actor for this transaction; triggers read it back from cb.actor.
@@ -555,6 +588,8 @@ create or replace trigger tasks_notify after insert or update or delete on cb.ta
   for each statement execute function cb.notify();
 create or replace trigger questions_notify after insert or update or delete on cb.questions
   for each statement execute function cb.notify();
+create or replace trigger events_owner before insert on cb.events
+  for each row execute function cb.events_owner();
 create or replace trigger events_notify after insert on cb.events
   for each statement execute function cb.notify();
 create or replace trigger projects_notify after insert or update or delete on cb.projects
@@ -729,6 +764,12 @@ drop function if exists cb.user_project_add cascade;
 drop function if exists cb.user_project_remove cascade;
 drop function if exists cb.user_password cascade;
 drop function if exists cb.user_set_role cascade;
+drop function if exists cb.user_sessions cascade;
+drop function if exists cb.device_add cascade;
+drop function if exists cb.device_auth cascade;
+drop function if exists cb.device_revoke cascade;
+drop function if exists cb.devices_list cascade;
+drop function if exists cb._devices_revoke cascade;
 drop function if exists cb.assignee_on_project cascade;
 drop function if exists cb.question_assign cascade;
 drop function if exists cb.answer cascade;
@@ -1619,6 +1660,7 @@ begin
   end if;
   -- a new token: a member's old link (sent over chat) must not become an admin's credential, nor an admin's cookie a member's
   update cb.users u set role = r, token = gen_random_uuid()::text where u.name = n;
+  perform cb._devices_revoke(n);  -- every sign-in ends with the old role, their machines' too
   insert into cb.events (actor, kind, summary, data)
   values (a, 'user', d || ' (' || n || ') is now ' || r, jsonb_build_object('user', n, 'action', 'role', 'role', r));
 end $$;
@@ -1739,6 +1781,124 @@ begin
   insert into cb.events (actor, kind, summary, data)
   values (a, 'user', 'password set for ' || d || ' (' || n || ')', jsonb_build_object('user', n, 'action', 'password'));
 end $$;
+
+-- ---------------------------------------------------------------- teammates' devices
+-- Nothing calls these over HTTP yet (not in server/rpc.ts): the session API and the Users page come in later phases.
+
+-- Ends every live device of a person, and the sessions bound through them. Returns how many.
+create function cb._devices_revoke(n text) returns int language plpgsql as $$
+#variable_conflict use_variable
+declare c int;
+begin
+  delete from cb.sessions s where s.device_id in (select d.id from cb.devices d where d.user_name = n);
+  update cb.devices d set revoked_at = now() where d.user_name = n and d.revoked_at is null;
+  get diagnostics c = row_count;
+  return c;
+end $$;
+
+-- May this person connect sessions from their own machine? Turning it off ends their devices (a later "on" does not
+-- revive them: they add the machine again).
+create function cb.user_sessions(name text, allow boolean, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; n text := lower(trim(name)); d text; was boolean; c int := 0;
+begin
+  perform cb.dashboard_only('Users');
+  a := cb.set_actor(actor);
+  select u.display, u.sessions_on into d, was from cb.users u where u.name = n for update;
+  if d is null then raise exception 'unknown user %: see cb users', name; end if;
+  if was = coalesce(allow, false) then return; end if;
+  update cb.users u set sessions_on = coalesce(allow, false) where u.name = n;
+  if not coalesce(allow, false) then c := cb._devices_revoke(n); end if;
+  insert into cb.events (actor, kind, summary, data)
+  values (a, 'user', d || ' (' || n || ') ' || case when allow
+            then 'may now connect sessions: work on their projects will reach their machine'
+            else 'may no longer connect sessions' || case when c > 0 then ': ' || c || ' device' || case when c = 1 then '' else 's' end || ' revoked' else '' end end,
+          jsonb_build_object('user', n, 'action', case when allow then 'sessions_on' else 'sessions_off' end));
+end $$;
+
+-- Add a person's machine. Returns its token: the only time it exists outside that machine (the table keeps a hash,
+-- History the label). The dashboard's alone: a session never mints a credential.
+create function cb.device_add(name text, label text, actor text default null) returns text language plpgsql as $$
+#variable_conflict use_variable
+declare a text; n text := lower(trim(name)); l text := lower(trim(coalesce(label, ''))); d text; ok boolean; t text; did bigint;
+begin
+  perform cb.dashboard_only('Users');
+  a := cb.set_actor(actor);
+  select u.display, u.sessions_on into d, ok from cb.users u where u.name = n for update;
+  if d is null then raise exception 'unknown user %: see cb users', name; end if;
+  if not ok then raise exception '% can''t connect sessions yet: turn it on for them on the Users page', n; end if;
+  if l !~ '^[a-z][a-z0-9-]{1,30}$' then
+    raise exception 'device name: 2 to 31 lowercase letters, digits or -, starting with a letter (e.g. omar-laptop)';
+  end if;
+  -- the label is the machine in W1@<label>: never a name that reads as Ahmed, an orchestrator or the board itself
+  if cb.ahmed_like(l) or l ~ 'ahmed' or l in ('orch', 'relay', 'board', 'github', 'unknown', 'vps') then
+    raise exception '% is reserved: pick another device name', l;
+  end if;
+  -- a machine Ahmed's own sessions use: W1@macbook must stay his
+  if exists (select 1 from cb.sessions s where s.machine = l and s.user_name is null) then
+    raise exception '% is already a machine on the board: pick another device name', l;
+  end if;
+  if exists (select 1 from cb.devices x where x.label = l) then raise exception '% is taken: pick another device name', l; end if;
+  if (select count(*) from cb.devices x where x.user_name = n and x.revoked_at is null) >= 10 then
+    raise exception '% has 10 devices: revoke one first', n;
+  end if;
+  t := 'cbd_' || encode(public.gen_random_bytes(32), 'hex');
+  insert into cb.devices (user_name, label, token_hash) values (n, l, encode(public.digest(t, 'sha256'), 'hex')) returning id into did;
+  insert into cb.events (actor, kind, summary, data)
+  values (a, 'user', 'device ' || l || ' added for ' || d || ' (' || n || ')',
+          jsonb_build_object('user', n, 'action', 'device_add', 'device', did, 'label', l));
+  return t;
+end $$;
+
+-- Who a device token is: {device, user, label, role, projects}, or null (unknown, revoked, or the person's switch is
+-- off). Projects are read now, so taking someone off a project takes effect on their next request.
+create function cb.device_auth(token text) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare r jsonb; did bigint;
+begin
+  if coalesce(token, '') = '' then return null; end if;
+  select d.id, jsonb_build_object('device', d.id, 'user', u.name, 'label', d.label, 'role', u.role,
+           'projects', coalesce((select jsonb_agg(up.project order by up.project) from cb.user_projects up where up.user_name = u.name), '[]'))
+    into did, r
+    from cb.devices d join cb.users u on u.name = d.user_name
+   where d.token_hash = encode(public.digest(token, 'sha256'), 'hex') and d.revoked_at is null and u.sessions_on;
+  if did is null then return null; end if;
+  -- once a minute is enough for "last seen"; not a write on every request
+  update cb.devices d set last_seen = now() where d.id = did and (d.last_seen is null or d.last_seen < now() - interval '1 minute');
+  return r;
+end $$;
+
+-- Cut one machine off: its token stops at once and its sessions are unbound. The row stays, for History and the label.
+create function cb.device_revoke(id bigint, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; dev cb.devices; d text;
+begin
+  perform cb.dashboard_only('Users');
+  a := cb.set_actor(actor);
+  select * into dev from cb.devices x where x.id = id for update;
+  if dev.id is null then raise exception 'device % not found: see the Users page', id; end if;
+  if dev.revoked_at is not null then return; end if;
+  delete from cb.sessions s where s.device_id = dev.id;
+  update cb.devices x set revoked_at = now() where x.id = dev.id;
+  select u.display into d from cb.users u where u.name = dev.user_name;
+  insert into cb.events (actor, kind, summary, data)
+  values (a, 'user', 'device ' || dev.label || ' revoked for ' || d || ' (' || dev.user_name || ')',
+          jsonb_build_object('user', dev.user_name, 'action', 'device_revoke', 'device', dev.id, 'label', dev.label));
+end $$;
+
+-- Devices for the Users page: live first. Never the hash.
+create function cb.devices_list(name text default null) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare n text := nullif(lower(trim(coalesce(name, ''))), '');
+begin
+  perform cb.dashboard_only('Users');
+  return coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'user', d.user_name, 'label', d.label, 'created_at', d.created_at,
+                                      'last_seen', d.last_seen, 'revoked_at', d.revoked_at) order by d.revoked_at is not null, d.id)
+                     from cb.devices d where n is null or d.user_name = n), '[]');
+end $$;
+
+create or replace trigger devices_notify after insert or update or delete on cb.devices
+  for each statement execute function cb.notify();
 
 -- A question or task goes to a person only on one of their projects. Checked when the assignee changes, not when
 -- the project does: an alias merge or a slug rename moves assigned work and must not be blocked (the guest page
