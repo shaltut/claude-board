@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Copy, KeyRound, ShieldCheck, UserPlus, UserX, X } from 'lucide-react'
+import { Copy, KeyRound, LogOut, ShieldCheck, UserPlus, UserX, X } from 'lucide-react'
 import { get, rpc, useProjects, type Task } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { go, type Route } from '@/lib/route'
@@ -10,6 +10,15 @@ import { Priority, ProjectChip, ProjectDot, StatusDot, TaskId } from '@/componen
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { useWho } from '@/components/Account'
+
+/** Who is looking at the Users page: an admin by name, or Ahmed on his PC's own dashboard (no sign-in there). */
+function useViewer() {
+  const { data: who } = useWho()
+  return who?.role === 'admin' ? who.user.name : 'ahmed'
+}
+/** Another admin's password and sign-in are the owner's to change (the server refuses the rest); a member's, any admin's. */
+const managesSignIn = (me: string, p: Person) => p.role !== 'admin' || me === 'ahmed' || me === p.name
 
 interface Person {
   // token: a member's link; null for an admin (admins sign in by password, and the token is their cookie)
@@ -99,6 +108,7 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
   const [busy, setBusy] = useState(false)
   const link = p.token ? linkOf(base, p.token) : ''
   const owner = p.name === 'ahmed'
+  const me = useViewer()
   const holding = p.questions.filter((q) => q.blocking).length
   const working = p.tasks.filter((t) => t.status === 'in_progress').length
 
@@ -106,11 +116,14 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
     setBusy(true)
     try {
       if (kind === 'rotate') {
-        // the token the rotate returned, not the list's: that one is the old, dead link until the refetch lands
-        const token = await rpc<string>('user_rotate', { name: p.name })
+        // the token the rotate returned, not the list's: that one is the old, dead link until the refetch lands.
+        // An admin has no link: for them it only ends every sign-in (null comes back).
+        const token = await rpc<string | null>('user_rotate', { name: p.name })
         await qc.invalidateQueries()
-        setShown({ link: linkOf(base, token), why: 'new' })
-        toast.success(`New link for ${p.display}`, { description: 'The old one no longer works. Send this one privately.' })
+        if (token) {
+          setShown({ link: linkOf(base, token), why: 'new' })
+          toast.success(`New link for ${p.display}`, { description: 'The old one no longer works. Send this one privately.' })
+        } else toast.success(`${p.display} is signed out everywhere`, { description: 'Their password still works.' })
       } else {
         const r = await rpc<{ questions: number; tasks: number }>('user_remove', { name: p.name })
         toast.success(`Removed ${p.display}`, { description: `${plural(r.questions, 'question')} came back to you, ${plural(r.tasks, 'task')} unassigned.` })
@@ -170,11 +183,13 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
 
       <div className="mt-auto border-t pt-3">
         {confirm ? (
-          <div role="group" aria-label={confirm === 'rotate' ? 'Confirm new link' : `Confirm removing ${p.display}`}
+          <div role="group" aria-label={confirm === 'rotate' ? (p.token ? 'Confirm new link' : 'Confirm signing out everywhere') : `Confirm removing ${p.display}`}
             onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setConfirm(null) } }}
             className={cn('rounded-md p-3 text-sm', confirm === 'remove' ? 'bg-destructive/8' : 'bg-raised')}>
             <p className="text-pretty">
-              {confirm === 'rotate'
+              {confirm === 'rotate' && !p.token
+                ? <>Every browser signed in as {p.display} is signed out{p.name === me && ', this one too'}. The password still works.</>
+                : confirm === 'rotate'
                 ? <>{p.display}'s current link stops working, and every browser signed in as {p.display} is signed out, by link or by password{p.has_password && '; the password itself still works'}. You'll need to send the new link.</>
                 : <>Remove {p.display}? Their link stops working.{' '}
                   {p.questions.length > 0 && <>Their {plural(p.questions.length, 'open question')} come{p.questions.length === 1 && 's'} back to you{holding > 0 && ', and work held on them stays held'}. </>}
@@ -183,7 +198,7 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
             </p>
             <div className="mt-2.5 flex flex-wrap gap-2">
               <Button size="sm" variant={confirm === 'remove' ? 'destructive' : 'default'} disabled={busy} onClick={() => act(confirm)}>
-                {confirm === 'rotate' ? 'Make a new link' : `Remove ${p.display}`}
+                {confirm === 'rotate' ? (p.token ? 'Make a new link' : 'Sign out everywhere') : `Remove ${p.display}`}
               </Button>
               <Button size="sm" variant="ghost" autoFocus onClick={() => setConfirm(null)}>Cancel</Button>
             </div>
@@ -201,6 +216,7 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
             </code>
             {p.token && <Button size="sm" variant="secondary" onClick={async () => { if (!(await copy(link, p.display))) setShown({ link, why: 'copy' }) }}><Copy /> Copy link</Button>}
             {p.token && <Button size="sm" variant="ghost" onClick={() => setConfirm('rotate')}><KeyRound /> New link</Button>}
+            {!p.token && managesSignIn(me, p) && <Button size="sm" variant="ghost" onClick={() => setConfirm('rotate')}><LogOut /> Sign out everywhere</Button>}
             {!owner && <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive" onClick={() => setConfirm('remove')}><UserX /> Remove</Button>}
           </div>
         )}
@@ -218,6 +234,7 @@ function Access({ p }: { p: Person }) {
   const free = projects.filter((x) => !p.projects.includes(x.slug))
   const waiting = (slug: string) => [p.questions.filter((q) => q.project === slug).length, p.tasks.filter((t) => t.project === slug).length]
   const owner = p.name === 'ahmed'
+  const me = useViewer(), local = useWho().data?.role === 'local'
 
   async function run(fn: string, args: object, ok: (r: any) => string) {
     try { const r = await rpc(fn, { name: p.name, ...args }); toast.success(ok(r)); await qc.invalidateQueries(); return true }
@@ -281,7 +298,9 @@ function Access({ p }: { p: Person }) {
         {pw === null ? <>
           <span className={cn(!p.has_password && (p.role === 'admin' ? 'text-destructive' : 'text-muted-foreground'))}>
             {p.has_password ? 'Set' : p.role === 'admin' ? 'None: they cannot sign in yet' : 'None, link only'}</span>
-          <Button size="xs" variant="ghost" onClick={() => setPw('')}>{p.has_password ? 'Reset password' : 'Set password'}</Button>
+          {/* your own: the key icon at the top, which asks for the current one (on the PC's own dashboard there is none) */}
+          {p.name === me && !local ? <span className="text-xs text-muted-foreground">yours: the key icon at the top</span>
+            : managesSignIn(me, p) && <Button size="xs" variant="ghost" onClick={() => setPw('')}>{p.has_password ? 'Reset password' : 'Set password'}</Button>}
         </> : (
           // Shown as text, not dots: Ahmed types it to send it on. autoComplete off keeps it out of his own password manager.
           <form className="flex min-w-0 flex-1 items-center gap-1.5"

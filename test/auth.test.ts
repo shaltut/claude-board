@@ -241,3 +241,93 @@ test('cb on a fresh VPS: the first admin and his password from the shell; never 
   assert.equal(cb(['user', 'role', 'omar', 'admin'], { env: SHELL }).code, 0);
   assert.match(cb(['users']).out, /^omar\s+Omar \(admin\): 0 questions, 0 tasks open$/m);
 });
+
+// Review of the vps branch (2026-11-12): what a second admin must not be able to do.
+async function twoAdmins(sql: any) {
+  await owner(sql);
+  await sql`select cb.user_add('omar', 'Omar', role => 'admin')`;
+  await sql`select cb.user_password('omar', 'omar-pass-1')`;
+  return { ahmed: await adminCookie('ahmed', 'owner-pass-1'), omar: await adminCookie('omar', 'omar-pass-1') };
+}
+const whoami = async (cookie: string) => (await web('/api/whoami', { cookie })).json();
+
+test('an admin who leaves out the actor still acts under their own name, never as the default ahmed', async () => {
+  const sql = await db();
+  const { omar } = await twoAdmins(sql);
+  const [{ id }] = await sql`select cb.ask(project => 'demo', body => 'Go?', options => '["Yes","No"]', actor => 'W1@pc') as id`;
+  const r = await web('/api/rpc/answer', { cookie: omar, body: { id: String(id), answer: 'Yes' } }); // no actor at all
+  assert.equal(r.status, 200, await r.clone().text());
+  assert.equal((await sql`select answered_by from cb.questions where id = ${id}`)[0].answered_by, 'omar');
+  // functions without an actor argument still work for admins
+  const s = await web('/api/rpc/seen', { cookie: omar, body: {} });
+  assert.equal(s.status, 200, await s.clone().text());
+});
+
+test('another admin cannot take over the owner: no new link, no password reset for ahmed', async () => {
+  const sql = await db();
+  const { ahmed, omar } = await twoAdmins(sql);
+  const rot = await web('/api/rpc/user_rotate', { cookie: omar, body: { name: 'ahmed' } });
+  assert.equal(rot.status, 403, await rot.clone().text());
+  const pw = await web('/api/rpc/user_password', { cookie: omar, body: { name: 'ahmed', password: 'taken-over-1' } });
+  assert.equal(pw.status, 403);
+  assert.equal((await login('ahmed', 'owner-pass-1')).status, 200, "the owner's password is unchanged");
+  assert.equal((await whoami(ahmed)).user?.name, 'ahmed', 'his sign-in still works');
+  // a token is never handed out for an admin, even to the owner rotating it ("sign out everywhere")
+  const own = await web('/api/rpc/user_rotate', { cookie: ahmed, body: { name: 'omar' } });
+  assert.equal(own.status, 200, await own.clone().text());
+  assert.equal((await own.json()).result, null);
+  assert.deepEqual(await whoami(omar), { role: 'anonymous' }, 'omar is signed out everywhere');
+  // nobody sets their own password this way (that is /api/password, with the current one)
+  assert.equal((await web('/api/rpc/user_password', { cookie: ahmed, body: { name: 'ahmed', password: 'no-current-1' } })).status, 403);
+  // members' links still rotate, by any admin
+  await sql`select cb.user_add('iman', 'Iman')`;
+  const m = await web('/api/rpc/user_rotate', { cookie: await adminCookie('omar', 'omar-pass-1'), body: { name: 'iman' } });
+  assert.equal(m.status, 200, await m.clone().text());
+  assert.match((await m.json()).result, /^[0-9a-f-]{36}$/, "a member's new link, to send");
+});
+
+test("Telegram pairing is the owner's alone: another admin cannot re-pair the bot to themselves", async () => {
+  const sql = await db();
+  const { ahmed, omar } = await twoAdmins(sql);
+  assert.equal((await web('/api/telegram/connect', { cookie: omar, method: 'POST' })).status, 403);
+  assert.equal((await web('/api/telegram/disconnect', { cookie: omar, method: 'POST' })).status, 403);
+  assert.notEqual((await web('/api/telegram/connect', { cookie: ahmed, method: 'POST' })).status, 403);
+});
+
+test('a role change issues a new token: an old member link never becomes an admin credential', async () => {
+  const sql = await db();
+  await owner(sql);
+  await sql`select cb.user_add('iman', 'Iman')`;
+  const [{ token }] = await sql`select token from cb.users where name = 'iman'`;
+  await sql.begin(async (tx: any) => { await tx`set local application_name = 'cb-web'`; await tx`select cb.user_set_role('iman', 'admin')`; });
+  assert.deepEqual(await whoami(token), { role: 'anonymous' });
+  await sql`select cb.user_add('kamel', 'Kamel')`;
+  const [{ token: k }] = await sql`select token from cb.users where name = 'kamel'`;
+  await sql`select cb.user_add('kamel', 'Kamel', role => 'admin')`; // promotion by adding again
+  assert.deepEqual(await whoami(k), { role: 'anonymous' });
+});
+
+test('lockout counters survive the prune: a flood of junk names does not reset them', async () => {
+  const sql = await db();
+  await owner(sql);
+  for (let i = 0; i < 4; i++) await login('ahmed', 'nope-nope', '198.51.100.9');
+  for (let i = 0; i < 1001; i++) loginFails.set(`junk${i}|198.51.100.9`, { n: 1, until: 0, last: Date.now() } as any);
+  await login('ahmed', 'nope-nope', '198.51.100.9'); // the 5th: the prune runs here
+  assert.equal((await login('ahmed', 'owner-pass-1', '198.51.100.9')).status, 429);
+});
+
+test("an admin changing their password signs out every other browser; a member's link keeps working", async () => {
+  const sql = await db();
+  await owner(sql);
+  const old = await adminCookie('ahmed', 'owner-pass-1');
+  const r = await web('/api/password', { cookie: old, body: { current: 'owner-pass-1', password: 'owner-pass-2' } });
+  assert.equal(r.status, 200, await r.clone().text());
+  const fresh = cookieOf(r);
+  assert.ok(fresh && fresh !== old, 'this browser gets a new cookie');
+  assert.deepEqual(await whoami(old), { role: 'anonymous' });
+  assert.equal((await whoami(fresh!)).role, 'admin');
+  await sql`select cb.user_add('iman', 'Iman')`;
+  const [{ token }] = await sql`select token from cb.users where name = 'iman'`;
+  assert.equal((await web('/api/password', { cookie: token, body: { password: 'iman-pass-1' } })).status, 200);
+  assert.ok(cookieOf(await web(`/?u=${token}`)), 'her link still signs her in');
+});

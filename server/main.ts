@@ -57,7 +57,10 @@ function signIn(c: Context<any>, token: string) {
   setCookie(c, 'cb_user', token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 90 * 86_400,
     secure: c.req.header('x-forwarded-proto') === 'https' }); // the tunnel is https; local dev is plain http
 }
-export const loginFails = new Map<string, { n: number; until: number }>();
+export const loginFails = new Map<string, { n: number; until: number; last: number }>();
+// A failure count lives 2 minutes from its last try; a lock, until it runs out. The prune drops only those, so flooding
+// the map with junk names can't reset a real count.
+const stale = (f: { until: number; last: number }, now: number) => f.until ? f.until <= now : now - f.last > 120_000;
 let loginWaits = 0;
 // Guests with a project scope: only what is assigned to them, on a project Ahmed put them on.
 const onTheirProjects = (user: string) => sql`project in (select project from cb.user_projects where user_name = ${user})`;
@@ -78,11 +81,12 @@ app.use('/api/*', async (c, next) => {
     const name = typeof b.name === 'string' ? b.name.trim().toLowerCase() : '', pw = typeof b.password === 'string' ? b.password : '';
     const refuse = (status: 401 | 429) => c.json({ ok: false, error: "That name and password don't match." }, status);
     const now = Date.now(), key = `${name}|${clientIp(c)}`; // per name and address: a stranger can't lock Ahmed out
-    if (loginFails.size > 1000) for (const [k, f] of loginFails) if (f.until <= now) loginFails.delete(k);
+    if (loginFails.size > 1000) for (const [k, f] of loginFails) if (stale(f, now)) loginFails.delete(k);
     let f = loginFails.get(key);
-    if (f?.until && f.until <= now) f = undefined; // the lock ran out: start counting again
+    if (f && stale(f, now)) f = undefined; // the lock ran out, or the last miss was long ago: start counting again
     if (f?.until) return refuse(429);
-    f ??= { n: 0, until: 0 };
+    f ??= { n: 0, until: 0, last: now };
+    f.last = now;
     if (++f.n >= 5) f.until = now + 120_000;
     loginFails.set(key, f);
     const [u] = name && pw ? await sql`select token from cb.users where name = ${name} and password is not null
@@ -111,7 +115,14 @@ app.use('/api/*', async (c, next) => {
     const [row] = await sql`select password is not null as has, password = public.crypt(${typeof b.current === 'string' ? b.current : ''}, password) as ok
                               from cb.users where name = ${u.name}`;
     if (row?.has && !row.ok) return c.json({ ok: false, error: 'the current password is wrong' }, 400);
-    await sql.begin(async (tx) => { await tx`set local application_name = 'cb-web'`; await callFn('user_password', { name: u.name, password: b.password, actor: u.name }, tx); });
+    const fresh = await sql.begin(async (tx) => {
+      await tx`set local application_name = 'cb-web'`;
+      await callFn('user_password', { name: u.name, password: b.password, actor: u.name }, tx);
+      // an admin's cookie is their only credential besides the password: a new one ends every other sign-in (a
+      // stolen cookie included). A member's token is also their link, which keeps working (New link ends it).
+      if (u.role === 'admin') return (await tx`update cb.users set token = gen_random_uuid()::text where name = ${u.name} returning token`)[0].token as string;
+    });
+    if (fresh) signIn(c, fresh);
     return c.json({ ok: true });
   }
   const local = isLocal(c);
@@ -149,6 +160,25 @@ app.use('/api/*', async (c, next) => {
   }
 });
 
+// The cb functions that take an actor, read from the schema once (it is applied before the server starts).
+let actorFns: Promise<Set<string>> | null = null;
+async function takesActor(fn: string) {
+  actorFns ??= sql`select distinct p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                    where n.nspname = 'cb' and 'actor' = any(p.proargnames)`
+    .then((r) => new Set(r.map((x: any) => x.proname as string)), (e) => { actorFns = null; throw e; });
+  return (await actorFns).has(fn);
+}
+// Sign-ins (passwords, tokens) of admins are the owner's to change: otherwise any admin could reset Ahmed's password or
+// rotate his token and sign in as him. Anyone's own password goes through /api/password, which asks for the current one.
+async function signInRule(admin: Who, fn: string, args: Record<string, unknown>) {
+  if (fn !== 'user_password' && fn !== 'user_rotate') return null;
+  const target = String(args.name ?? '').trim().toLowerCase();
+  if (fn === 'user_password' && target === admin.name) return 'your own password: the key icon at the top (it asks for the current one)';
+  if (admin.name === 'ahmed' || target === admin.name) return null;
+  const [t] = await sql`select role from cb.users where name = ${target}`;
+  return t?.role === 'admin' ? "another admin's password and sign-in are Ahmed's to change" : null;
+}
+
 app.post('/api/rpc/:fn', async (c) => {
   try {
     const args = (await c.req.json().catch(() => ({}))) ?? {};
@@ -156,11 +186,16 @@ app.post('/api/rpc/:fn', async (c) => {
     // CSRF check above has made it this host. A script without Origin (curl from a session) is a session.
     // The CLI shares this pool and callFn, so the name is set per transaction here, not on the pool.
     // A signed-in admin is the dashboard, and acts as who signed in: the page's own actor is never trusted.
-    const admin = c.get('admin');
-    if (admin && typeof args === 'object' && 'actor' in args) args.actor = admin.name;
+    const admin = c.get('admin'), fn = c.req.param('fn');
+    if (admin && args && typeof args === 'object') {
+      // every function with an actor argument gets the admin's name, given or not: several default it to 'ahmed'
+      if (await takesActor(fn)) args.actor = admin.name;
+      const refused = await signInRule(admin, fn, args);
+      if (refused) return c.json({ ok: false, error: refused }, 403);
+    }
     const result = admin || c.req.header('origin')
-      ? await sql.begin(async (tx) => { await tx`set local application_name = 'cb-web'`; return callFn(c.req.param('fn'), args ?? {}, tx); })
-      : await callFn(c.req.param('fn'), args ?? {});
+      ? await sql.begin(async (tx) => { await tx`set local application_name = 'cb-web'`; return callFn(fn, args ?? {}, tx); })
+      : await callFn(fn, args ?? {});
     return c.json({ ok: true, result });
   } catch (e: any) {
     const status = e instanceof RpcError ? e.status : e?.name === 'PostgresError' ? 400 : 500;
@@ -198,8 +233,10 @@ app.get('/api/people', async (c) => {
   return c.json({ public_url: (process.env.CB_PUBLIC_URL || dotenv('PUBLIC_URL') || '').replace(/\/$/, '') || null, people: await q.people() });
 });
 // Telegram answering (#683): pairing is the dashboard page's alone, as tokens are on /api/people (guests never get here).
-const pageOnly = (c: Context) => c.req.header('sec-fetch-site') === 'same-origin' ? null
-  : c.json({ ok: false, error: 'Telegram pairing is on the dashboard only' }, 403);
+// Another admin pairing their own chat would get Ahmed's questions and answer them as him: the owner's alone.
+const pageOnly = (c: Context<any>) => c.req.header('sec-fetch-site') !== 'same-origin'
+  ? c.json({ ok: false, error: 'Telegram pairing is on the dashboard only' }, 403)
+  : c.get('admin') && c.get('admin').name !== 'ahmed' ? c.json({ ok: false, error: "Telegram pairing is Ahmed's: the bot is his" }, 403) : null;
 app.get('/api/telegram', async (c) => pageOnly(c) ?? c.json(await telegramStatus()));
 app.post('/api/telegram/connect', async (c) => {
   try { return pageOnly(c) ?? c.json(telegramConnect()); } catch (e: any) { return c.json({ ok: false, error: e.message }, 400); }

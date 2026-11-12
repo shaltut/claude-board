@@ -46,9 +46,16 @@ Questions handed to someone move from "Waiting on you" to "Waiting on others" an
 - Wrong name or password: one message, after a second. 5 wrong tries for a name from one address lock that name there
   for 2 minutes (same message, even with the right password). Someone else failing elsewhere never locks you out.
 - Everyone can **change their password** (the key icon) and **sign out**. A member who signed in by link sets a
-  first password there without a current one.
-- Forgot the password: an admin resets it on the Users page (**Reset password**). If no admin can sign in, reset it
-  from the VPS shell ([ops/maintain.md](ops/maintain.md#users)).
+  first password there without a current one. An admin who changes their password is signed out of every other
+  browser (a member's link keeps working).
+- Forgot the password: an admin resets a member's on the Users page (**Reset password**); only you reset another
+  admin's. Yours, if you can't sign in: from the VPS shell ([ops/maintain.md](ops/maintain.md#users)).
+- **Sign out everywhere** on an admin's card ends every browser signed in as them (a lost laptop); their password
+  still works. Yours, or anyone's if you're the owner.
+- Making someone admin, or member again, signs them out everywhere: an old member link never becomes an admin's
+  sign-in.
+- What other admins can't do: change your password or sign-ins, pair Telegram (the bot is yours), or remove or demote
+  you.
 
 ## Stop sharing
 

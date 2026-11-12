@@ -1587,7 +1587,8 @@ begin
   select u.display into was from cb.users u where u.name = n;
   insert into cb.users (name, display, role) values (n, coalesce(nullif(trim(display), ''), initcap(n)), r)
   on conflict on constraint users_pkey do update set display = coalesce(nullif(trim(user_add.display), ''), cb.users.display),
-    role = case when r = 'admin' then 'admin' else cb.users.role end -- adding again never demotes
+    role = case when r = 'admin' then 'admin' else cb.users.role end, -- adding again never demotes
+    token = case when r = 'admin' and cb.users.role <> 'admin' then gen_random_uuid()::text else cb.users.token end
   returning cb.users.token, cb.users.display, cb.users.role into t, now_d, now_r;
   if was is null or was <> now_d then
     insert into cb.events (actor, kind, summary, data)
@@ -1616,7 +1617,8 @@ begin
   if was = 'admin' and not exists (select 1 from cb.users u where u.role = 'admin' and u.name <> n) then
     raise exception '% is the last admin: make someone else admin first', n;
   end if;
-  update cb.users u set role = r where u.name = n;
+  -- a new token: a member's old link (sent over chat) must not become an admin's credential, nor an admin's cookie a member's
+  update cb.users u set role = r, token = gen_random_uuid()::text where u.name = n;
   insert into cb.events (actor, kind, summary, data)
   values (a, 'user', d || ' (' || n || ') is now ' || r, jsonb_build_object('user', n, 'action', 'role', 'role', r));
 end $$;
@@ -1624,15 +1626,18 @@ end $$;
 -- A new link for a user. The old one stops working at once, in signed-in browsers too (the cookie holds the token).
 create function cb.user_rotate(name text, actor text default null) returns text language plpgsql as $$
 #variable_conflict use_variable
-declare a text; n text := lower(trim(name)); t text; d text;
+declare a text; n text := lower(trim(name)); t text; d text; r text;
 begin
   perform cb.dashboard_only();
   a := cb.set_actor(actor);
-  update cb.users u set token = gen_random_uuid()::text where u.name = n returning u.token, u.display into t, d;
+  update cb.users u set token = gen_random_uuid()::text where u.name = n returning u.token, u.display, u.role into t, d, r;
   if t is null then raise exception 'unknown user %: see cb users', name; end if;
   insert into cb.events (actor, kind, summary, data)
-  values (a, 'user', 'new link for ' || d || ' (' || n || '): the old one no longer works', jsonb_build_object('user', n, 'action', 'rotate'));
-  return t;
+  values (a, 'user', case when r = 'admin' then d || ' (' || n || ') signed out everywhere'
+                          else 'new link for ' || d || ' (' || n || '): the old one no longer works' end,
+          jsonb_build_object('user', n, 'action', 'rotate'));
+  -- an admin's token is their cookie, never handed out: for them this is "sign out everywhere"
+  return case when r = 'member' then t end;
 end $$;
 
 -- Hand a person's open work back: open questions to Ahmed, open tasks unassigned (status kept, so a task held
