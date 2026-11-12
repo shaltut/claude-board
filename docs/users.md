@@ -54,8 +54,8 @@ Questions handed to someone move from "Waiting on you" to "Waiting on others" an
   still works. Yours, or anyone's if you're the owner.
 - Making someone admin, or member again, signs them out everywhere: an old member link never becomes an admin's
   sign-in.
-- What other admins can't do: change your password or sign-ins, pair Telegram (the bot is yours), or remove or demote
-  you.
+- What other admins can't do: change another admin's password, sign-ins or role, or remove an admin (yours included:
+  only you can, for any admin), or pair Telegram (the bot is yours). They manage members, and can step down themselves.
 
 ## Stop sharing
 

@@ -168,15 +168,17 @@ async function takesActor(fn: string) {
     .then((r) => new Set(r.map((x: any) => x.proname as string)), (e) => { actorFns = null; throw e; });
   return (await actorFns).has(fn);
 }
-// Sign-ins (passwords, tokens) of admins are the owner's to change: otherwise any admin could reset Ahmed's password or
-// rotate his token and sign in as him. Anyone's own password goes through /api/password, which asks for the current one.
+// Another admin's sign-in (password, token), role and removal are the owner's to change: otherwise any admin could
+// reset Ahmed's password or rotate his token and sign in as him, or demote an admin, reset the now-member's password,
+// promote them back and sign in as them. Anyone's own password goes through /api/password, which asks for the current one.
+const ADMIN_GUARDED = new Set(['user_password', 'user_rotate', 'user_set_role', 'user_remove']);
 async function signInRule(admin: Who, fn: string, args: Record<string, unknown>) {
-  if (fn !== 'user_password' && fn !== 'user_rotate') return null;
+  if (!ADMIN_GUARDED.has(fn)) return null;
   const target = String(args.name ?? '').trim().toLowerCase();
   if (fn === 'user_password' && target === admin.name) return 'your own password: the key icon at the top (it asks for the current one)';
   if (admin.name === 'ahmed' || target === admin.name) return null;
   const [t] = await sql`select role from cb.users where name = ${target}`;
-  return t?.role === 'admin' ? "another admin's password and sign-in are Ahmed's to change" : null;
+  return t?.role === 'admin' ? "another admin's sign-in, role and removal are Ahmed's to change" : null;
 }
 
 app.post('/api/rpc/:fn', async (c) => {

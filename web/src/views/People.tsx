@@ -217,7 +217,7 @@ function PersonCard({ p, base }: { p: Person; base: string }) {
             {p.token && <Button size="sm" variant="secondary" onClick={async () => { if (!(await copy(link, p.display))) setShown({ link, why: 'copy' }) }}><Copy /> Copy link</Button>}
             {p.token && <Button size="sm" variant="ghost" onClick={() => setConfirm('rotate')}><KeyRound /> New link</Button>}
             {!p.token && managesSignIn(me, p) && <Button size="sm" variant="ghost" onClick={() => setConfirm('rotate')}><LogOut /> Sign out everywhere</Button>}
-            {!owner && <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive" onClick={() => setConfirm('remove')}><UserX /> Remove</Button>}
+            {!owner && managesSignIn(me, p) && <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive" onClick={() => setConfirm('remove')}><UserX /> Remove</Button>}
           </div>
         )}
       </div>
@@ -253,10 +253,10 @@ function Access({ p }: { p: Person }) {
       {!owner && <div className="flex flex-wrap items-center gap-1.5">
         <span className="w-18 shrink-0 text-xs text-muted-foreground">Role</span>
         <span>{p.role === 'admin' ? 'Admin: the whole board, under their own name' : 'Member: what is handed to them'}</span>
-        <Button size="xs" variant="ghost" onClick={() => run('user_set_role', { role: p.role === 'admin' ? 'member' : 'admin' },
+        {managesSignIn(me, p) && <Button size="xs" variant="ghost" onClick={() => run('user_set_role', { role: p.role === 'admin' ? 'member' : 'admin' },
           () => p.role === 'admin' ? `${p.display} is a member now` : `${p.display} is an admin now: they sign in with a password${p.has_password ? '' : ' (set one below)'}`)}>
           {p.role === 'admin' ? 'Make member' : 'Make admin'}
-        </Button>
+        </Button>}
       </div>}
       {!owner && <div className="flex flex-wrap items-center gap-1.5">
         <span className="w-18 shrink-0 text-xs text-muted-foreground">Projects</span>

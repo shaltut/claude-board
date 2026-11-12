@@ -331,3 +331,21 @@ test("an admin changing their password signs out every other browser; a member's
   assert.equal((await web('/api/password', { cookie: token, body: { password: 'iman-pass-1' } })).status, 200);
   assert.ok(cookieOf(await web(`/?u=${token}`)), 'her link still signs her in');
 });
+
+test("another admin's role and removal are the owner's: no demote-reset-promote takeover", async () => {
+  const sql = await db();
+  const { ahmed, omar } = await twoAdmins(sql);
+  await sql`select cb.user_add('iman', 'Iman', role => 'admin')`;
+  await sql`select cb.user_password('iman', 'iman-pass-1')`;
+  // omar demotes iman, resets her (now member) password, promotes her again, signs in as her: refused at the first step
+  const demote = await web('/api/rpc/user_set_role', { cookie: omar, body: { name: 'iman', role: 'member' } });
+  assert.equal(demote.status, 403, await demote.clone().text());
+  assert.equal((await web('/api/rpc/user_remove', { cookie: omar, body: { name: 'iman' } })).status, 403);
+  assert.equal((await sql`select role from cb.users where name = 'iman'`)[0].role, 'admin');
+  // omar still manages members, and himself; the owner manages everyone
+  await sql`select cb.user_add('kamel', 'Kamel')`;
+  assert.equal((await web('/api/rpc/user_set_role', { cookie: omar, body: { name: 'kamel', role: 'admin' } })).status, 200);
+  const own = await web('/api/rpc/user_set_role', { cookie: ahmed, body: { name: 'kamel', role: 'member' } });
+  assert.equal(own.status, 200, await own.clone().text());
+  assert.equal((await web('/api/rpc/user_set_role', { cookie: omar, body: { name: 'omar', role: 'member' } })).status, 200, 'stepping down');
+});
