@@ -181,7 +181,7 @@ test('cb user add adds a person (Ahmed copies the link); cb ask --to and cb assi
   const u = cb(['user', 'add', 'omar', 'Omar'], { CB_PUBLIC_URL: 'https://board.example.app' });
   assert.equal(u.code, 0, u.err);
   const [{ token }] = await sql`select token from cb.users where name = 'omar'`;
-  assert.equal(u.out, 'added omar (Omar): Ahmed copies their link from the People page');
+  assert.equal(u.out, 'added omar (Omar): Ahmed copies their link from the Users page');
   assert.ok(!u.out.includes(token), 'a session never sees the link');
   assert.match(cb(['users']).out, /omar\s+Omar/);
   await onProject(sql, 'omar', 'demo');
@@ -197,17 +197,17 @@ test('cb user add adds a person (Ahmed copies the link); cb ask --to and cb assi
   assert.equal(t.assignee, 'omar');
   assert.match(cb(['brief', 'demo']).out, /Q1 .*E1 scope\? \(for omar\)/);
   assert.match(cb(['ask', 'elsewhere', 'x?', '-o', 'A=x', '-o', 'B=y', '--to', 'omar']).err,
-    /omar is not on project elsewhere: Ahmed adds people to projects on the People page/);
+    /omar is not on project elsewhere: Ahmed adds people to projects on the Users page/);
 });
 
-test("cb user rotate and remove are Ahmed's, on the People page", async () => {
+test("cb user rotate and remove are Ahmed's, on the Users page", async () => {
   const sql = await db();
   cb(['user', 'add', 'omar', 'Omar']);
   const [{ token }] = await sql`select token from cb.users where name = 'omar'`;
   for (const sub of ['rotate', 'remove']) {
     const r = cb(['user', sub, 'omar']);
     assert.equal(r.code, 1, sub);
-    assert.match(r.err, /Ahmed does this on the People page/);
+    assert.match(r.err, /Ahmed does this on the Users page/);
   }
   const [u] = await sql`select token from cb.users where name = 'omar'`;
   assert.equal(u.token, token, 'nothing changed');

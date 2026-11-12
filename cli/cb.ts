@@ -20,7 +20,7 @@ const OPTIONS = {
   multi: { type: 'boolean' }, blocking: { type: 'boolean' }, free: { type: 'boolean' }, to: { type: 'string' }, context: { type: 'string', short: 'c' },
   'reply-to': { type: 'string' }, restart: { type: 'boolean' }, tag: { type: 'string' }, type: { type: 'string' }, force: { type: 'boolean' },
   epic: { type: 'string' }, by: { type: 'string' }, after: { type: 'string' }, if: { type: 'string' },
-  kind: { type: 'string', short: 'k' }, review: { type: 'string' }, machine: { type: 'string' }, all: { type: 'boolean' }, propose: { type: 'boolean' }, done: { type: 'boolean' },
+  kind: { type: 'string', short: 'k' }, review: { type: 'string' }, machine: { type: 'string' }, all: { type: 'boolean' }, propose: { type: 'boolean' }, done: { type: 'boolean' }, admin: { type: 'boolean' },
 } as const;
 
 // Text like "-5% latency" is text, not a flag: only --name, --name=x and -x look like options.
@@ -307,21 +307,36 @@ async function run(): Promise<unknown> {
       return { out: `#${args[0].replace(/^#/, '')} tags: ${now.length ? now.join(', ') : '(none)'}`, json: now };
     }
     case 'user': {
-      need(2, 'user add <name> ["Display Name"]   e.g. cb user add omar "Omar"');
+      need(2, 'user add <name> ["Display Name"] [--admin]   e.g. cb user add omar "Omar"');
       if (args[0] === 'rotate' || args[0] === 'remove')
-        throw new Error(`Ahmed does this on the People page (key 7 on the board): a new link, or removing someone, is his call`);
+        throw new Error(`Ahmed does this on the Users page (key 7 on the board): a new link, or removing someone, is his call`);
+      // Admin and password: the Users page's, or the VPS shell's (PGAPPNAME=cb-web) for the first admin, before anyone can sign in.
+      if (args[0] === 'role') {
+        need(3, 'user role <name> admin|member');
+        await callFn('user_set_role', { name: args[1], role: args[2], actor });
+        return { out: `${args[1].trim().toLowerCase()} is now ${args[2].trim().toLowerCase()}` };
+      }
+      if (args[0] === 'password') {
+        // never an argument: it would sit in the shell history and the process list
+        if (process.stdin.isTTY) throw new Error('pipe the password in: read -rs PW && printf %s "$PW" | cb user password <name>');
+        let pw = '';
+        for await (const chunk of process.stdin) pw += chunk;
+        await callFn('user_password', { name: args[1], password: pw.replace(/\r?\n$/, ''), actor });
+        return { out: `password set for ${args[1].trim().toLowerCase()}: they sign in on the board's login page` };
+      }
       if (args[0] !== 'add') throw new Error(`unknown user command "${args[0]}". Run: cb user add <name> ["Display Name"]; list people with cb users`);
-      // The link is the guest's login, so a session never gets it (cb.user_add returns it to the dashboard only).
-      await callFn('user_add', { name: args[1], display: args[2] ?? null, actor });
-      const [u] = await sql`select name, display from cb.users where name = ${args[1].trim().toLowerCase()}`;
-      return { out: `added ${u.name} (${u.display}): Ahmed copies their link from the People page`, json: u };
+      // The link is a member's login, so a session never gets it (cb.user_add returns it to the dashboard only).
+      await callFn('user_add', { name: args[1], display: args[2] ?? null, actor, ...(o.admin ? { role: 'admin' } : {}) });
+      const [u] = await sql`select name, display, role from cb.users where name = ${args[1].trim().toLowerCase()}`;
+      return { out: u.role === 'admin' ? `added ${u.name} (${u.display}) as admin: set a password (cb user password ${u.name}) and they sign in on the login page`
+        : `added ${u.name} (${u.display}): Ahmed copies their link from the Users page`, json: u };
     }
     case 'users': {
-      const rows = await sql`select u.name, u.display,
+      const rows = await sql`select u.name, u.display, u.role,
         (select count(*)::int from cb.questions q where q.assigned_to = u.name and q.status = 'open') as open_questions,
         (select count(*)::int from cb.tasks t where t.assignee = u.name and t.status not in ('done','cancelled')) as open_tasks
         from cb.users u order by u.name`;
-      return { out: rows.map((r: any) => `${r.name.padEnd(12)} ${r.display}: ${r.open_questions} questions, ${r.open_tasks} tasks open`).join('\n') || 'no users (cb user add omar "Omar")', json: rows };
+      return { out: rows.map((r: any) => `${r.name.padEnd(12)} ${r.display}${r.role === 'admin' ? ' (admin)' : ''}: ${r.open_questions} questions, ${r.open_tasks} tasks open`).join('\n') || 'no users (cb user add omar "Omar")', json: rows };
     }
     case 'github': {
       // The GitHub watch (#1207): one cb.settings row per repo; the board server polls them (server/github.ts).

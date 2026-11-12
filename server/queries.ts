@@ -142,7 +142,7 @@ export async function me(user: string, scope: ReturnType<typeof sql>) {
   return { questions, tasks };
 }
 
-/** The People page (local only: it carries the link tokens). What waits on each person, and when they last answered or wrote. */
+/** The Users page (local only: it carries the link tokens). What waits on each person, and when they last answered or wrote. */
 export const people = () => sql`
   select u.name, u.display, u.role, case when u.role = 'admin' then null else u.token end as token, u.created_at, u.password is not null as has_password,
     array(select up.project from cb.user_projects up where up.user_name = u.name order by up.project) as projects,

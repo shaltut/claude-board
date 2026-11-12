@@ -193,7 +193,7 @@ app.get('/api/users', async (c) => c.json(await sql`select u.name, u.display,
 // dashboard page: a browser's own fetch says Sec-Fetch-Site: same-origin, curl and sessions send nothing.
 // ponytail: a deterrent, not auth (any local process can send the header), like cb.not_ahmed. The link base is the CLI's.
 app.get('/api/people', async (c) => {
-  if (c.req.header('sec-fetch-site') !== 'same-origin') return c.json({ ok: false, error: 'the People page only: open it on the dashboard' }, 403);
+  if (c.req.header('sec-fetch-site') !== 'same-origin') return c.json({ ok: false, error: 'the Users page only: open it on the dashboard' }, 403);
   return c.json({ public_url: (process.env.CB_PUBLIC_URL || dotenv('PUBLIC_URL') || '').replace(/\/$/, '') || null, people: await q.people() });
 });
 // Telegram answering (#683): pairing is the dashboard page's alone, as tokens are on /api/people (guests never get here).

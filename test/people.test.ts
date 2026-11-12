@@ -11,7 +11,7 @@ async function db() { const s = await freshDb(); clients.push(s); return s; }
 
 const DASHBOARD = { host: 'localhost:4747', origin: 'http://localhost:4747' };
 const SESSION = { host: 'localhost:4747' }; // curl or cb from a session: local, no Origin
-// The People page's own fetch: a browser marks it same-origin; curl and sessions send no Sec-Fetch-Site.
+// The Users page's own fetch: a browser marks it same-origin; curl and sessions send no Sec-Fetch-Site.
 const PAGE = { host: 'localhost:4747', 'sec-fetch-site': 'same-origin' };
 const rpc = (fn: string, args: object, headers: Record<string, string> = DASHBOARD) =>
   app.request(`/api/rpc/${fn}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(args) });

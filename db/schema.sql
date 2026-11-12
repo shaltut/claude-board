@@ -314,7 +314,7 @@ end $$;
 
 -- Things only Ahmed does, from his dashboard, whatever name the caller gives (or none): guest links, epics.
 -- ponytail: the same deterrent as not_ahmed (PGAPPNAME=cb-web gets past it), not auth.
-create function cb.dashboard_only(page text default 'People') returns void language plpgsql as $$
+create function cb.dashboard_only(page text default 'Users') returns void language plpgsql as $$
 begin
   if current_setting('application_name') <> 'cb-web' then
     raise exception 'only Ahmed can do this, on the % page of the dashboard', page;
@@ -1747,7 +1747,7 @@ begin
      or exists (select 1 from cb.user_projects up where up.user_name = who and up.project = new.project) then
     return new;
   end if;
-  raise exception '% is not on project %: Ahmed adds people to projects on the People page', who, new.project;
+  raise exception '% is not on project %: Ahmed adds people to projects on the Users page', who, new.project;
 end $$;
 
 create or replace trigger tasks_assignee_project before insert or update of assignee on cb.tasks
@@ -1755,7 +1755,7 @@ create or replace trigger tasks_assignee_project before insert or update of assi
 create or replace trigger questions_assignee_project before insert or update of assigned_to on cb.questions
   for each row execute function cb.assignee_on_project('assigned_to');
 
--- The People page refreshes when someone runs cb user add from a session.
+-- The Users page refreshes when someone runs cb user add from a session.
 create or replace trigger users_notify after insert or update or delete on cb.users
   for each statement execute function cb.notify();
 create or replace trigger user_projects_notify after insert or update or delete on cb.user_projects

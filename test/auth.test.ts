@@ -201,3 +201,26 @@ function postgresAs(_actor: string) {
   clients.push(s);
   return s;
 }
+
+import { spawnSync } from 'node:child_process';
+const cb = (args: string[], o: { env?: Record<string, string>; input?: string } = {}) => {
+  const r = spawnSync('node', ['cli/cb.ts', ...args], { encoding: 'utf8', input: o.input,
+    env: { ...process.env, CB_DATABASE_URL: TEST_URL, CB_ACTOR: 'W1@pc', HERDR_PANE_ID: '', PGAPPNAME: '', ...o.env } });
+  return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
+};
+
+test('cb on a fresh VPS: the first admin and his password from the shell; never from a session', async () => {
+  const sql = await db();
+  const SHELL = { PGAPPNAME: 'cb-web' }; // the VPS shell, as docs/ops/deploy.md has it
+  assert.match(cb(['user', 'add', 'ahmed', 'Ahmed', '--admin']).err, /only Ahmed can do this/);
+  const add = cb(['user', 'add', 'ahmed', 'Ahmed', '--admin'], { env: SHELL });
+  assert.equal(add.code, 0, add.err);
+  assert.match(add.out, /added ahmed \(Ahmed\) as admin: set a password/);
+  assert.match(cb(['user', 'password', 'ahmed'], { input: 'owner-pass-1\n' }).err, /only Ahmed can do this/);
+  assert.equal(cb(['user', 'password', 'ahmed'], { env: SHELL, input: 'owner-pass-1\n' }).code, 0);
+  assert.equal((await login('ahmed', 'owner-pass-1')).status, 200, 'the trailing newline is not part of it');
+  assert.equal(cb(['user', 'add', 'omar', 'Omar']).code, 0, 'a session still adds members');
+  assert.match(cb(['user', 'role', 'omar', 'admin']).err, /only Ahmed can do this/);
+  assert.equal(cb(['user', 'role', 'omar', 'admin'], { env: SHELL }).code, 0);
+  assert.match(cb(['users']).out, /^omar\s+Omar \(admin\): 0 questions, 0 tasks open$/m);
+});
