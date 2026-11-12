@@ -1,0 +1,54 @@
+# Claude Board on the VPS: Postgres 16 and the board, always on. docs/ops/deploy.md walks through it.
+#   cd deploy && cp env.example .env && chmod 600 .env   (fill it in)
+#   docker compose up -d --build
+# Secrets live in deploy/.env only (git-ignored): never in this file, the image or a log.
+name: claude-board
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cb
+      POSTGRES_PASSWORD: ${CB_PG_PASSWORD:?set CB_PG_PASSWORD in deploy/.env}
+      POSTGRES_DB: claude_board
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # The workers' cb (sessions on the PC and the Mac) talk to Postgres directly, over Tailscale: bind this to the
+    # VPS's Tailscale address (CB_PG_BIND). Never 0.0.0.0: the database password would be all that guards the board.
+    ports:
+      - "${CB_PG_BIND:-127.0.0.1}:5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cb -d claude_board"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  board:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: claude-board:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      CB_DATABASE_URL: postgres://cb:${CB_PG_PASSWORD}@db:5432/claude_board
+      CB_PUBLIC_URL: ${CB_PUBLIC_URL:-}
+      CB_MACHINE: ${CB_MACHINE:-vps}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+      CB_TRUST_LOCAL: "0"
+    # The proxy on the VPS (cloudflared or Caddy) reaches the board here; nothing else can.
+    ports:
+      - "127.0.0.1:${CB_PORT:-4747}:4747"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4747/healthz').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  pgdata:

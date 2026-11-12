@@ -1,0 +1,12 @@
+**/node_modules
+web/dist
+.pgdata
+.env
+**/.env
+deploy/.env
+.git
+.superpowers
+.playwright-mcp
+test
+docs
+*.log
