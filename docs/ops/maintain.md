@@ -94,7 +94,7 @@ Then tell the sessions: `dc exec board cb broadcast "The board was restored to <
 ## Users
 
 Day to day, on the board: Users (key 7). Add a member, copy their link or set a password, put them on projects, make
-an admin, remove someone. Everyone changes their own password from the key icon at the top.
+an admin, remove someone. Everyone changes their own password at the top of the page (admins: under their name).
 
 From the VPS shell, when the board itself can't be used (no admin can sign in):
 

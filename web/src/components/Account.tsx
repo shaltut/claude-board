@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { KeyRound, LogOut } from 'lucide-react'
+import { CircleUser, KeyRound, LogOut } from 'lucide-react'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { get, type User } from '@/lib/api'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -18,13 +19,33 @@ export async function signOut() {
 /** Who is signed in, Change password and Sign out. Nothing on the PC board's own screen (role local: no sign-in there). */
 export function Account({ user, compact }: { user: User; compact?: boolean }) {
   const [open, setOpen] = useState(false)
+  // The board's top bar has ten tabs and no room for three more controls: there, one button with the name, and the
+  // rest in its menu. (Spread out, they wrapped the logo and pushed the last tabs out of sight.)
+  if (compact) return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="sm" variant="ghost" className="max-w-36 text-muted-foreground" aria-label={`Account: signed in as ${user.display}`}
+            title={`Signed in as ${user.display}`}>
+            <CircleUser /><span className="hidden truncate text-foreground 2xl:inline">{user.display}</span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-auto min-w-48">
+          <DropdownMenuLabel className="font-normal text-muted-foreground">Signed in as <span className="font-medium text-foreground">{user.display}</span></DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => setOpen(true)}><KeyRound /> Change password</DropdownMenuItem>
+          <DropdownMenuItem onSelect={signOut}><LogOut /> Sign out</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <ChangePassword open={open} onOpenChange={setOpen} />
+    </>
+  )
   return (
     <>
-      {/* the board's top bar is full at laptop widths: there the name is in Sign out's tooltip */}
-      <span className={`hidden truncate text-sm text-muted-foreground ${compact ? '2xl:inline' : 'md:inline'}`}>Signed in as <span className="text-foreground">{user.display}</span></span>
+      <span className="hidden truncate text-sm text-muted-foreground md:inline">Signed in as <span className="text-foreground">{user.display}</span></span>
       <Button size="sm" variant="ghost" onClick={() => setOpen(true)} aria-label="Change your password" title="Change your password"
         className="text-muted-foreground">
-        <KeyRound />{!compact && <span className="hidden sm:inline">Password</span>}
+        <KeyRound /><span className="hidden sm:inline">Password</span>
       </Button>
       <Button size="sm" variant="ghost" onClick={signOut} className="text-muted-foreground" title={`Sign out ${user.display}`}>
         <LogOut /><span className="hidden sm:inline">Sign out</span>

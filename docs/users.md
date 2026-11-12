@@ -21,7 +21,7 @@ everyone signs in, you included.
   **Set password** on their card, so they can sign in by name and password too. Send the password separately from
   the name.
 - An **admin** is added with a password (they have no link). Send them the board's address, their name and the
-  password; they change it after signing in (the key icon at the top).
+  password; they change it after signing in (their name at the top, then Change password).
 
 A session can add members too (`cb user add omar "Omar"`) but never sees the link, and can't make admins.
 
@@ -45,7 +45,7 @@ Questions handed to someone move from "Waiting on you" to "Waiting on others" an
 
 - Wrong name or password: one message, after a second. 5 wrong tries for a name from one address lock that name there
   for 2 minutes (same message, even with the right password). Someone else failing elsewhere never locks you out.
-- Everyone can **change their password** (the key icon) and **sign out**. A member who signed in by link sets a
+- Everyone can **change their password** and **sign out** (admins: their name at the top; members: the buttons at the top). A member who signed in by link sets a
   first password there without a current one. An admin who changes their password is signed out of every other
   browser (a member's link keeps working).
 - Forgot the password: an admin resets a member's on the Users page (**Reset password**); only you reset another

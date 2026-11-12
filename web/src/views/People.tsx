@@ -298,8 +298,8 @@ function Access({ p }: { p: Person }) {
         {pw === null ? <>
           <span className={cn(!p.has_password && (p.role === 'admin' ? 'text-destructive' : 'text-muted-foreground'))}>
             {p.has_password ? 'Set' : p.role === 'admin' ? 'None: they cannot sign in yet' : 'None, link only'}</span>
-          {/* your own: the key icon at the top, which asks for the current one (on the PC's own dashboard there is none) */}
-          {p.name === me && !local ? <span className="text-xs text-muted-foreground">yours: the key icon at the top</span>
+          {/* your own: Change password under your name at the top, which asks for the current one (on the PC's own dashboard there is none) */}
+          {p.name === me && !local ? <span className="text-xs text-muted-foreground">yours: your name at the top, then Change password</span>
             : managesSignIn(me, p) && <Button size="xs" variant="ghost" onClick={() => setPw('')}>{p.has_password ? 'Reset password' : 'Set password'}</Button>}
         </> : (
           // Shown as text, not dots: Ahmed types it to send it on. autoComplete off keeps it out of his own password manager.
