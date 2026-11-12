@@ -19,6 +19,7 @@ If this session also takes work *from* the board, `cb start` first, and record b
 | `prompts/` | what sessions and orchestrators are given |
 | `Dockerfile`, `deploy/` | the VPS deployment: compose, env template, backup |
 | `test/` | `node --test`, against a real Postgres test database |
+| `docs/guardrails.md` | every guardrail and its state: update the row when you touch one |
 
 ## How the code is written
 
