@@ -166,7 +166,7 @@ test('login: five wrong tries lock the name for two minutes; a success resets th
   assert.equal(locked.status, 429, 'the right password waits out the lock');
   assert.deepEqual(await locked.json(), msg);
   assert.equal(locked.headers.get('set-cookie'), null);
-  loginFails.get('omar')!.until = Date.now() - 1; // two minutes later
+  loginFails.get('omar|1.2.3.4')!.until = Date.now() - 1; // two minutes later (counts are per name and address)
   assert.equal((await post('/api/login', { name: 'omar', password: 'correct horse' })).status, 200);
 
   for (let round = 0; round < 2; round++) {
