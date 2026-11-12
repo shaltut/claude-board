@@ -134,29 +134,16 @@ call, made when he asked for the move.
 
 1. **Warn the sessions** (PC): `cb broadcast "The board moves to the VPS now: cb is unreachable for about 20 minutes. Keep working; register what you did after."`
 2. **Stop the PC's board server** (Ahmed's terminal, Ctrl+C). Nothing polls Telegram or GitHub now.
-3. **Freeze and dump the PC's database** (PC, PowerShell). Restarting Postgres on a port nobody uses guarantees no
-   session writes after the dump:
+3. **Copy the board, frozen** (PC, Git Bash, in the repo): `bash deploy/copy-to-vps.sh --final`. It refuses while the
+   PC board still answers on :4747; restarts the PC's Postgres on port 5499 (no session can write after the dump),
+   dumps, stops it; copies the dump to vps2 (md5 checked), replaces the VPS's database, starts the board (which applies
+   the schema over it), deletes the dump on both ends, prints the counts, and marks the VPS as the board
+   (`deploy/.cutover`). From then on it refuses to copy again.
 
-   ```powershell
-   $bin = 'C:\Program Files\PostgreSQL\16\bin'
-   & "$bin\pg_ctl.exe" -D F:\Work\claude-board\.pgdata stop
-   & "$bin\pg_ctl.exe" -D F:\Work\claude-board\.pgdata -o "-p 5499" -w start
-   & "$bin\pg_dump.exe" -h 127.0.0.1 -p 5499 -U cb -d claude_board -Fc -f "$env:TEMP\cb-move.dump"
-   & "$bin\pg_ctl.exe" -D F:\Work\claude-board\.pgdata stop
-   ```
-
-4. **Copy it to vps2** (PC): `scp $env:TEMP\cb-move.dump vps2:/tmp/cb-move.dump`
-5. **Restore into an empty database** (VPS). `down -v` deletes the empty board from step 3 and gh's login volume
-   (and only those: check nothing real was added to the board):
-
-   ```bash
-   cd /opt/claude-board/deploy
-   docker compose down -v
-   docker compose up -d db
-   docker compose exec -T db pg_restore -U cb -d claude_board --no-owner --exit-on-error < /tmp/cb-move.dump
-   docker compose up -d --build board        # applies the new schema (roles, ...) over the restored board
-   shred -u /tmp/cb-move.dump
-   ```
+   Before the day, `bash deploy/copy-to-vps.sh` (no `--final`) copies a snapshot while the PC keeps running: a
+   rehearsal, as often as you like. Compare its `PC:` and `VPS:` counts.
+4. (step 3 did the copy)
+5. (step 3 did the restore)
 
 6. **The first admin** (VPS): step 4 above.
 7. **The pollers.** Telegram: put `TELEGRAM_BOT_TOKEN` (from the PC's `.env`) in `deploy/.env`, then
