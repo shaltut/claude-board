@@ -30,6 +30,12 @@ create table if not exists cb.users (
   created_at timestamptz not null default now()
 );
 alter table cb.users add column if not exists password text; -- bcrypt hash; null = sign in by link only
+-- #1749 (the board on a VPS: everyone signs in). admin = the whole board, by password only; member = their own
+-- questions and tasks (the guest page). Ahmed, the owner, is the user named ahmed: always an admin.
+alter table cb.users add column if not exists role text not null default 'member';
+do $$ begin
+  alter table cb.users add constraint users_role check (role in ('admin', 'member'));
+exception when duplicate_object then null; end $$;
 
 -- The projects a person works on (#315). Questions and tasks reach them only on these; a new person has none.
 create table if not exists cb.user_projects (
@@ -722,6 +728,7 @@ drop function if exists cb._handed_back cascade;
 drop function if exists cb.user_project_add cascade;
 drop function if exists cb.user_project_remove cascade;
 drop function if exists cb.user_password cascade;
+drop function if exists cb.user_set_role cascade;
 drop function if exists cb.assignee_on_project cascade;
 drop function if exists cb.question_assign cascade;
 drop function if exists cb.answer cascade;
@@ -1567,23 +1574,51 @@ begin
 end $$;
 
 -- People who answer through a guest link (Omar, Iman). The link carries the token.
-create function cb.user_add(name text, display text default null, actor text default null) returns text language plpgsql as $$
+create function cb.user_add(name text, display text default null, actor text default null, role text default 'member') returns text language plpgsql as $$
 #variable_conflict use_variable
-declare a text := cb.set_actor(actor); n text := lower(trim(name)); t text; was text; now_d text;
+declare a text := cb.set_actor(actor); n text := lower(trim(name)); r text := lower(trim(coalesce(role, 'member'))); t text; was text; now_d text; now_r text;
 begin
   if n !~ '^[a-z][a-z0-9_-]*$' then raise exception 'user name: lowercase letters, digits, - or _ (e.g. omar)'; end if;
-  if n = 'ahmed' then raise exception 'ahmed is the board owner, not a guest user: pick another name'; end if;
+  if r not in ('admin', 'member') then raise exception 'role: admin or member'; end if;
+  if n = 'ahmed' and r <> 'admin' then raise exception 'ahmed is the board owner: add him as admin (role => admin)'; end if;
+  -- an "ahmed-m" would read as Ahmed in every answer and history line
+  if n <> 'ahmed' and n ~ 'ahmed' then raise exception 'names with ahmed in them are reserved for the owner: pick another name'; end if;
+  if r = 'admin' then perform cb.dashboard_only('Users'); end if;
   select u.display into was from cb.users u where u.name = n;
-  insert into cb.users (name, display) values (n, coalesce(nullif(trim(display), ''), initcap(n)))
-  on conflict on constraint users_pkey do update set display = coalesce(nullif(trim(user_add.display), ''), cb.users.display)
-  returning cb.users.token, cb.users.display into t, now_d;
+  insert into cb.users (name, display, role) values (n, coalesce(nullif(trim(display), ''), initcap(n)), r)
+  on conflict on constraint users_pkey do update set display = coalesce(nullif(trim(user_add.display), ''), cb.users.display),
+    role = case when r = 'admin' then 'admin' else cb.users.role end -- adding again never demotes
+  returning cb.users.token, cb.users.display, cb.users.role into t, now_d, now_r;
   if was is null or was <> now_d then
     insert into cb.events (actor, kind, summary, data)
-    values (a, 'user', case when was is null then 'added ' || now_d || ' (' || n || ')' else 'renamed ' || was || ' to ' || now_d || ' (' || n || ')' end,
-            jsonb_build_object('user', n, 'action', case when was is null then 'add' else 'rename' end));
+    values (a, 'user', case when was is null then 'added ' || now_d || ' (' || n || ')' || case when r = 'admin' then ' as admin' else '' end
+                            else 'renamed ' || was || ' to ' || now_d || ' (' || n || ')' end,
+            jsonb_build_object('user', n, 'action', case when was is null then 'add' else 'rename' end)
+              || case when now_r = 'admin' then '{"role": "admin"}'::jsonb else '{}' end);
   end if;
-  -- The token is the guest's whole login: only Ahmed's dashboard gets it back. A session adds people, Ahmed sends the link.
-  return case when current_setting('application_name') = 'cb-web' then t end;
+  -- The token is a member's whole login: only Ahmed's dashboard gets it back. A session adds people, Ahmed sends the link.
+  -- An admin's token is never handed out: admins sign in by password, and the token is their cookie.
+  return case when current_setting('application_name') = 'cb-web' and now_r = 'member' then t end;
+end $$;
+
+-- Make a user an admin (the whole board, signing in by password) or a member (their own questions and tasks).
+create function cb.user_set_role(name text, role text, actor text default null) returns void language plpgsql as $$
+#variable_conflict use_variable
+declare a text; n text := lower(trim(name)); r text := lower(trim(coalesce(role, ''))); d text; was text;
+begin
+  perform cb.dashboard_only('Users');
+  a := cb.set_actor(actor);
+  if r not in ('admin', 'member') then raise exception 'role: admin or member'; end if;
+  if n = 'ahmed' and r <> 'admin' then raise exception 'ahmed is the owner: always an admin'; end if;
+  select u.display, u.role into d, was from cb.users u where u.name = n for update;
+  if d is null then raise exception 'unknown user %: see cb users', name; end if;
+  if was = r then return; end if;
+  if was = 'admin' and not exists (select 1 from cb.users u where u.role = 'admin' and u.name <> n) then
+    raise exception '% is the last admin: make someone else admin first', n;
+  end if;
+  update cb.users u set role = r where u.name = n;
+  insert into cb.events (actor, kind, summary, data)
+  values (a, 'user', d || ' (' || n || ') is now ' || r, jsonb_build_object('user', n, 'action', 'role', 'role', r));
 end $$;
 
 -- A new link for a user. The old one stops working at once, in signed-in browsers too (the cookie holds the token).
@@ -1635,8 +1670,13 @@ declare a text; n text := lower(trim(name)); d text; r jsonb;
 begin
   perform cb.dashboard_only();
   a := cb.set_actor(actor);
+  if n = 'ahmed' then raise exception 'ahmed is the owner: can''t be removed'; end if;
   select u.display into d from cb.users u where u.name = n for update;
   if d is null then raise exception 'unknown user %: see cb users', name; end if;
+  if (select u.role from cb.users u where u.name = n) = 'admin'
+     and not exists (select 1 from cb.users u where u.role = 'admin' and u.name <> n) then
+    raise exception '% is the last admin: make someone else admin first', n;
+  end if;
   r := cb._user_hand_back(n, d || ' was removed');
   delete from cb.users u where u.name = n; -- the FK clears assigned_to on their closed questions too
   insert into cb.events (actor, kind, summary, data)
@@ -1701,7 +1741,8 @@ end $$;
 create function cb.assignee_on_project() returns trigger language plpgsql as $$
 declare who text := to_jsonb(new) ->> tg_argv[0];
 begin
-  if who is null or (tg_op = 'UPDATE' and who is not distinct from to_jsonb(old) ->> tg_argv[0])
+  if who is null or who = 'ahmed' -- the owner: on no project, and work can always be left with him
+     or (tg_op = 'UPDATE' and who is not distinct from to_jsonb(old) ->> tg_argv[0])
      or not exists (select 1 from cb.users u where u.name = who)
      or exists (select 1 from cb.user_projects up where up.user_name = who and up.project = new.project) then
     return new;
@@ -1725,6 +1766,7 @@ create function cb.question_assign(id text, to_user text, actor text default nul
 #variable_conflict use_variable
 declare a text := cb.set_actor(actor); qid bigint := cb.norm_id(id);
 begin
+  if to_user = 'ahmed' then to_user := null; end if; -- the owner's own queue (he is a user too, to sign in)
   if to_user is not null and not exists (select 1 from cb.users u where u.name = to_user) then
     raise exception 'unknown user %: see cb users', to_user;
   end if;

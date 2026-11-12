@@ -8,6 +8,13 @@ const PGDATA = join(ROOT, '.pgdata');
 const BIN = process.env.CB_PG_BIN ?? 'C:/Program Files/PostgreSQL/16/bin';
 const pgCtl = join(BIN, 'pg_ctl.exe');
 
+/** The private cluster is this repo's Windows Postgres: a board on Linux (the VPS's container) or pointed at another
+ *  machine's database (CB_DATABASE_URL) has nothing to start. */
+export function ownsPg(url: string): boolean {
+  const u = new URL(url);
+  return process.platform === 'win32' && ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(u.hostname) && (u.port || '5432') === '5434';
+}
+
 export function ensurePg(dir = PGDATA, port = 5434): void {
   // Already serving on the port (the main checkout's cluster, seen from a worktree): use it.
   if (spawnSync(join(BIN, 'pg_isready.exe'), ['-h', '127.0.0.1', '-p', String(port)], { stdio: 'ignore' }).status === 0) return;

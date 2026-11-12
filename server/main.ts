@@ -5,7 +5,7 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { sql, dotenv } from './db.ts';
+import { sql, dotenv, databaseUrl } from './db.ts';
 import { callFn, RpcError } from './rpc.ts';
 import * as q from './queries.ts';
 import { reconcile, startTelegram, telegramConnect, telegramDisconnect, telegramStatus } from './telegram.ts';
@@ -14,34 +14,45 @@ import { startGithub } from './github.ts';
 const ROOT = join(import.meta.dirname, '..');
 const DIST = join(ROOT, 'web', 'dist');
 
-export const app = new Hono();
+type Who = { name: string; display: string; role: 'admin' | 'member' };
+export const app = new Hono<{ Variables: { admin?: Who } }>();
 // A read the database refuses (an unknown ?project= raises in cb.read_project) is a bad request, not a crash.
 app.onError((e: any, c) => e?.name === 'PostgresError'
   ? c.json({ ok: false, error: e.message }, 400)
   : (console.error(e), c.json({ ok: false, error: 'server error' }, 500)));
 const opt = (v?: string) => (v ? v : undefined);
 
-// Guests (Omar, Iman) reach the board through a tunnel. Default-deny: a request that isn't plainly
-// local needs a user link, and a user reaches only their own questions and tasks.
-// ponytail: a secret link is the whole login (Ahmed asked for simple); real auth if this goes beyond a few people.
-const isLocal = (c: Context) => !c.req.header('x-forwarded-for') && !c.req.header('x-forwarded-host') && !c.req.header('cf-connecting-ip')
+// Default-deny. Everyone signs in (#1749): admins (Ahmed, the owner, is the user ahmed) get the whole board, by
+// password; members (Omar, Iman) get only their own questions and tasks, by password or their private link.
+// One exception keeps the board on Ahmed's PC working as it always has: a request plainly from this machine is his.
+// That trust is off when the server listens beyond loopback (a container on 0.0.0.0: anyone reaching the port could
+// send Host: localhost) and when CB_TRUST_LOCAL=0 (the VPS sets it).
+const LOOPBACK = /^(localhost|127\.0\.0\.1|::1|\[::1\])$/;
+const trustLocal = () => process.env.CB_TRUST_LOCAL !== '0' && LOOPBACK.test(process.env.HOST ?? '127.0.0.1');
+const isLocal = (c: Context<any>) => trustLocal() && !c.req.header('x-forwarded-for') && !c.req.header('x-forwarded-host') && !c.req.header('cf-connecting-ip')
   && /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(c.req.header('host') ?? 'localhost');
-async function guestOf(c: Context) {
+async function userOf(c: Context<any>): Promise<Who | null> {
   const t = getCookie(c, 'cb_user');
   if (!t) return null;
-  const [u] = await sql`select name, display from cb.users where token = ${t}`;
-  return (u as { name: string; display: string } | undefined) ?? null;
+  const [u] = await sql`select name, display, role from cb.users where token = ${t}`;
+  return (u as Who | undefined) ?? null;
 }
+// The address a login is counted against: Cloudflare's cf-connecting-ip (the client can't set it through the tunnel),
+// else the hop our own proxy added (the last X-Forwarded-For entry), else a direct connection.
+const clientIp = (c: Context<any>) => c.req.header('cf-connecting-ip')?.trim()
+  || c.req.header('x-forwarded-for')?.split(',').at(-1)?.trim() || 'direct';
 
 app.use('*', async (c, next) => {
   const token = c.req.query('u');
   if (!token) return next();
-  const [u] = await sql`select name from cb.users where token = ${token}`;
+  const [u] = await sql`select name, role from cb.users where token = ${token}`;
   if (!u) return c.text('This link is not valid any more. Ask Ahmed for a new one.', 401);
+  // an admin's token is their cookie, never a link: a link in a chat or a browser history would be the whole board
+  if (u.role === 'admin') return c.text('This link is for members: admins sign in with their password on the login page.', 401);
   signIn(c, token);
   return c.redirect('/', 302);
 });
-function signIn(c: Context, token: string) {
+function signIn(c: Context<any>, token: string) {
   setCookie(c, 'cb_user', token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 90 * 86_400,
     secure: c.req.header('x-forwarded-proto') === 'https' }); // the tunnel is https; local dev is plain http
 }
@@ -65,18 +76,18 @@ app.use('/api/*', async (c, next) => {
     const b = (await c.req.json().catch(() => null)) ?? {};
     const name = typeof b.name === 'string' ? b.name.trim().toLowerCase() : '', pw = typeof b.password === 'string' ? b.password : '';
     const refuse = (status: 401 | 429) => c.json({ ok: false, error: "That name and password don't match." }, status);
-    const now = Date.now();
+    const now = Date.now(), key = `${name}|${clientIp(c)}`; // per name and address: a stranger can't lock Ahmed out
     if (loginFails.size > 1000) for (const [k, f] of loginFails) if (f.until <= now) loginFails.delete(k);
-    let f = loginFails.get(name);
+    let f = loginFails.get(key);
     if (f?.until && f.until <= now) f = undefined; // the lock ran out: start counting again
     if (f?.until) return refuse(429);
     f ??= { n: 0, until: 0 };
     if (++f.n >= 5) f.until = now + 120_000;
-    loginFails.set(name, f);
+    loginFails.set(key, f);
     const [u] = name && pw ? await sql`select token from cb.users where name = ${name} and password is not null
                                          and password = public.crypt(${pw}, password)` : [];
     if (u) {
-      loginFails.delete(name);
+      loginFails.delete(key);
       signIn(c, u.token);
       return c.json({ ok: true });
     }
@@ -89,15 +100,30 @@ app.use('/api/*', async (c, next) => {
     deleteCookie(c, 'cb_user', { path: '/' });
     return c.json({ ok: true });
   }
+  // Anyone signed in sets their own password: the current one is required once there is one (a member who signed
+  // in by link sets a first one without).
+  if (c.req.path === '/api/password' && c.req.method === 'POST') {
+    const u = await userOf(c);
+    if (!u) return c.json({ ok: false, error: 'sign in first' }, 401);
+    const b = (await c.req.json().catch(() => null)) ?? {};
+    if (typeof b.password !== 'string' || b.password.length < 8) return c.json({ ok: false, error: 'password: at least 8 characters' }, 400);
+    const [row] = await sql`select password is not null as has, password = public.crypt(${typeof b.current === 'string' ? b.current : ''}, password) as ok
+                              from cb.users where name = ${u.name}`;
+    if (row?.has && !row.ok) return c.json({ ok: false, error: 'the current password is wrong' }, 400);
+    await sql.begin(async (tx) => { await tx`set local application_name = 'cb-web'`; await callFn('user_password', { name: u.name, password: b.password, actor: u.name }, tx); });
+    return c.json({ ok: true });
+  }
   const local = isLocal(c);
   if (c.req.path === '/api/whoami') {
     if (local) return c.json({ role: 'local' });
-    const u = await guestOf(c);
-    return c.json(u ? { role: 'guest', user: u } : { role: 'anonymous' });
+    const u = await userOf(c);
+    if (!u) return c.json({ role: 'anonymous' });
+    return c.json({ role: u.role === 'admin' ? 'admin' : 'guest', user: { name: u.name, display: u.display } });
   }
   if (local) return next();
-  const u = await guestOf(c);
-  if (!u) return c.json({ ok: false, error: 'open the link Ahmed sent you' }, 401);
+  const u = await userOf(c);
+  if (!u) return c.json({ ok: false, error: 'sign in first: the login page, or the link Ahmed sent you' }, 401);
+  if (u.role === 'admin') { c.set('admin', u); return next(); }
   if (c.req.path === '/api/stream') return next();
   if (c.req.path === '/api/me') return c.json(await q.me(u.name, onTheirProjects(u.name)));
   const fn = c.req.method === 'POST' && /^\/api\/rpc\/(answer|send_back|log)$/.exec(c.req.path)?.[1];
@@ -124,11 +150,14 @@ app.use('/api/*', async (c, next) => {
 
 app.post('/api/rpc/:fn', async (c) => {
   try {
-    const args = await c.req.json().catch(() => ({}));
+    const args = (await c.req.json().catch(() => ({}))) ?? {};
     // Only the dashboard page acts as ahmed (cb.not_ahmed): a browser POST always carries Origin, and the
     // CSRF check above has made it this host. A script without Origin (curl from a session) is a session.
     // The CLI shares this pool and callFn, so the name is set per transaction here, not on the pool.
-    const result = c.req.header('origin')
+    // A signed-in admin is the dashboard, and acts as who signed in: the page's own actor is never trusted.
+    const admin = c.get('admin');
+    if (admin && typeof args === 'object' && 'actor' in args) args.actor = admin.name;
+    const result = admin || c.req.header('origin')
       ? await sql.begin(async (tx) => { await tx`set local application_name = 'cb-web'`; return callFn(c.req.param('fn'), args ?? {}, tx); })
       : await callFn(c.req.param('fn'), args ?? {});
     return c.json({ ok: true, result });
@@ -156,9 +185,10 @@ app.get('/api/today', async (c) => {
 });
 app.get('/api/last-seen', async (c) => c.json(await q.lastSeen()));
 // No tokens or hashes here: the For picker and the assignee list use it, to offer people on the item's project.
+// The owner is a user only to sign in: he is never one of the people work is handed to.
 app.get('/api/users', async (c) => c.json(await sql`select u.name, u.display,
   array(select up.project from cb.user_projects up where up.user_name = u.name order by up.project) as projects
-  from cb.users u order by u.name`));
+  from cb.users u where u.name <> 'ahmed' order by u.name`));
 // Tokens: reachable only from this PC (the guest block above refuses every other path), and only from the
 // dashboard page: a browser's own fetch says Sec-Fetch-Site: same-origin, curl and sessions send nothing.
 // ponytail: a deterrent, not auth (any local process can send the header), like cb.not_ahmed. The link base is the CLI's.
@@ -208,6 +238,11 @@ app.get('/api/asks', async (c) => c.json(await callFn('asks_list', { project: op
 app.get('/api/huddles/:id', async (c) => {
   const r = await q.huddle(Number(c.req.param('id')));
   return r ? c.json(r) : c.json({ ok: false, error: 'not found' }, 404);
+});
+
+// For Docker's healthcheck and an uptime monitor: no sign-in, and nothing but whether the database answers.
+app.get('/healthz', async (c) => {
+  try { await sql`select 1`; return c.json({ ok: true }); } catch { return c.json({ ok: false }, 503); }
 });
 
 // Live updates: one LISTEN connection fanned out to every open page.
@@ -267,8 +302,8 @@ export async function startBot(token: string, api: string) {
 }
 
 export async function start() {
-  const { ensurePg } = await import('../db/pg.ts');
-  ensurePg();
+  const { ensurePg, ownsPg } = await import('../db/pg.ts');
+  if (ownsPg(databaseUrl())) ensurePg();
   const port = Number(process.env.PORT ?? 4747);
   const hostname = process.env.HOST ?? '127.0.0.1';
   serve({ fetch: app.fetch, port, hostname }, () => console.log(`Claude Board: http://localhost:${port}`));

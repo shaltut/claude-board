@@ -3,6 +3,8 @@ import postgres from 'postgres';
 
 // CB_TEST_DB lets parallel worktrees test without wiping each other's data.
 export const TEST_URL = `postgres://cb@127.0.0.1:5434/${process.env.CB_TEST_DB ?? 'claude_board_test'}`;
+// freshDb truncates every table: never anything but a test database (a VPS agent's CB_TEST_DB=claude_board would wipe the board)
+if (!/^claude_board_test\w*$/.test(process.env.CB_TEST_DB ?? 'claude_board_test')) throw new Error(`CB_TEST_DB must start with claude_board_test, not "${process.env.CB_TEST_DB}"`);
 process.env.CB_DATABASE_URL = TEST_URL;
 
 let ready = false;

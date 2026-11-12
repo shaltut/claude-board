@@ -144,7 +144,7 @@ export async function me(user: string, scope: ReturnType<typeof sql>) {
 
 /** The People page (local only: it carries the link tokens). What waits on each person, and when they last answered or wrote. */
 export const people = () => sql`
-  select u.name, u.display, u.token, u.created_at, u.password is not null as has_password,
+  select u.name, u.display, u.role, case when u.role = 'admin' then null else u.token end as token, u.created_at, u.password is not null as has_password,
     array(select up.project from cb.user_projects up where up.user_name = u.name order by up.project) as projects,
     coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'project', q.project, 'body', q.body, 'blocking', q.blocking, 'created_at', q.created_at)
                order by q.blocking desc, q.created_at)
