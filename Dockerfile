@@ -29,8 +29,8 @@ COPY server ./server
 COPY prompts ./prompts
 COPY hooks ./hooks
 COPY --from=web /app/web/dist ./web/dist
-# `cb` inside the container: docker compose exec board cb ...
-RUN chmod +x bin/cb && ln -s /app/bin/cb /usr/local/bin/cb
+# `cb` inside the container: docker compose exec board cb ... (a wrapper, not a symlink: bin/cb finds the repo from $0)
+RUN printf '#!/bin/sh\nexec node /app/cli/cb.ts "$@"\n' > /usr/local/bin/cb && chmod +x /usr/local/bin/cb
 # HOST 0.0.0.0 inside the container (compose publishes it on the VPS's loopback only); CB_TRUST_LOCAL=0: everyone signs in
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=4747 CB_TRUST_LOCAL=0
 EXPOSE 4747

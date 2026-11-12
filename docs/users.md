@@ -1,96 +1,67 @@
-# Users: letting Omar (or Iman) answer on the board
+# Users: who signs in, and what they see
 
-A user is a name plus a secret link. Through the link they see only the questions and tasks
-you assigned to them, answer the questions and add notes on the tasks. Nothing else on the
-board is readable through the tunnel. The link is the whole login, so send it privately.
+Everyone signs in on the board's login page (`/login`). Two roles:
 
-## Share the board with Omar
+- **Admin:** the whole board, acting under their own name. Signs in with a password only. You (the user `ahmed`)
+  are the owner: always an admin, never removed. What you do is recorded as `ahmed`, which the sessions read as your
+  decision; another admin's answers say "omar (not Ahmed) answered".
+- **Member** (Omar, Iman): only the questions and tasks you hand them, on the projects you put them on. They answer
+  questions and add notes to tasks. Signs in with a password, or with a private link (one click, 90 days).
 
-1. **Add the person:** People (key 7) → **Add person**, with a display name and a short name
-   (`omar`). It shows Omar's link with a Copy button. A session can add people too
-   (`cb user add omar "Omar"`), but never sees the link: the link is Omar's whole login, so only
-   the People page shows it.
+On your PC, before the move to the VPS, the board on `localhost` is still yours without signing in. On the VPS
+everyone signs in, you included.
 
-   Then **put Omar on his projects** with **+ Project** on his card. Questions and tasks reach a
-   person only on their projects: handing him one anywhere else is refused ("omar is not on project
-   qhs"), and the For picker and the Assignee list offer only the people on that item's project.
-   Omar sees only what is assigned to him on his projects. A new person has no projects. Taking him
-   off a project (the x on its chip) hands his open work there back, like removing him.
+## Add someone
 
-   **Optional: a password.** **Set password** on his card lets Omar sign in on the board's login page
-   with his name and password instead of the link (send the password separately from the name). The
-   link keeps working as one-click sign-in. Anyone reaching the board through the tunnel without
-   being signed in gets the login page; a wrong name or password gets one message after a second, and
-   after 5 tries without a success that name is locked for 2 minutes (same message, even with the
-   right password).
-   He can **Sign out** on his page.
+**Users** (key 7) → **Add user**: display name, a short name (`omar`), and the role.
 
-2. **Check the tunnel is up.** The board is shared through a Cloudflare named tunnel,
-   `claude-board`, which runs as the `cloudflared` Windows service and forwards its https
-   hostname to the board on this PC (port 4747). As a service it runs without a terminal, so there
-   is nothing to start per session. Check it with `Get-Service cloudflared` (Status should be Running); the
-   team lead set it up, and `cloudflared tunnel info claude-board` shows its connections.
+- A **member** gets a private link with a Copy button. Send it in a direct message, never a group chat. Then **put
+  them on their projects** with **+ Project** on their card: questions and tasks reach a person only on their
+  projects (handing one anywhere else is refused, and the For picker offers to add them to the project). Optional:
+  **Set password** on their card, so they can sign in by name and password too. Send the password separately from
+  the name.
+- An **admin** is added with a password (they have no link). Send them the board's address, their name and the
+  password; they change it after signing in (the key icon at the top).
 
-3. **Set the public URL**, so links point at the tunnel and not at localhost. PUBLIC_URL is the
-   tunnel's https hostname. Add it to `.env` in the board's own checkout
-   (`F:\Work\claude-board\.env`; `cb` and the board read the repo's `.env`, not the current folder's):
+A session can add members too (`cb user add omar "Omar"`) but never sees the link, and can't make admins.
 
-   ```
-   PUBLIC_URL=https://<the tunnel's hostname>
-   ```
+**Make admin / Make member** on a card changes the role. The last admin can't be demoted or removed.
 
-   The hostname is fixed, so this is a one-time step, and the board picks it up without a restart
-   (it reads `.env` on each request). Then **Copy link** on People gives the link with the
-   tunnel's URL.
+## Give them things to answer
 
-4. **Send Omar the link** in a direct message, not in a group chat. Opening it signs his browser
-   in for 90 days.
+```
+cb ask <project> "Which date do we launch?" -o "March 14" -o "March 21" --to omar
+cb ask <project> "What discount for returning customers?" --free --to omar
+cb assign Q12 omar      # hand an existing question to Omar
+cb assign Q12 ahmed     # take it back
+cb assign #34 omar      # hand him a task: he can add notes to it
+cb users                # who has what open
+```
 
-5. **Give him things to answer:**
+On the board, the **For** picker on a question card does the same as `cb assign`; on Telegram, **Hand to ...**.
+Questions handed to someone move from "Waiting on you" to "Waiting on others" and stop counting in the Today badge.
 
-   ```
-   cb ask <project> "Which date do we launch?" -o "March 14" -o "March 21" --to omar
-   cb ask <project> "What discount for returning customers?" --free --to omar
-   cb assign Q12 omar      # hand an existing question to Omar
-   cb assign Q12 ahmed     # take it back
-   cb assign #34 omar      # hand him a task: he can add notes to it
-   cb users                # who has what open
-   ```
+## Signing in
 
-   On the board, the **For** picker on a question card does the same as `cb assign`. Questions
-   handed to someone move from "Waiting on you" to "Waiting on others" and stop counting in the
-   Today badge. A task's Assignee field suggests the users.
-
-When Omar answers, the session that asked gets "omar (not Ahmed) answered…", so a guest's answer is
-never taken as your approval.
+- Wrong name or password: one message, after a second. 5 wrong tries for a name from one address lock that name there
+  for 2 minutes (same message, even with the right password). Someone else failing elsewhere never locks you out.
+- Everyone can **change their password** (the key icon) and **sign out**. A member who signed in by link sets a
+  first password there without a current one.
+- Forgot the password: an admin resets it on the Users page (**Reset password**). If no admin can sign in, reset it
+  from the VPS shell ([ops/maintain.md](ops/maintain.md#users)).
 
 ## Stop sharing
 
-Stop the tunnel: `Stop-Service cloudflared` from an admin shell (`Start-Service cloudflared` brings
-it back). Nothing is reachable from outside while it's stopped, but anyone who has a link gets in
-again once the tunnel is up.
+- **A member's link leaked:** Users → **New link**. The old link stops working at once, and every browser signed in as
+  them is signed out (their password still works). Send the new one.
+- **Done with someone:** Users → **Remove**. They can't sign in any more, their open questions come back to you, and
+  their open tasks become unassigned (status kept; a task in progress goes back to Next). Their answers and notes
+  stay under their name.
 
-- **A link leaked:** People (key 7) → **New link**. The old link stops working at once, and every
-  browser signed in as that person is signed out, by link or by password (the password itself still
-  works: they sign in again with it, or with the new link). Send the new one.
-- **Done with someone:** People → **Remove**. Their link stops working, their open questions come
-  back to you, and their open tasks become unassigned: status kept, so work held on one of those
-  questions stays held, except a task in progress goes back to Next, since nobody is working it.
-  Answers and notes they left stay under their name.
+New links, passwords, roles and removals are yours: only an admin on the board (or the VPS shell) can make them. Each
+leaves a line in History.
 
-New links and removals are Ahmed's: only the dashboard can make them (`cb user rotate` and
-`cb user remove` say so). Adding, new links and removals each leave a line in History.
+## Members' links point at the public address
 
-## Don'ts
-
-- **Don't set `HOST`** (leave the server on 127.0.0.1). The board treats a request as yours when
-  it comes to `localhost` with no proxy headers. Requests through the Cloudflare tunnel carry
-  `cf-connecting-ip` and `X-Forwarded-For`, so `isLocal()` treats them as outside and they need a
-  link. A server bound to `0.0.0.0` lets anyone on the LAN who sends
-  `Host: localhost` count as you.
-- **Don't put a tunnel or proxy in front that strips those headers** (`cf-connecting-ip`,
-  `X-Forwarded-For`, `X-Forwarded-Host`) and sends a `localhost` host header: every visitor would
-  get the full board.
-- **Don't set `httpHostHeader`** in the cloudflared config. The tunnel must pass the public Host
-  through: a guest's answer, note or sign-in is checked against it (Origin must match Host), so a
-  rewritten Host refuses every one of them as cross-site.
+The link is built from the board's public URL: `CB_PUBLIC_URL` in `deploy/.env` on the VPS (`PUBLIC_URL` in the PC's
+`.env` before the move). If it isn't set, links point at whatever address you opened the board on.
