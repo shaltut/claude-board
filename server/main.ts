@@ -301,6 +301,23 @@ export async function startBot(token: string, api: string) {
   await ensureListen();
 }
 
+/** Telegram and the GitHub watch run once per board, not once per server: a second server on the same database (the
+ *  PC's, started again after the move to the VPS) would double every GitHub card and fight over the bot's updates.
+ *  The server holding a session advisory lock polls; another waits, and takes over within `every` if the first goes.
+ *  Resolves with the reserved connection that holds the lock, once this server leads.
+ *  ponytail: if that connection drops (Postgres restarted) the lock goes while this server keeps polling, so a waiting
+ *  server can start too; a leader that re-checks its lock would close that, if two servers ever run on purpose. */
+export async function lead(begin: () => void, every = 60_000, db: any = sql) {
+  for (let waited = false; ; waited = true) {
+    const conn = await db.reserve().catch(() => null);
+    const [r] = conn ? await conn`select pg_try_advisory_lock(4747) as ok`.catch(() => [null]) : [null];
+    if (r?.ok) { begin(); return conn; }
+    conn?.release();
+    if (!waited && r) console.log('another board server polls Telegram and GitHub for this database; this one serves pages, and takes over if it goes');
+    await new Promise((res) => setTimeout(res, every).unref?.());
+  }
+}
+
 export async function start() {
   const { ensurePg, ownsPg } = await import('../db/pg.ts');
   if (ownsPg(databaseUrl())) ensurePg();
@@ -308,8 +325,10 @@ export async function start() {
   const hostname = process.env.HOST ?? '127.0.0.1';
   serve({ fetch: app.fetch, port, hostname }, () => console.log(`Claude Board: http://localhost:${port}`));
   const token = process.env.TELEGRAM_BOT_TOKEN || dotenv('TELEGRAM_BOT_TOKEN');
-  if (token) await startBot(token, process.env.TELEGRAM_API || dotenv('TELEGRAM_API') || 'https://api.telegram.org');
-  startGithub(); // #1207: polls the repos `cb github` lists (none: nothing is called)
+  void lead(() => {
+    if (token) void startBot(token, process.env.TELEGRAM_API || dotenv('TELEGRAM_API') || 'https://api.telegram.org');
+    startGithub(); // #1207: polls the repos `cb github` lists (none: nothing is called)
+  });
 }
 
 if (import.meta.main) await start();
