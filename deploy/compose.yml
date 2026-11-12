@@ -33,8 +33,6 @@ services:
       context: ..
       dockerfile: Dockerfile
     image: claude-board:latest
-    # shell commands (dc exec board cb ...) are recorded as session@<this>, not session@<container id>
-    hostname: ${CB_MACHINE:-vps}
     restart: unless-stopped
     labels:
       com.centurylinklabs.watchtower.enable: "false"
@@ -45,6 +43,9 @@ services:
       CB_DATABASE_URL: postgres://cb:${CB_PG_PASSWORD}@db:5432/claude_board
       CB_PUBLIC_URL: ${CB_PUBLIC_URL:-}
       CB_MACHINE: ${CB_MACHINE:-vps}
+      # shell commands (dc exec board cb ...) are recorded as shell@<machine>, not session@<container id>.
+      # Not `hostname:`: on Compose 2.19 it silently drops the container's second network (the proxy's).
+      CB_ACTOR: shell@${CB_MACHINE:-vps}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       GH_TOKEN: ${GH_TOKEN:-}
       CB_BEHIND_CLOUDFLARE: ${CB_BEHIND_CLOUDFLARE:-0}
