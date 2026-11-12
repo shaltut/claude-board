@@ -10,6 +10,15 @@ export const RPC_FUNCTIONS = [
   'goal_create', 'goal_update', 'goal_status', 'goal_tick', 'goal_opened', 'goal_preview', 'goal_propose', 'goals_list',
   'ask_open', 'ask_record', 'ask_say', 'ask_reply', 'ask_close', 'ask_reroute', 'asks_list',
 ];
+// The cb CLI's reads, and the GitHub watch's writes: direct transport only (Ahmed's machines). Never served by
+// /api/rpc. A read here takes `scope` (see db/schema.sql, "reads for the CLI") or is knowingly scope-free
+// (test/reads.test.ts lists those).
+export const CLI_FUNCTIONS = [
+  'session_at', 'session_of', 'session_show', 'task_peek', 'task_show', 'projects_summary', 'queue_head', 'questions_asked',
+  'released', 'user_get', 'users_overview', 'huddle_show', 'question_peek', 'question_parents',
+  'github_list', 'github_watch', 'github_unwatch', 'github_mute', 'read_project', 'resolve',
+];
+const CLI_ALLOWED = [...RPC_FUNCTIONS, ...CLI_FUNCTIONS];
 const SETOF = new Set(['task_claim', 'mine', 'answers_pending']);
 
 export class RpcError extends Error {
@@ -25,8 +34,8 @@ function param(i: number, v: unknown): { expr: string; value: unknown } {
   return { expr: n, value: typeof v === "boolean" ? v : String(v) }; // postgres.js serializes booleans by identity
 }
 
-export async function callFn(fn: string, args: Record<string, unknown> = {}, db: any = sql) {
-  if (!RPC_FUNCTIONS.includes(fn)) throw new RpcError(404, `unknown function ${fn}; available: ${RPC_FUNCTIONS.join(', ')}`);
+export async function callFn(fn: string, args: Record<string, unknown> = {}, db: any = sql, allowed: string[] = RPC_FUNCTIONS) {
+  if (!allowed.includes(fn)) throw new RpcError(404, `unknown function ${fn}; available: ${RPC_FUNCTIONS.join(', ')}`);
   const keys = Object.keys(args);
   for (const k of keys) if (!/^[a-z_]+$/.test(k)) throw new RpcError(400, `bad argument name "${k}"`);
   const ps = keys.map((k, i) => param(i + 1, args[k]));
@@ -36,3 +45,6 @@ export async function callFn(fn: string, args: Record<string, unknown> = {}, db:
   const [row] = await db.unsafe(`select cb.${fn}(${call}) as result`, values);
   return row?.result ?? null;
 }
+
+/** What the CLI calls: everything /api/rpc serves, plus its own reads. */
+export const callCli = (fn: string, args: Record<string, unknown> = {}) => callFn(fn, args, sql, CLI_ALLOWED);

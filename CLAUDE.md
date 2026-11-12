@@ -25,6 +25,8 @@ If this session also takes work *from* the board, `cb start` first, and record b
 
 - **Rules live in SQL.** A new behaviour is a `cb.*` function (or a change to one), so the web, the CLI, Telegram
   and psql agree. The server and the CLI stay thin. A function the web calls must be listed in `server/rpc.ts`.
+  `cli/cb.ts` holds no SQL: a read it needs is a `cb.*` function in `CLI_FUNCTIONS` (never served over HTTP), taking
+  `scope` unless it is on the scope-free list in `test/reads.test.ts`.
 - **The schema is idempotent.** Tables: `create table if not exists`, and column changes as `alter table ... add
   column if not exists` below. Functions: dropped and re-created on every run, so a new function also gets its
   `drop function if exists ... cascade` line in the block near the top of its section.

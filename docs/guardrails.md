@@ -12,7 +12,7 @@ Every rule the board enforces and where. A change that touches one updates its r
 | 5 | Every write has an actor | `cb.set_actor` | **Tightened**: for teammates the actor is composed and checked by the server; `owner` recorded on events | 2, 4 | partly in place (phase 2): `cb.events.owner` is stamped by the `events_owner` trigger; the server-side actor check is phase 4 |
 | 6 | `--as` / `$CB_ACTOR` name any actor | CLI | **Restricted** for teammates to their own devices' names | 4 | planned |
 | 7 | `orch` rights by name | `_huddle_post`, `tick` | **Replaced** for teammates by an explicit grant | 5 | planned |
-| 8 | A bound session works only its own project | CLI + functions | **Tightened**: enforced by the server from `cb.user_projects`, not by the session's own binding | 4 | planned |
+| 8 | A bound session works only its own project | CLI + functions | **Tightened**: enforced by the server from `cb.user_projects`, not by the session's own binding | 3, 4 | partly in place (phase 3): every read the CLI makes is a `cb.*` function that takes `scope` and hides other projects (`test/reads.test.ts`); the server setting `scope` is phase 4 |
 | 9 | Work reaches a person only on their projects | `assignee_on_project` trigger | **Generalised**: also covers that person's sessions | 5 | planned |
 | 10 | Members: only answer / send back / note their own items | `server/main.ts` | **Unchanged** for the browser. Sessions get the wider allow-list of 4.3, only with the switch on | 4, 6 | planned |
 | 11 | Ahmed's answer can't be overwritten | `cb.answer` | **Unchanged**; extended to a principal's answers | 5 | planned |
@@ -34,6 +34,8 @@ Every rule the board enforces and where. A change that touches one updates its r
 | 27 | No restart, merge or deploy without Ahmed's go | CLAUDE.md | **Unchanged** | all | planned |
 | 28 | No client data anywhere new without his OK | CLAUDE.md | **Made explicit**: the per-person switch is that OK, recorded | 2, 6 | in place in SQL (phase 2): `cb.user_sessions`, dashboard only, one History line; the page for it is phase 6 |
 | 29 | Backups stay on the VPS or Ahmed's machines | `deploy/backup.sh` | **Unchanged**; dumps now also hold device token hashes | - | planned |
+| 30 | Only the dashboard changes the GitHub watch (repos, muted logins); the refusal never names the way past it | `cb.github_watch`, `cb.github_unwatch`, `cb.github_mute` (was `cli/cb.ts`) | **Unchanged**; not on `/api/rpc`, and not on the session allow-list | 3 | in place (phase 3): the rule moved from the CLI into SQL |
+| 31 | `cli/cb.ts` holds no SQL of its own; its reads (`CLI_FUNCTIONS`) are never served by `/api/rpc`; each takes `scope` or is on the scope-free list | `server/rpc.ts`, `test/reads.test.ts` | **New**: what lets one scope check cover both transports | 3 | in place (phase 3) |
 
 Known weaknesses this design does **not** fix, listed so they are not mistaken for fixed: the `cb-web` deterrent on
 Ahmed's own machines; `cb.users.token` stored in plain text (it is the cookie and the member link).

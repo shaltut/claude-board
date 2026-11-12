@@ -770,6 +770,25 @@ drop function if exists cb.device_auth cascade;
 drop function if exists cb.device_revoke cascade;
 drop function if exists cb.devices_list cascade;
 drop function if exists cb._devices_revoke cascade;
+drop function if exists cb._in_scope cascade;
+drop function if exists cb.session_at cascade;
+drop function if exists cb.session_of cascade;
+drop function if exists cb.task_peek cascade;
+drop function if exists cb.task_show cascade;
+drop function if exists cb.projects_summary cascade;
+drop function if exists cb.queue_head cascade;
+drop function if exists cb.questions_asked cascade;
+drop function if exists cb.released cascade;
+drop function if exists cb.user_get cascade;
+drop function if exists cb.users_overview cascade;
+drop function if exists cb.huddle_show cascade;
+drop function if exists cb.session_show cascade;
+drop function if exists cb.question_peek cascade;
+drop function if exists cb.question_parents cascade;
+drop function if exists cb.github_list cascade;
+drop function if exists cb.github_watch cascade;
+drop function if exists cb.github_unwatch cascade;
+drop function if exists cb.github_mute cascade;
 drop function if exists cb.assignee_on_project cascade;
 drop function if exists cb.question_assign cascade;
 drop function if exists cb.answer cascade;
@@ -1937,6 +1956,225 @@ begin
   end if;
   update cb.questions q set assigned_to = to_user where q.id = qid;
   if not found then raise exception 'question Q% not found', qid; end if;
+end $$;
+
+-- ---------------------------------------------------------------- reads for the CLI
+-- What `cb` reads, as functions, so a session that connects over HTTPS (a teammate's) runs the same code as one that
+-- connects to the database. scope: null = the whole board (Ahmed's machines); a JSON array of project slugs = only
+-- those projects, and anything else answers as if it did not exist. The session API sets scope itself, from the
+-- device's person: a caller never chooses it. None of these is served by /api/rpc (CLI_FUNCTIONS in server/rpc.ts).
+
+-- Anything that is not an array holding the project hides it: a malformed scope shows nothing.
+create function cb._in_scope(project text, scope jsonb) returns boolean language sql immutable as $$
+  select scope is null or (project is not null and jsonb_typeof(scope) = 'array' and scope ? project)
+$$;
+
+-- This pane's binding (cb iam). live = its relay was seen in the last 90s, as in cb.sessions_overview.
+create function cb.session_at(machine text, pane text) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+begin
+  return (select jsonb_build_object('actor', s.actor, 'project', s.project, 'live', s.last_seen > now() - interval '90 seconds')
+            from cb.sessions s where s.machine = machine and s.pane = pane);
+end $$;
+
+-- Where a name works, and whether its relay is live: its most recently seen pane.
+create function cb.session_of(name text, scope jsonb default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+begin
+  return (select jsonb_build_object('project', x.project, 'live', x.live)
+            from (select s.project, s.last_seen > now() - interval '90 seconds' as live
+                    from cb.sessions s where s.actor = name order by s.last_seen desc limit 1) x
+           where cb._in_scope(x.project, scope));
+end $$;
+
+-- A task's project and status, and who triages its project: enough to guard a command and to word its reply.
+create function cb.task_peek(id bigint, scope jsonb default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+begin
+  return (select jsonb_build_object('id', t.id, 'project', t.project, 'status', t.status, 'triagers', to_jsonb(cb.triagers(t.project)))
+            from cb.tasks t where t.id = id and cb._in_scope(t.project, scope));
+end $$;
+
+-- cb show: the task, its last 10 notes (newest first) and the goals it is in.
+create function cb.task_show(id bigint, scope jsonb default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+begin
+  return (select to_jsonb(t) || jsonb_build_object(
+            'notes', coalesce((select jsonb_agg(jsonb_build_object('at', e.at, 'actor', e.actor, 'summary', e.summary) order by e.id desc)
+                                 from (select * from cb.events e where e.task_id = t.id and e.kind in ('note', 'done') order by e.id desc limit 10) e), '[]'),
+            'goals', coalesce((select jsonb_agg(jsonb_build_object('id', g.id, 'title', g.title, 'status', g.status) order by g.status, g.rank)
+                                 from cb.goal_tasks gt join cb.goals g on g.id = gt.goal_id
+                                where gt.task_id = t.id and gt.state = 'in' and g.status <> 'done'), '[]'))
+            from cb.tasks t where t.id = id and cb._in_scope(t.project, scope));
+end $$;
+
+-- cb start, before a session is bound: each project with what waits in it.
+create function cb.projects_summary(scope jsonb default null) returns jsonb language plpgsql stable as $$
+begin
+  return coalesce((select jsonb_agg(to_jsonb(x) order by x.slug) from (
+    select p.slug, count(t.id) filter (where t.status = 'next')::int as next,
+           count(t.id) filter (where t.status = 'in_progress')::int as doing,
+           (select count(*)::int from cb.sessions s where s.project = p.slug and s.last_seen > now() - interval '90 seconds') as live
+      from cb.projects p left join cb.tasks t on t.project = p.slug
+     where cb._in_scope(p.slug, scope) group by p.slug) x), '[]');
+end $$;
+
+-- The first n tasks cb next would hand this name: the same filter and order as cb.task_claim.
+create function cb.queue_head(project text, actor text, n int default 3, scope jsonb default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+begin
+  return coalesce((select jsonb_agg(jsonb_build_object('id', x.id, 'priority', x.priority, 'title', x.title, 'labels', x.labels,
+                                                        'project', x.project, 'assignee', x.assignee) order by x.pos)
+    from (select t.*, row_number() over (order by t.priority <> 'P0', case when t.priority <> 'P0' then cb._goal_rank(t.id) end nulls last,
+                                                  t.priority, t.rank, t.id) as pos
+            from cb.tasks t
+           where t.project = project and t.status = 'next' and (t.assignee is null or t.assignee = actor)
+             and cb._in_scope(t.project, scope)
+           order by pos limit greatest(coalesce(n, 3), 0)) x), '[]');
+end $$;
+
+-- The questions a name asked that still need it: open, answered (act on it), and with sent_back the ones to rewrite.
+create function cb.questions_asked(actor text, sent_back boolean default false, scope jsonb default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+begin
+  return coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'status', q.status, 'body', q.body) order by q.id)
+    from cb.questions q
+   where q.asked_by = actor and (q.status in ('open', 'answered') or (coalesce(sent_back, false) and q.status = 'sent_back'))
+     and cb._in_scope(q.project, scope)), '[]');
+end $$;
+
+-- After a task finishes: the open tasks it held, and where each stands now.
+create function cb.released(blocker bigint, scope jsonb default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+begin
+  return coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'status', t.status, 'blocked_on', t.blocked_on,
+                                                        'waits', to_jsonb(cb._waits_on(t.id))) order by t.id)
+    from cb.task_blockers b join cb.tasks t on t.id = b.task
+   where b.blocker = blocker and t.status not in ('done', 'cancelled') and cb._in_scope(t.project, scope)), '[]');
+end $$;
+
+-- One person, by the name exactly as given (no case folding: cb assign refuses "Omar" for omar).
+create function cb.user_get(name text) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+begin
+  return (select jsonb_build_object('name', u.name, 'display', u.display, 'role', u.role) from cb.users u where u.name = name);
+end $$;
+
+-- cb users: everyone, with what each has open.
+create function cb.users_overview() returns jsonb language plpgsql stable as $$
+begin
+  return coalesce((select jsonb_agg(jsonb_build_object('name', u.name, 'display', u.display, 'role', u.role,
+      'open_questions', (select count(*)::int from cb.questions q where q.assigned_to = u.name and q.status = 'open'),
+      'open_tasks', (select count(*)::int from cb.tasks t where t.assignee = u.name and t.status not in ('done', 'cancelled'))) order by u.name)
+    from cb.users u), '[]');
+end $$;
+
+-- cb huddle show: the huddle, every line said in it, and who is in it.
+create function cb.huddle_show(id bigint, scope jsonb default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+begin
+  return (select jsonb_build_object('huddle', to_jsonb(h),
+            'lines', coalesce((select jsonb_agg(jsonb_build_object('at', e.at, 'actor', e.actor, 'summary', e.summary) order by e.id)
+                                 from cb.events e where e.kind = 'huddle' and (e.data ->> 'huddle')::bigint = h.id), '[]'),
+            'members', coalesce((select jsonb_agg(m.actor order by m.added_at) from cb.huddle_members m where m.huddle_id = h.id), '[]'))
+            from cb.huddles h where h.id = id and cb._in_scope(h.project, scope));
+end $$;
+
+-- cb session <name>: its open tasks, the questions it asked, and the last 10 things it did.
+create function cb.session_show(who text, scope jsonb default null) returns jsonb language plpgsql stable as $$
+begin
+  return jsonb_build_object(
+    'tasks', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'status', t.status, 'priority', t.priority, 'type', t.type,
+                                                           'title', t.title, 'project', t.project) order by t.status, t.priority, t.rank)
+                         from cb.tasks t where t.assignee = who and t.status not in ('done', 'cancelled') and cb._in_scope(t.project, scope)), '[]'),
+    'questions', cb.questions_asked(who, false, scope),
+    'events', coalesce((select jsonb_agg(jsonb_build_object('at', e.at, 'kind', e.kind, 'task_id', e.task_id, 'summary', e.summary) order by e.id desc)
+                          from (select * from cb.events e where e.actor = who and cb._in_scope(e.project, scope) order by e.id desc limit 10) e), '[]'));
+end $$;
+
+-- What a question hangs on (its parent and the answer that opens it) and who it is with (null = Ahmed).
+create function cb.question_peek(id bigint, scope jsonb default null) returns jsonb language plpgsql stable as $$
+#variable_conflict use_variable
+begin
+  return (select jsonb_build_object('id', q.id, 'parent_id', q.parent_id, 'if_answer', q.if_answer,
+                                    'assigned_display', (select u.display from cb.users u where u.name = q.assigned_to))
+            from cb.questions q where q.id = id and cb._in_scope(q.project, scope));
+end $$;
+
+-- The questions a set of follow-ups came after: cb pending shows each beside its answer.
+create function cb.question_parents(ids jsonb, scope jsonb default null) returns jsonb language plpgsql stable as $$
+begin
+  return coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'body', q.body, 'answer', q.answer) order by q.id)
+    from cb.questions q
+   where jsonb_typeof(ids) = 'array' and q.id in (select (x #>> '{}')::bigint from jsonb_array_elements(ids) x where jsonb_typeof(x) = 'number')
+     and cb._in_scope(q.project, scope)), '[]');
+end $$;
+
+-- The GitHub watch (#1207): one cb.settings row per repo, polled by server/github.ts, plus the muted logins.
+create function cb.github_list() returns jsonb language plpgsql stable as $$
+begin
+  return jsonb_build_object(
+    'repos', coalesce((select jsonb_agg(jsonb_build_object('key', s.key, 'value', s.value) order by s.key)
+                         from cb.settings s where s.key like 'github:%' and s.key not like 'github:outbox:%'), '[]'),
+    'muted', coalesce((select s.value from cb.settings s where s.key = 'github-muted'), '[]'));
+end $$;
+
+-- What the board watches, and whom it tells, is Ahmed's call: a session pointing it at another repo his gh reads
+-- would pour that text onto a board guests see. The refusal never names the way past it: a session (or a comment
+-- steering one) would learn it here.
+create function cb.github_watch(repo text, to_actor text default null, project text default null) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare p text; v jsonb;
+begin
+  begin perform cb.dashboard_only('GitHub');
+  exception when others then
+    raise exception 'only Ahmed adds or removes watched repos: ask him to (cb ask), saying which repo and why';
+  end;
+  -- no part starting with a dot: ../.., .github/x and owner/.. never reach gh as a path
+  if repo is null or repo !~ '^[A-Za-z0-9_-][A-Za-z0-9_.-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*$' then
+    raise exception '"%" is not owner/repo, e.g. cb github add TachyHealth/iHop-Platform', repo;
+  end if;
+  p := cb.read_project(coalesce(project, 'ihop'));
+  -- a new repo starts now (no backfill); adding it again changes only what was given and keeps its checkpoint
+  insert into cb.settings as s (key, value)
+  values ('github:' || repo, jsonb_build_object('since', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+            'to', coalesce(to_actor, 'orch@shaltoot'), 'project', p, 'last_ok', null, 'last_error', null, 'prs', '{}'::jsonb))
+  on conflict (key) do update set value = s.value
+    || case when to_actor is not null then jsonb_build_object('to', to_actor) else '{}'::jsonb end
+    || case when project is not null then jsonb_build_object('project', p) else '{}'::jsonb end
+  returning s.value into v;
+  return v;
+end $$;
+
+create function cb.github_unwatch(repo text) returns void language plpgsql as $$
+#variable_conflict use_variable
+begin
+  begin perform cb.dashboard_only('GitHub');
+  exception when others then
+    raise exception 'only Ahmed adds or removes watched repos: ask him to (cb ask), saying which repo and why';
+  end;
+  delete from cb.settings s where s.key = 'github:' || repo;
+  if not found then raise exception '% is not watched: cb github lists the repos', repo; end if;
+end $$;
+
+-- A login whose PRs, comments, reviews and commits the watch drops (Ahmed's own workers post as one): his call.
+create function cb.github_mute(login text, mute boolean default true) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare l text := lower(coalesce(login, '')); cur jsonb; nxt jsonb;
+begin
+  begin perform cb.dashboard_only('GitHub');
+  exception when others then
+    raise exception 'only Ahmed mutes or unmutes GitHub logins: ask him to (cb ask), saying which login and why';
+  end;
+  if l !~ '^[a-z0-9][a-z0-9-]{0,38}$' then raise exception '"%" is not a GitHub login', login; end if;
+  select s.value into cur from cb.settings s where s.key = 'github-muted' for update;
+  cur := coalesce(cur, '[]');
+  if not coalesce(mute, true) and not cur ? l then raise exception '% is not muted: cb github lists the muted logins', l; end if;
+  nxt := coalesce((select jsonb_agg(x order by x) from (
+           select distinct x from jsonb_array_elements_text(cur) x where coalesce(mute, true) or x <> l
+           union select l where coalesce(mute, true)) y), '[]');
+  insert into cb.settings as s (key, value) values ('github-muted', nxt) on conflict (key) do update set value = excluded.value;
+  return nxt;
 end $$;
 
 -- ---------------------------------------------------------------- locks and tick

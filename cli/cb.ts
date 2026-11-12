@@ -1,11 +1,11 @@
-// cb — Claude Board CLI. Talks to Postgres directly (works without the web server).
+// cb — Claude Board CLI. Talks to Postgres directly (works without the web server), only through cb.* functions.
 import { parseArgs } from 'node:util';
 import { hostname, tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { callFn } from '../server/rpc.ts';
+import { callCli as callFn } from '../server/rpc.ts'; // /api/rpc's functions plus the CLI's own reads
 import { tick, dur } from './tick.ts';
 import { sql, databaseUrl, machine } from '../server/db.ts';
 import { help, unknownHelp, COMMANDS, backWhy, reaskHint, flat } from './help.ts';
@@ -58,7 +58,7 @@ let sessionProject: string | null = null;
 /** This pane's binding (cb iam): its actor, unless --as/$CB_ACTOR say otherwise, and its project. */
 async function resolveActor() {
   if (!pane) return;
-  const [s] = await sql`select actor, project from cb.sessions where machine = ${machine()} and pane = ${pane}`;
+  const s: any = await callFn('session_at', { machine: machine(), pane });
   if (s && !explicitActor) actor = s.actor;
   sessionProject = s?.project ?? null;
 }
@@ -140,7 +140,7 @@ function printBrief(b: any) {
 async function guard(id: string | undefined) {
   const n = Number(String(id ?? '').replace(/^#/, ''));
   if (!sessionProject || !Number.isInteger(n)) return;
-  const [t] = await sql`select project from cb.tasks where id = ${n}`;
+  const t: any = await callFn('task_peek', { id: n });
   if (t && t.project !== sessionProject)
     throw new Error(`#${n} is in ${t.project}; this session works in ${sessionProject}. Check the id: cb mine lists yours, cb brief your project's. Only ${t.project}'s own sessions change it.`);
 }
@@ -158,12 +158,9 @@ function relayOn(): boolean | null {
 
 /** cb start: where this session stands and the one thing to run next. Read-only. */
 async function start() {
-  const [row] = pane ? await sql`select actor, project from cb.sessions where machine = ${machine()} and pane = ${pane}` : [];
+  const row: any = pane ? await callFn('session_at', { machine: machine(), pane }) : null;
   const relay = relayOn();
-  const projects = async () => (await sql`select p.slug,
-      count(t.id) filter (where t.status = 'next')::int as next, count(t.id) filter (where t.status = 'in_progress')::int as doing,
-      (select count(*)::int from cb.sessions s where s.project = p.slug and s.last_seen > now() - interval '90 seconds') as live
-    from cb.projects p left join cb.tasks t on t.project = p.slug group by p.slug order by p.slug`)
+  const projects = async () => (await callFn('projects_summary') as any[])
     .map((p: any) => `    ${p.slug.padEnd(16)} ${p.next} next, ${p.doing} in progress, ${p.live} sessions live`).join('\n') || '    (none yet: cb help project)';
   const via = o.as ? '--as' : process.env.CB_ACTOR ? '$CB_ACTOR' : row?.project ? 'bound to this pane' : 'not bound'; // the relay's own row (before cb iam) has no project
   const out = [`You       ${actor} (${via})`,
@@ -190,10 +187,8 @@ async function start() {
   // cb.mine also lists tasks reassigned away in the last 24h: never tell the agent to continue those
   const open = mine.filter((t: any) => t.assignee === actor && !['done', 'cancelled'].includes(t.status));
   const project = sessionProject;
-  const queue = project ? await sql`select id, priority, title, labels, project, assignee from cb.tasks
-    where project = ${project} and status = 'next' and (assignee is null or assignee = ${actor})
-    order by priority <> 'P0', case when priority <> 'P0' then cb._goal_rank(id) end nulls last, priority, rank, id limit 3` : []; // = cb.task_claim
-  const qs = await sql`select id, status, body from cb.questions where asked_by = ${actor} and status in ('open', 'answered', 'sent_back') order by id`;
+  const queue: any[] = project ? await callFn('queue_head', { project, actor }) as any[] : []; // the filter and order of cb.task_claim
+  const qs = await callFn('questions_asked', { actor, sent_back: true }) as any[];
   const cut = (s: string) => (s.length > 100 ? s.slice(0, 99) + '…' : s);
   // Ahmed's asks (#936) waiting on this session's reply: a resumed session lost the terminal they were pushed into
   const asks = (await callFn('asks_list', { to_actor: actor, include_closed: false }) as any[]).filter((a) => a.awaiting);
@@ -217,8 +212,7 @@ async function start() {
 
 /** After a task finishes: the tasks it held, and where each stands now (the DB released the free ones). */
 async function released(id: string) {
-  const rows = await sql`select t.id, t.status, t.blocked_on, cb._waits_on(t.id) as waits from cb.task_blockers b join cb.tasks t on t.id = b.task
-    where b.blocker = ${Number(id.replace(/^#/, ''))} and t.status not in ('done', 'cancelled') order by t.id`;
+  const rows = await callFn('released', { blocker: Number(id.replace(/^#/, '')) }) as any[];
   return rows.map((t: any) => t.status !== 'blocked' ? `\n#${t.id} unblocked: now ${t.status}`
     : `\n#${t.id} still blocked${t.waits.length ? `: waits on #${t.waits.join(', #')}` : t.blocked_on ? `: on Q${t.blocked_on}` : ''}`).join('');
 }
@@ -327,15 +321,12 @@ async function run(): Promise<unknown> {
       if (args[0] !== 'add') throw new Error(`unknown user command "${args[0]}". Run: cb user add <name> ["Display Name"]; list people with cb users`);
       // The link is a member's login, so a session never gets it (cb.user_add returns it to the dashboard only).
       await callFn('user_add', { name: args[1], display: args[2] ?? null, actor, ...(o.admin ? { role: 'admin' } : {}) });
-      const [u] = await sql`select name, display, role from cb.users where name = ${args[1].trim().toLowerCase()}`;
+      const u: any = await callFn('user_get', { name: args[1].trim().toLowerCase() });
       return { out: u.role === 'admin' ? `added ${u.name} (${u.display}) as admin: set a password (cb user password ${u.name}) and they sign in on the login page`
         : `added ${u.name} (${u.display}): Ahmed copies their link from the Users page`, json: u };
     }
     case 'users': {
-      const rows = await sql`select u.name, u.display, u.role,
-        (select count(*)::int from cb.questions q where q.assigned_to = u.name and q.status = 'open') as open_questions,
-        (select count(*)::int from cb.tasks t where t.assignee = u.name and t.status not in ('done','cancelled')) as open_tasks
-        from cb.users u order by u.name`;
+      const rows = await callFn('users_overview') as any[];
       return { out: rows.map((r: any) => `${r.name.padEnd(12)} ${r.display}${r.role === 'admin' ? ' (admin)' : ''}: ${r.open_questions} questions, ${r.open_tasks} tasks open`).join('\n') || 'no users (cb user add omar "Omar")', json: rows };
     }
     case 'github': {
@@ -343,51 +334,29 @@ async function run(): Promise<unknown> {
       const sub = args[0];
       if (sub === 'add' || sub === 'remove') {
         need(2, 'github add <owner/repo> [--to orch@shaltoot] [--project ihop]   or   cb github remove <owner/repo>');
-        const repo = args[1], key = `github:${repo}`;
+        const repo = args[1];
         // no part starting with a dot: ../.., .github/x and owner/.. never reach gh as a path
         if (!/^[\w-][\w.-]*\/[\w-][\w.-]*$/.test(repo)) throw new Error(`"${repo}" is not owner/repo, e.g. cb github add TachyHealth/iHop-Platform`);
-        return await sql.begin(async (tx: any) => {
-          // What the board watches, and whom it tells, is Ahmed's call: the same guard as his People and Epics pages
-          // (a session pointing it at another repo Ahmed's gh reads would pour that text onto a board guests see)
-          // The refusal never names the way past it: a session (or a comment steering one) would learn it here.
-          await tx`select cb.dashboard_only('GitHub')`.catch(() => {
-            throw new Error(`only Ahmed adds or removes watched repos: ask him to (cb ask), saying which repo and why`);
-          });
-          if (sub === 'remove') {
-            if (!(await tx`delete from cb.settings where key = ${key} returning key`).length) throw new Error(`${repo} is not watched: cb github lists the repos`);
-            return { out: `stopped watching ${repo}; its cards stay on the board` };
-          }
-          const [{ p }] = await tx`select cb.read_project(${o.project ?? 'ihop'}) as p`;
-          const to = o.to ?? 'orch@shaltoot', patch = { ...(o.to ? { to } : {}), ...(o.project ? { project: p } : {}) };
-          // a new repo starts now (no backfill); adding it again changes only what was given and keeps its checkpoint
-          const [r] = await tx`insert into cb.settings (key, value)
-            values (${key}, ${tx.json({ since: new Date().toISOString(), to, project: p, last_ok: null, last_error: null, prs: {} })})
-            on conflict (key) do update set value = cb.settings.value || ${tx.json(patch)} returning value`;
-          return { out: `watching ${repo}: ${r.value.to} is told, PR cards go in ${r.value.project}, events from ${r.value.since} on`, json: r.value };
-        });
+        // What the board watches is Ahmed's call, checked in the database (cb.github_watch): the refusal never names the way past it.
+        if (sub === 'remove') {
+          await callFn('github_unwatch', { repo });
+          return { out: `stopped watching ${repo}; its cards stay on the board` };
+        }
+        const v: any = await callFn('github_watch', { repo, to_actor: o.to || null, project: o.project || null });
+        return { out: `watching ${repo}: ${v.to} is told, PR cards go in ${v.project}, events from ${v.since} on`, json: v };
       }
       if (sub === 'mute' || sub === 'unmute') {
         // a login whose PRs, comments, reviews and commits the watch drops (Ahmed's own workers post as one): his call
         need(2, 'github mute <login>   or   cb github unmute <login>');
         const login = args[1].toLowerCase();
         if (!/^[a-z0-9](?:[a-z0-9-]{0,38})$/.test(login)) throw new Error(`"${args[1]}" is not a GitHub login`);
-        return await sql.begin(async (tx: any) => {
-          await tx`select cb.dashboard_only('GitHub')`.catch(() => {
-            throw new Error(`only Ahmed mutes or unmutes GitHub logins: ask him to (cb ask), saying which login and why`);
-          });
-          const [r] = await tx`select value from cb.settings where key = 'github-muted' for update`;
-          const cur: string[] = r?.value ?? [];
-          if (sub === 'unmute' && !cur.includes(login)) throw new Error(`${login} is not muted: cb github lists the muted logins`);
-          const next = sub === 'mute' ? [...new Set([...cur, login])].sort() : cur.filter((x) => x !== login);
-          await tx`insert into cb.settings (key, value) values ('github-muted', ${tx.json(next)})
-                   on conflict (key) do update set value = excluded.value`;
-          return { out: sub === 'mute' ? `muted ${login}: its PRs, comments, reviews and commits no longer reach the watch (failed CI runs still do)`
-            : `unmuted ${login}`, json: next };
-        });
+        const next = await callFn('github_mute', { login, mute: sub === 'mute' }) as string[];
+        return { out: sub === 'mute' ? `muted ${login}: its PRs, comments, reviews and commits no longer reach the watch (failed CI runs still do)`
+          : `unmuted ${login}`, json: next };
       }
       if (sub) throw new Error(`unknown github command "${sub}": cb github lists, cb github add <owner/repo>, cb github remove <owner/repo>, cb github mute <login>`);
-      const rows = await sql`select key, value from cb.settings where key like 'github:%' and key not like 'github:outbox:%' order by key`;
-      const [mu] = await sql`select value from cb.settings where key = 'github-muted'`;
+      const g: any = await callFn('github_list');
+      const rows: any[] = g.repos, mu = { value: g.muted as string[] };
       const out = rows.map(({ key, value: v }: any) => {
         const cards = Object.entries(v.prs ?? {});
         return [`${key.slice(7)} → ${v.to} (${v.project}) · last poll ${v.last_ok ? `${dur((Date.now() - Date.parse(v.last_ok)) / 60000)} ago` : 'never'} · since ${v.since}` +
@@ -405,7 +374,7 @@ async function run(): Promise<unknown> {
         return { out: `Q${target.slice(1)} → ${to ?? 'ahmed'}` };
       }
       await guard(target);
-      if (to && !(await sql`select 1 from cb.users where name = ${to}`).length) throw new Error(`unknown user ${to}: see cb users, or add them with cb user add ${to} "<Display Name>"`);
+      if (to && !(await callFn('user_get', { name: to }))) throw new Error(`unknown user ${to}: see cb users, or add them with cb user add ${to} "<Display Name>"`);
       await callFn('task_update', { id: target, fields: { assignee: to }, actor });
       return { out: `#${target.replace(/^#/, '')} → ${to ?? 'nobody'}` };
     }
@@ -440,11 +409,10 @@ async function run(): Promise<unknown> {
         return { out: `huddle #${id} closed` };
       }
       if (sub === 'show') {
-        const [h] = await sql`select * from cb.huddles where id = ${Number(id)}`;
-        if (!h) throw new Error(`no huddle #${id}: cb huddles lists them`);
-        const lines = await sql`select at, actor, summary from cb.events where kind = 'huddle' and (data ->> 'huddle')::bigint = ${Number(id)} order by id`;
-        const members = await sql`select actor from cb.huddle_members where huddle_id = ${Number(id)} order by added_at`;
-        const head = `huddle #${h.id} [${h.status}] ${h.topic}${h.task_id ? ` (task #${h.task_id})` : ''} · ${h.project} · ${members.map((m: any) => m.actor).join(', ')}`;
+        const hs: any = await callFn('huddle_show', { id: Number(id) });
+        if (!hs) throw new Error(`no huddle #${id}: cb huddles lists them`);
+        const { huddle: h, lines, members } = hs;
+        const head = `huddle #${h.id} [${h.status}] ${h.topic}${h.task_id ? ` (task #${h.task_id})` : ''} · ${h.project} · ${members.join(', ')}`;
         return { out: [head, ...lines.map((l: any) => `  ${new Date(l.at).toISOString().slice(11, 16)} ${l.actor}: ${l.summary}`)].join('\n'), json: { huddle: h, lines } };
       }
       throw new Error(`unknown huddle command "${sub}": use open, say, add, close or show, e.g. cb huddle say ${id} "..." (cb help huddle)`);
@@ -452,12 +420,12 @@ async function run(): Promise<unknown> {
     case 'tell': {
       need(2, 'tell <session> "<message>"   e.g. cb tell W2@macbook "take #19 next"');
       if (sessionProject) {
-        const [t] = await sql`select project from cb.sessions where actor = ${args[0]} order by last_seen desc limit 1`;
+        const t: any = await callFn('session_of', { name: args[0] });
         if (t?.project && t.project !== sessionProject)
           throw new Error(`${args[0]} works in ${t.project}; this session works in ${sessionProject}. Sessions only talk inside their project: tell one of yours (cb sessions), or ask your orchestrator to pass it on.`);
       }
       const id = await callFn('tell', { to_actor: args[0], message: args.slice(1).join(' '), actor });
-      const [s] = await sql`select last_seen > now() - interval '90 seconds' as live from cb.sessions where actor = ${args[0]} order by last_seen desc limit 1`;
+      const s: any = await callFn('session_of', { name: args[0] });
       return { out: `message #${id} to ${args[0]}${s?.live ? ' (relay live: delivered within seconds)' : ' (relay not live: it arrives when its relay starts, within 24h)'}`, json: id };
     }
     case 'sessions': {
@@ -476,9 +444,7 @@ async function run(): Promise<unknown> {
     case 'session': {
       need(1, 'session <name>   e.g. cb session W6@macbook');
       const who = args[0];
-      const tasks = await sql`select id, status, priority, type, title, project from cb.tasks where assignee = ${who} and status not in ('done','cancelled') order by status, priority, rank`;
-      const qs = await sql`select id, status, body from cb.questions where asked_by = ${who} and status in ('open','answered') order by id`;
-      const ev = await sql`select at, kind, task_id, summary from cb.events where actor = ${who} order by id desc limit 10`;
+      const { tasks, questions: qs, events: ev }: any = await callFn('session_show', { who });
       const out = [`${who}: ${tasks.length} open tasks`, ...tasks.map((t: any) => '  ' + line(t)),
         qs.length ? 'QUESTIONS' : '', ...qs.map((q: any) => `  Q${q.id} ${q.status}: ${q.body}`),
         'RECENT', ...ev.map((e: any) => `  ${new Date(e.at).toISOString().slice(5, 16).replace('T', ' ')} ${e.kind}${e.task_id ? ` #${e.task_id}` : ''}: ${String(e.summary).slice(0, 120)}`)];
@@ -499,7 +465,7 @@ async function run(): Promise<unknown> {
       need(1, 'iam <name> [project]   e.g. cb iam W1@macbook ihop');
       if (!pane) throw new Error('cb iam needs a herdr pane ($HERDR_PANE_ID); use --as <name> on each command instead');
       const p = await callFn('iam', { machine: machine(), pane, actor: args[0], project: args[1] ?? null });
-      const [b] = await sql`select project from cb.sessions where machine = ${machine()} and pane = ${pane}`;
+      const b: any = await callFn('session_at', { machine: machine(), pane });
       const pack = b?.project ? packText(await callFn('mem_pack', { project: b.project, machine: machine() })) : '';
       const goals = b?.project ? goalsText(await callFn('goals_list', { project: b.project }) as any[]) : '';
       return { out: `this pane (${pane}@${machine()}) is ${p}${b?.project ? `, working on ${b.project}` : ' (no project: add one, cb iam <name> <project>)'}${pack ? `\n\n${pack}` : ''}${goals ? `\n\n${goals}` : ''}` };
@@ -516,10 +482,10 @@ async function run(): Promise<unknown> {
     case 'bug': {
       need(2, 'bug <project> "<title>" -b "what happened, how to reproduce, expected vs actual"');
       if (!o.body?.trim()) throw new Error('describe it: -b "what happened, how to reproduce, expected vs actual"');
-      await sql`select cb.read_project(${args[0]})`; // a typo errors with the known projects instead of creating one
+      await callFn('read_project', { project: args[0] }); // a typo errors with the known projects instead of creating one
       const id = await callFn('task_add', { project: args[0], title: args.slice(1).join(' '), body: o.body, status: 'next',
         priority: o.priority ?? 'P2', labels: o.labels ? o.labels.split(',') : [], links: links(), actor, type: 'bug' });
-      const [{ project, all }] = await sql`select t.project, cb.triagers(t.project) as all from cb.tasks t where t.id = ${id}`;
+      const { project, triagers: all }: any = await callFn('task_peek', { id });
       const told = all.filter((a: string) => a !== actor);
       const orch = told.some((a: string) => a === 'orch' || a.startsWith('orch@'));
       const who = told.length ? `told ${told.join(', ')}${orch ? '' : ' (no orchestrator there)'}`
@@ -542,7 +508,7 @@ async function run(): Promise<unknown> {
       if (!o.by) throw new Error(`usage: cb ${cmd} <task> --by <task>   e.g. cb ${cmd} 13 --by 12. Details: cb help ${cmd}`);
       await guard(args[0]);
       await callFn(cmd === 'block' ? 'task_block' : 'task_unblock', { task: args[0], blocker: o.by, actor });
-      const [t] = await sql`select id, status from cb.tasks where id = ${Number(args[0].replace(/^#/, ''))}`;
+      const t: any = await callFn('task_peek', { id: Number(args[0].replace(/^#/, '')) });
       const by = o.by.replace(/^#/, '');
       return { out: `#${t.id} ${cmd === 'block' ? 'waits on' : 'no longer waits on'} #${by} (now ${t.status})` };
     }
@@ -569,7 +535,7 @@ async function run(): Promise<unknown> {
       need(2, 'log <task id> "<what happened>"   e.g. cb log 130 "SC64 graded 27/32"');
       // `cb log 130 "..."` means task #130 (sessions kept typing it), not a project named "130"
       if (/^#?\d+$/.test(args[0]) && !o.task) {
-        const [t] = await sql`select project from cb.tasks where id = ${Number(args[0].replace('#', ''))}`;
+        const t: any = await callFn('task_peek', { id: Number(args[0].replace('#', '')) });
         if (!t) throw new Error(`no task #${args[0].replace('#', '')}: check the id (cb mine, cb brief). A project note is cb log <project> "..."`);
         o.task = args[0].replace('#', '');
         args[0] = t.project;
@@ -581,7 +547,7 @@ async function run(): Promise<unknown> {
       const project = args[0] ?? sessionProject;
       if (!project) throw new Error('no project: say which (cb next ihop) or bind this session once (cb iam <name> <project>)');
       if (sessionProject) {
-        const [{ p }] = await sql`select cb.resolve(${project}) as p`;
+        const p = await callFn('resolve', { project });
         if (p !== sessionProject) throw new Error(`this session works in ${sessionProject}; ${p}'s work is for ${p}'s sessions. Run: cb next (takes from ${sessionProject})`);
       }
       const rows: any = await callFn('task_claim', { project, actor });
@@ -593,15 +559,13 @@ async function run(): Promise<unknown> {
       need(1, 'show <task id>   e.g. cb show 42');
       if (!/^#?\d{1,15}$/.test(args[0])) throw new Error(`"${args[0]}" is not a task id: give the number, e.g. cb show 42`);
       const n = Number(args[0].replace('#', ''));
-      const [t] = await sql`select * from cb.tasks where id = ${n}`;
+      const t: any = await callFn('task_show', { id: n });
       if (!t) throw new Error(`no task #${n}: check the id (cb mine, cb brief)`);
-      const notes = await sql`select at, actor, summary from cb.events where task_id = ${n} and kind in ('note', 'done') order by id desc limit 10`;
-      const goals = await sql`select g.id, g.title, g.status from cb.goal_tasks gt join cb.goals g on g.id = gt.goal_id
-        where gt.task_id = ${n} and gt.state = 'in' and g.status <> 'done' order by g.status, g.rank`;
+      const { notes, goals, ...task } = t;
       return { out: [line(t), ...goals.map((g: any) => `in goal G${g.id} ${flat(g.title)}${g.status === 'paused' ? ' [paused]' : ': comes right after P0'}`),
         t.body && `\n${flat(t.body)}`, notes.length && `\nNOTES (newest first)`,
         ...notes.map((e: any) => `  ${new Date(e.at).toISOString().slice(0, 16).replace('T', ' ')} ${e.actor}: ${flat(e.summary)}`)]
-        .filter(Boolean).join('\n'), json: { ...t, notes } };
+        .filter(Boolean).join('\n'), json: { ...task, notes } };
     }
     case 'mine': {
       const rows: any = await callFn('mine', { actor });
@@ -617,12 +581,11 @@ async function run(): Promise<unknown> {
       const id = await callFn('ask', { project: args[0], body: args.slice(1).join(' '), options: o.option ? options() : null,
         multi: !!o.multi, blocking: !!o.blocking, task_id: o.task ?? null, context: o.context ?? null, reply_to, actor, to_user: o.to ?? null,
         parent: o.after ?? null, if_answer: o.if ?? null });
-      const [f] = o.after ? await sql`select parent_id, if_answer from cb.questions where id = ${Number(id)}` : [];
+      const f: any = o.after ? await callFn('question_peek', { id: Number(id) }) : null;
       // #550: without --reply-to the answer goes to the asking name; with no live relay on it, it waits in cb pending.
       if (!o['reply-to']) {
-        const live = sql`last_seen > now() - interval '90 seconds'`; // same 90s as cb.sessions_overview
-        const [r] = await sql`select exists(select 1 from cb.sessions where actor = ${actor} and ${live}) as live,
-          (select actor from cb.sessions where machine = ${machine()} and pane = ${pane} and ${live}) as mine`;
+        const here: any = pane ? await callFn('session_at', { machine: machine(), pane }) : null; // live = seen in the last 90s
+        const r = { live: !!(await callFn('session_of', { name: actor }) as any)?.live, mine: here?.live ? here.actor : null };
         if (!r.live) console.error(`warning: no relay listens on ${actor}, so the answer will wait in cb pending --as ${actor}` +
           (r.mine && r.mine !== actor ? `. This pane's relay is ${r.mine}: ask without --as, or add --reply-to` : ''));
       }
@@ -635,7 +598,7 @@ async function run(): Promise<unknown> {
     case 'pending': {
       const rows: any = await callFn('answers_pending', { project: args[0] ?? sessionProject });
       const ids = rows.map((q: any) => q.parent_id).filter(Boolean);
-      const parents = new Map((ids.length ? await sql`select id, body, answer from cb.questions where id in ${sql(ids)}` : []).map((p: any) => [p.id, p]));
+      const parents = new Map((ids.length ? await callFn('question_parents', { ids }) as any[] : []).map((p: any) => [p.id, p]));
       return { out: rows.length ? rows.map((q: any) => { const p: any = parents.get(q.parent_id);
         if (q.status === 'sent_back') { const by = q.sent_back.by === 'ahmed' ? 'Ahmed' : `${q.sent_back.by} (not Ahmed)`;
           return `Q${q.id} sent back by ${by} to ${q.asked_by}: ${flat(backWhy(q.sent_back.reason, q.sent_back.note?.slice(0, 500)))}` +
@@ -650,8 +613,8 @@ async function run(): Promise<unknown> {
       const id = args[0].replace(/^q/i, '');
       await callFn('reask', { id, body: args.slice(1).join(' ') || null, options: o.option ? options() : null, free: !!o.free,
         multi: o.multi ? true : null, context: o.context ?? null, actor });
-      const [w] = await sql`select u.display from cb.questions q join cb.users u on u.name = q.assigned_to where q.id = ${Number(id)}`;
-      return { out: `Q${id} rewritten and back ${w ? `with ${w.display}` : "on Ahmed's board"} — keep working; the answer arrives like any other` };
+      const w: any = await callFn('question_peek', { id: Number(id) });
+      return { out: `Q${id} rewritten and back ${w?.assigned_display ? `with ${w.assigned_display}` : "on Ahmed's board"} — keep working; the answer arrives like any other` };
     }
     case 'delivered':
       need(1, 'delivered <qid> [session]');
