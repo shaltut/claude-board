@@ -20,7 +20,7 @@ The repo is private (`github.com/shaltut/claude-board`). Clone with a read-only 
 sudo mkdir -p /opt/claude-board && sudo chown "$USER" /opt/claude-board
 git clone https://github.com/shaltut/claude-board.git /opt/claude-board
 cd /opt/claude-board
-git checkout main   # until the vps branch is merged: git checkout vps
+git checkout main   # with the vps branch merged first (the PC's and the Mac's cb run main)
 ```
 
 ## 2. Fill in deploy/.env
@@ -72,9 +72,11 @@ Manager's docker network as `claude-board`. NPM serves it over https. Do this du
 today `board.shaltoot.cloud` points at the PC's Cloudflare tunnel, and one hostname can't point at two boards.
 
 1. **DNS:** in Cloudflare (the `shaltoot.cloud` zone), replace the `board` record (today a CNAME to the tunnel) with an
-   A record to vps2's public IP. **DNS only (grey cloud)** is the simple choice: NPM gets its own certificate and
-   `CB_BEHIND_CLOUDFLARE` stays 0. Orange cloud works too (SSL mode Full (strict)), but leave `CB_BEHIND_CLOUDFLARE=0`
-   unless vps2's 80/443 only accept Cloudflare's addresses.
+   A record to vps2's public IP, set up like the other vps2 sites (`blog`, `uptime`: proxied, orange cloud; checked
+   2026-11-12). Leave `CB_BEHIND_CLOUDFLARE=0`: the board then counts failed sign-ins per Cloudflare edge address,
+   which is stricter (rarely, someone failing on your name through the same edge can lock it for 2 minutes) but
+   can't be bypassed. `1` is only safe if vps2's 80/443 accept Cloudflare's addresses alone; otherwise anyone reaching
+   vps2's IP directly could send a made-up `cf-connecting-ip` and get a fresh count on every try.
 2. **NPM's admin page** listens on the VPS's loopback: from the PC, `ssh -L 8181:127.0.0.1:81 vps2`, then open
    http://localhost:8181 and sign in (Ahmed's NPM account).
 3. **Hosts → Proxy Hosts → Add Proxy Host:**
