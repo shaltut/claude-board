@@ -5783,6 +5783,9 @@ begin
     'project', p, 'squad', sq, 'version', v,
     'pipeline', cb._pipeline(p),
     'supervise', coalesce(sq->>'supervise' = 'true', false),
+    -- #4806: one supervisor serves every project, so starting it acts on all of these
+    'acts_on', coalesce((select jsonb_agg(jsonb_build_object('project', pr.slug, 'winding_down', not cb._live(pr.slug)) order by pr.slug)
+      from cb.projects pr where pr.squad ->> 'supervise' = 'true'), '[]'),
     'seats', coalesce((select jsonb_agg(jsonb_build_object(
         'actor', s.actor, 'machine', s.machine, 'role', s.role, 'area', s.area, 'repo', s.repo,
         'agent', s.agent, 'model', s.model,
@@ -6571,6 +6574,7 @@ begin
   with free as (
     select t.* from cb.tasks t
      where t.project = p and t.status = 'next' and nullif(trim(t.assignee), '') is null
+       and cb._pipeline(p) -- #4806: waiting work is counted by stage; with no stages no seat is started for a card
   ), design as (
     select f.*, owners and f.labels && areas as covered from free f where f.stage = 'design'
   ), repo_work as (
@@ -6585,8 +6589,11 @@ begin
   select jsonb_build_object(
     -- #4559: a project that gets no work is not supervised: nothing is started or restored for it; state says why. A
     -- squad the supervisor runs winds down instead (Q3018): its idle seats are closed, counted from state_at at the earliest
-    'project', p, 'squad', sq, 'supervised', coalesce(cb._pipeline(p) and sq ->> 'supervise' = 'true' and cb._live(p), false),
-    'winding_down', coalesce(cb._pipeline(p) and sq ->> 'supervise' = 'true' and not cb._live(p), false),
+    'project', p, 'squad', sq, 'pipeline', cb._pipeline(p), 'supervised', coalesce(cb._pipeline(p) and sq ->> 'supervise' = 'true' and cb._live(p), false),
+    -- #4806: under its own key: a supervisor not yet restarted plans from 'supervised', and with nothing counted as waiting
+    -- it would close every idle seat of a no-stage squad
+    'supervised_unstaged', coalesce(not cb._pipeline(p) and sq ->> 'supervise' = 'true' and cb._live(p), false),
+    'winding_down', coalesce(sq ->> 'supervise' = 'true' and not cb._live(p), false),
     'state', (select pr.state from cb.projects pr where pr.slug = p),
     'state_at', (select pr.state_at from cb.projects pr where pr.slug = p),
     'waiting', jsonb_build_object(

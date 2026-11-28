@@ -1,4 +1,4 @@
-import { test, after } from 'node:test';
+import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -13,7 +13,8 @@ import type { Runner } from '../cli/squad-up.ts';
 delete process.env.CB_MCP_GATE_OK;
 
 const clients: any[] = [];
-after(() => Promise.all(clients.map((c) => c.end())));
+// closed after each test: kept to the end of the file, they pass Postgres's connection limit
+afterEach(() => Promise.all(clients.splice(0).map((c) => c.end())));
 const conn = (name: string, max = 10) => { const c = postgres(TEST_URL, { onnotice: () => {}, max, connection: { application_name: name } }); clients.push(c); return c; };
 
 const SQUAD = {
@@ -142,6 +143,25 @@ test('close sequence: an idle 21-minute squad session is sent /exit and its pane
   assert.ok(out.includes('closed sv-B1@macbook'), out.join('\n'));
   assert.equal((await events(sql, 'close')).length, 1);
   assert.notEqual((await sql`select closing_at from cb.sessions where actor = 'sv-B1@macbook'`)[0].closing_at, null); // fenced until it lapses or the name binds again
+});
+
+test('#4806: with no stages the supervisor restores a down holder and closes a dropped seat, and starts nothing for a card', async () => {
+  const { sql, sup } = await setup();
+  await sql`select cb.squad_set('sv', ${sql.json({ ...SQUAD, roles: { ...SQUAD.roles, builder: { count: 4, model: 'sonnet', machine: 'macbook' } } })}, 'ahmed')`;
+  await sql`select cb.squad_set('sv', ${sql.json(SQUAD)}, 'ahmed')`;
+  await sql`select cb.project_pipeline('sv', false, 'ahmed')`;
+  await card(sql); // nobody holds it
+  await session(sql, 'sv-B1@macbook', 'builder', { startedMin: 21 }); // a seat the squad names: stays open
+  await session(sql, 'sv-B2@macbook', 'builder', { live: false });
+  await card(sql, { assignee: 'sv-B2@macbook', status: 'in_progress' });
+  await session(sql, 'sv-B3@macbook', 'builder', { startedMin: 21 }); // dropped from the squad: closed
+  const h = fakeHerdr();
+  h.live.set('sv-b1-macbook', 'w1:p7'); h.live.set('sv-b3-macbook', 'w1:p8');
+  const out = await tick(deps(sup, h.run));
+  assert.ok(out.some((l) => l.endsWith('restored sv-B2@macbook')), out.join(String.fromCharCode(10)));
+  assert.ok(out.includes('closed sv-B3@macbook'), out.join(String.fromCharCode(10)));
+  assert.ok(!has(h.calls, 'agent', 'prompt', 'sv-b1-macbook', '/exit'), out.join(String.fromCharCode(10)));
+  assert.equal((await events(sql, 'start')).length, 0);
 });
 
 // #3770: the squad file's builder count was 4 and is 2 now, so B3 and B4 are seats it no longer generates
@@ -871,9 +891,10 @@ test('#4787: a dry run reads panes, says what it would say and writes nothing', 
   assert.equal((await events(sql, 'quota')).length, 0);
 });
 
-// every project with a squad is checked: claude-board itself has no stages, and its stopped reviewers are why #4787 exists
+// every project with a squad is checked, supervised or not
 for (const [name, off] of [
-  ['a squad with no stages', (sql: any) => sql`select cb.project_pipeline('sv', false, 'ahmed')`],
+  ['a squad with no stages and supervise off', async (sql: any) => { await sql`select cb.project_pipeline('sv', false, 'ahmed')`;
+    await sql`select cb.squad_set('sv', ${sql.json({ ...SQUAD, supervise: false })}, 'ahmed')`; }],
   ['a squad with supervise off', (sql: any) => sql`select cb.squad_set('sv', ${sql.json({ ...SQUAD, supervise: false })}, 'ahmed')`],
 ] as const) {
   test(`#4787: ${name} has its stopped seat told; nothing is started, restored or closed`, async () => {
@@ -918,4 +939,17 @@ test('#4787: a pane that cannot be read is said once, until it reads again', asy
   await tick(d);
   broken = true;
   assert.equal(said(await tick(d)), 1);
+});
+
+test('#4806: the supervisor says which projects it acts on, at its first tick and when the list changes', async () => {
+  const { sql, sup } = await setup(['sv', 'two']);
+  await sql`select cb.project_pipeline('two', false, 'ahmed')`;
+  const d = deps(sup, fakeHerdr().run);
+  const named = async () => (await tick(d)).filter((l) => l.startsWith('acts on'));
+  assert.deepEqual(await named(), ['acts on: sv, two']);
+  assert.deepEqual(await named(), [], 'said once');
+  await sql`select cb.project_state('two', 'disabled', 'ahmed')`;
+  assert.deepEqual(await named(), ['acts on: sv, two (winding down)']);
+  for (const p of ['sv', 'two']) await sql`select cb.squad_set(${p}, ${sql.json({ ...SQUAD, supervise: false })}, 'ahmed')`;
+  assert.deepEqual(await named(), ['acts on: no project (no squad has supervise on)']);
 });

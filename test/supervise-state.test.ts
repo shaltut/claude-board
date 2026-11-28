@@ -356,3 +356,33 @@ test('#4559 slice 3: a supervised project that is not live winds down; running j
   await sql`select cb.squad_set('sv', ${sql.json({ ...SQUAD, supervise: false })}, 'ahmed')`;
   assert.equal((await state(sup)).winding_down, false, 'a squad the supervisor does not run is left alone');
 });
+
+test('#4806: a project with no stages is supervised when its squad says so, with nothing counted as waiting', async () => {
+  const { sql, sup } = await setup();
+  await card(sql, { stage: 'build' }); await card(sql, { stage: null }); await card(sql, { stage: null, type: 'research' });
+  await sql`select cb.project_pipeline('sv', false, 'ahmed')`;
+  let s = await state(sup);
+  // said under its own key: a supervisor started before this change plans from 'supervised', and with nothing counted as
+  // waiting it would close every idle seat here between the schema's upgrade and its own restart
+  assert.deepEqual([s.supervised, s.supervised_unstaged, s.winding_down, s.pipeline], [false, true, false, false]);
+  // waiting by stage is the pipeline's: no stages, no seat is started for a card
+  assert.deepEqual(s.waiting, { builder: { main: 0 }, reviewer: { main: 0 }, qa: 0, investigator: 0, architect: 0, owner: { claims: 0 } });
+  await sql`select cb.project_state('sv', 'disabled', 'ahmed')`;
+  s = await state(sup);
+  assert.deepEqual([s.supervised, s.supervised_unstaged, s.winding_down], [false, false, true]);
+  await sql`select cb.project_state('sv', 'enabled', 'ahmed')`;
+  await sql`select cb.squad_set('sv', ${sql.json({ ...SQUAD, supervise: false })}, 'ahmed')`;
+  s = await state(sup);
+  assert.deepEqual([s.supervised, s.supervised_unstaged, s.winding_down], [false, false, false]);
+});
+
+test('#4806: the board names the projects the supervisor will act on', async () => {
+  const { sql, sup } = await setup();
+  for (const [slug, supervise] of [['plain', true], ['off', false], ['gone', true]] as const) {
+    await sql`select cb.ensure_project(${slug})`;
+    await sql`select cb.squad_set(${slug}, ${sql.json({ ...SQUAD, supervise })}, 'ahmed')`;
+  }
+  await sql`select cb.project_state('gone', 'disabled', 'ahmed')`;
+  assert.deepEqual((await sql`select cb.squad_page('off') as r`)[0].r.acts_on,
+    [{ project: 'gone', winding_down: true }, { project: 'plain', winding_down: false }, { project: 'sv', winding_down: false }]);
+});

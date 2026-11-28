@@ -420,3 +420,18 @@ test('winding down: never the lead or a hand-started session; a seat an earlier 
   // every one that qualifies is planned: the supervisor stops after two closes a tick
   assert.deepEqual([...p.close].sort(), [B1, B2, 'sv-B7@macbook', R1].sort());
 });
+
+test('#4806: with no stages a configured seat stays open when idle; restores, leaving closes and restarts go on', () => {
+  const plain = (sessions: Session[]): State => ({ ...state({ sessions }), pipeline: false });
+  const status = { 'sv-b1-macbook': 'idle', 'sv-b9-macbook': 'idle' };
+  const idle = sess('sv-B1@macbook', 'builder', { last_event: ago(120), model: 'sonnet' });
+  const dropped = sess('sv-B9@macbook', 'builder', { last_event: ago(120) });
+  const p = tick(plain([idle, dropped]), { herdrStatus: status, pastSeats: new Set(['sv-B9@macbook']) });
+  assert.deepEqual([p.close, p.start], [['sv-B9@macbook'], []], 'only the seat the squad no longer names');
+  // the same seats in a pipeline: both close
+  assert.deepEqual(tick(state({ sessions: [idle, dropped] }), { herdrStatus: status, pastSeats: new Set(['sv-B9@macbook']) }).close.sort(), ['sv-B1@macbook', 'sv-B9@macbook']);
+  const down = tick(plain([sess('sv-B2@macbook', 'builder', { live: false, holds: 1 })]));
+  assert.deepEqual(names(down.restore), ['sv-B2@macbook']);
+  const old = tick(plain([{ ...idle, model: 'haiku' }]), { herdrStatus: status });
+  assert.deepEqual(old.restart.map((r) => r.launch.name), ['sv-B1@macbook']);
+});

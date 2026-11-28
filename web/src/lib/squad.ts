@@ -29,6 +29,7 @@ export interface Seat {
 }
 export interface SquadPage {
   project: string; squad: Squad | null; version: number; pipeline: boolean; supervise: boolean; seats: Seat[]
+  acts_on?: { project: string; winding_down: boolean }[] // #4806: every project with the supervisor switch on
   history: { id: number; at: string; actor: string; version: number | null; via: 'page' | 'cli' | null; squad: Squad }[]
   reminders: { open: number; on: number }
 }
@@ -534,8 +535,8 @@ export function seatName(s: Seat, sq: Squad | null): string {
   return `${roleOne(s.role ?? '')}${n ? ` ${n}` : ''}${repo} on ${m}`
 }
 
-/** What happens to a live seat that is not on the squad's setting. Only a supervised project (pipeline and supervisor
- *  both on) restarts or closes seats by itself, and never the lead (Q2970). null: the seat is fine. */
+/** What happens to a live seat that is not on the squad's setting. Only a supervised project (the supervisor switch on)
+ *  restarts or closes seats by itself, and never the lead (Q2970). null: the seat is fine. */
 export function seatNote(s: Seat, sq: Squad | null, supervised: boolean): string | null {
   const name = seatName(s, sq)
   if (!s.in_squad) {

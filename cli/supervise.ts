@@ -28,7 +28,7 @@ const BOARD = join(import.meta.dirname, '..'); // the board checkout on this PC:
 // unreadTold (#4787): seats whose screen could not be checked for a quota stop: said again only after it could be
 export type Memory = { failedAt: Map<string, number>; blockedTold: Set<string>; launched: Set<string>; runnerToldAt: number; runnerStartedAt: number;
   closeSkipAt: Map<string, number>; elsewhereToldAt: Map<string, number>; leavingTold: Map<string, string>; restartTried: Map<string, string>;
-  unreadTold: Set<string>; runnerPane?: { pane: string; terminal?: string } };
+  unreadTold: Set<string>; actsOnTold?: string; runnerPane?: { pane: string; terminal?: string } };
 export type Deps = {
   sql: any; run: Runner; dryRun: boolean; now: number; memory: Memory; runnerConfig: string | null;
   probe: (host: string, port: number) => Promise<boolean>; sleep?: (ms: number) => Promise<void>; clock?: () => number;
@@ -52,6 +52,7 @@ export async function tick(d: Deps): Promise<string[]> {
   for (const { slug } of await sql`select slug from cb.projects where squad is not null order by slug`) {
     try {
       const s = (await sql`select cb.supervise_state(${slug}) as s`)[0].s as State;
+      if (s.supervised_unstaged) s.supervised = true; // #4806
       // #4787: every project that gets work is checked for quota stops; only a supervised or winding-down one is acted on
       if (!s.supervised && !s.winding_down && !quotaWatched(s)) continue;
       // herdr null = the machine the supervisor runs on: a squad that puts it elsewhere is not this supervisor's
@@ -120,6 +121,10 @@ export async function tick(d: Deps): Promise<string[]> {
       out.push(`${state.project}: tick failed: ${msg(e)}`);
     }
   }
+  // #4806: one supervisor serves every squad with supervise on: it names them at its first tick and when they change
+  const names = states.filter((s) => s.supervised || s.winding_down).map((s) => s.winding_down ? `${s.project} (winding down)` : s.project);
+  const actsOn = `acts on: ${names.join(', ') || 'no project (no squad has supervise on)'}`;
+  if (memory.actsOnTold !== actsOn) { memory.actsOnTold = actsOn; out.push(actsOn); }
   const leads = [...new Set(states.filter((s) => s.supervised).map(leadOf).filter((x) => x !== undefined))]; // a project that gets no work is not told
   d.signal?.throwIfAborted();
   try { await runnerCheck(d, out, log, leads); } catch (e) { out.push(`runner check failed: ${msg(e)}`); }

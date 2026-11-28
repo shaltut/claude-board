@@ -570,8 +570,12 @@ first with `cb supervise --dry-run` (prints `would start ...`, `would close ...`
 `CB_SUPERVISOR_HOME`), one file a day, kept 7 days. Every start, close, restore and runner start is also a board event by actor
 `supervisor` (session names, roles and counts only).
 
-A project is supervised only when its pipeline is on and its squad file says `"supervise": true` (`cb squad set`).
-The squad `count` per role is then the most the supervisor keeps up. Every 60 s it:
+A project is supervised when its squad file says `"supervise": true` (`cb squad set`), with or without a pipeline.
+**One supervisor serves every project**, so starting it acts on all of them: it prints `acts on: a, b (winding down)`
+at its first tick and whenever that list changes, and each project's settings page shows the same list. Waiting work is
+counted by stage, so a project **with no pipeline** gets no seat started for its cards, and an idle seat the squad file
+names stays open (nothing would start it again); restores, closing idle seats the squad no longer names, restarts on a
+new setting and wind-down work the same. The squad `count` per role is the most the supervisor keeps up. Every 60 s it:
 
 - restores a squad session that is down but holds open cards, under the same name with `cb resume` (at most once
   per 30 minutes per name; a restore that failed to start is tried again after 10 minutes; down again within 30
@@ -580,7 +584,7 @@ The squad `count` per role is then the most the supervisor keeps up. Every 60 s 
 - starts sessions for waiting cards, like `cb squad up` (names, models, permission files), at most 3 a tick, 8 on
   the Mac in all; a name that failed to start waits 10 minutes;
 - closes a squad session idle 20 minutes that holds nothing (no card, question, job or open dashboard ask), that herdr
-  shows ready for input (`idle`, or `done` for a pane nobody looked at), when its role has no waiting work: it marks
+  shows ready for input (`idle`, or `done` for a pane nobody looked at), when its role has no waiting work (pipeline only): it marks
   it closing, finds its pane, checks again (board and herdr), sends `/exit`, then closes the pane (not gone in 60 s: the pane stays and the mark lapses in 5 minutes);
 - treats a seat an earlier saved version of the squad file generated but this one does not (the role moved machine,
   its count went down, the role or repo left; read from the last 20 `squad updated` events) as leaving (#3770): it
