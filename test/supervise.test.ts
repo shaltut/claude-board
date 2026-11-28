@@ -953,3 +953,22 @@ test('#4806: the supervisor says which projects it acts on, at its first tick an
   for (const p of ['sv', 'two']) await sql`select cb.squad_set(${p}, ${sql.json({ ...SQUAD, supervise: false })}, 'ahmed')`;
   assert.deepEqual(await named(), ['acts on: no project (no squad has supervise on)']);
 });
+
+// a pipeline lead reads it in the digest, which only pipeline projects get
+test('#4816: with no pipeline the lead is told once of a seat down again after a restore; in a pipeline only the digest says it', async () => {
+  for (const pipeline of [false, true]) {
+    const { sql, sup } = await setup();
+    await sql`select cb.project_pipeline('sv', ${pipeline}, 'ahmed')`;
+    await session(sql, 'orch@macbook', 'lead');
+    await session(sql, 'sv-B2@macbook', 'builder', { live: false });
+    await card(sql, { assignee: 'sv-B2@macbook', status: 'in_progress' });
+    await sup`select cb.supervise_log('sv', 'restore', 'sv-B2@macbook', null)`;
+    const d = deps(sup, fakeHerdr().run);
+    await tick(d);
+    await tick(d);
+    assert.equal((await events(sql, 'down_again')).length, 1);
+    const told = await tells(sql);
+    assert.equal(told.length, pipeline ? 0 : 1, JSON.stringify(told));
+    if (!pipeline) assert.match(told[0].summary, /sv-B2@macbook is down again after a restore.*restore it by hand/s);
+  }
+});

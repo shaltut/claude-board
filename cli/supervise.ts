@@ -266,7 +266,16 @@ async function act(d: Deps, state: State, plan: TickPlan, out: string[], log: Lo
   if (!dryRun) for (const s of state.sessions) if (!plan.leaving.some((l) => l.session === s.actor)) memory.leavingTold.delete(s.actor);
   for (const n of plan.notes) {
     if (dryRun) out.push(`would note ${n.session} down again`);
-    else { out.push(`${n.session} is down again after a restore: restore it by hand`); await log(project, 'down_again', n.session, 'restore it by hand'); }
+    else {
+      out.push(`${n.session} is down again after a restore: restore it by hand`);
+      await log(project, 'down_again', n.session, 'restore it by hand');
+      // #4816: a pipeline lead reads it in cb.digest; with no pipeline there is none. The board event makes it once
+      const lead = state.pipeline === false ? leadOf(state) : undefined;
+      if (lead && lead !== n.session) {
+        try { await d.sql`select cb.tell(${lead}, ${`${n.session} is down again after a restore and holds work. The supervisor will not restore it again: restore it by hand, or hand its cards over.`}, 'supervisor')`; }
+        catch (e) { out.push(`could not tell ${lead}: ${msg(e)}`); }
+      }
+    }
   }
 }
 
