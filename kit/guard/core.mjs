@@ -2354,7 +2354,7 @@ export function checkRole(command, role, { readScript = null, hosts = [], deploy
   const seatVars = seatVarChange(String(command ?? '')) ?? freshEnv(String(command ?? ''), hostList, role, deployHost);
   if (seatVars) return seatVars;
   if (typeof readScript === 'function') {
-    const pending = scriptCalls(command, '', deployHost), seen = new Set();
+    const pending = calledIn(String(command ?? ''), '', deployHost), seen = new Set();
     let bytes = 0;
     for (let i = 0; i < pending.length; i++) {
       if (i >= 32) return 'shell script traversal exceeds the guard limit (32 files): split the command';
@@ -2366,14 +2366,16 @@ export function checkRole(command, role, { readScript = null, hosts = [], deploy
       bytes += text.length;
       if (bytes > 1024 * 1024) return 'shell scripts exceed the guard read limit (1 MB): split the command';
       const read = readings(text); // #4776: bash drops a script's carriage returns too
-      for (const t of read) {
+      for (const t of read.flatMap((r) => unredirected(r))) {
         const why = seatVarChange(t) ?? freshEnv(t, hostList, role, vps);
         if (why) return `running ${p.slice(0, 120)}, whose text is ${why}`;
       }
+      // other languages quote their own way, so only a shell's script is held to this
+      if (shellScript(p, text) && read.some(unplacedRedirect)) return `running ${p.slice(0, 120)}: ${UNPLACED}`;
       // the scripts it runs, as read without them, so a CRLF script's calls count once; with a CR alone (PowerShell ends
       // a line there) as written too
       const named = /\r(?!\n)/.test(text) ? read : read.slice(-1);
-      for (const t of named) pending.push(...scriptCalls(t, cwd, vps));
+      for (const t of named) pending.push(...calledIn(t, cwd, vps));
     }
   }
   const secret = secretRead(String(command ?? ''));
@@ -3045,6 +3047,141 @@ function judge(name, args, fed, depth, vars = new Map()) {
 // one runs. Text holding any is judged without them as well as as written, never instead: PowerShell ends a line at one
 function readings(text) { return text.includes('\r') ? [text, text.replaceAll('\r', '')] : [text]; }
 
+// #4803: bash takes a redirect anywhere in a command. One before the command word was read as the command, and the & in
+// one (2>&1, &>log) cut the command in two. Text holding a redirect is judged without them too, never instead. << (a
+// heredoc) stays. Messages and heredoc data are dropped first: which text is data depends on the redirect (cat > notes
+// <<EOF writes its text away). Two readings, since neither is enough: one counts no quotes, so it holds after text that
+// throws the count off; one counts them as bash does, into quoted command strings, so a target glued from any pieces
+// ("my "log) is one word. A line continuation is also read joined
+// a file descriptor of any length: digits are tried from the start of their run only, so a long run is read once
+const REDIRECT_MARK = String.raw`(?:(?<!\d)\d+|\*|&|\{[A-Za-z_]\w*\})?(?:<<<|>>|>\||<>|>&|<&|>|(?<!<)<(?![<#(]))&?[ \t]*`;
+// part of a target: a substitution (bounded, so the scan stays linear), an escape or a plain character (\x60: a backtick)
+const TARGET_PART = String.raw`\$\{[^{}\n]{0,200}\}|\$\([^()\n]{0,200}\)|[<>]\([^()\n]{0,200}\)|\x60[^\x60\n]{0,200}\x60|\\[\s\S]|[^\s"'\x60\\;&|<>(){}]`;
+// with no quote count, a quoted part is one where its closing quote ends the word, or a short one with no blank or separator
+const LOOSE_QUOTED = String.raw`"(?:\\.|[^"\\\n])*"(?=[\s;&|)]|$)|'[^'\n]*'(?=[\s;&|)]|$)|'[^'\s;&|()<>]{0,200}'|"[^"\\\s;&|()<>$\x60]{0,200}"`;
+const REDIRECT = new RegExp(`${REDIRECT_MARK}(?:${LOOSE_QUOTED}|${TARGET_PART})+`, 'g');
+const SHELL_NEXT = String.raw`('[^']*'|"(?:\\[\s\S]|[^"\\])*")|\\[\s\S]|${REDIRECT_MARK}`;
+const CASE_WORD = /(?<![\w.-])case(?![\w.-])/y; // case.txt and my.case are names
+// where the redirect target at i ends, read as one shell word: quotes, $( ), ${ }, <( ), >( ) and backticks nest. -1: it
+// does not close. -2: a substitution holds what this count cannot follow (case, a comment, a heredoc). powershell: the
+// backtick is the escape and a backslash is plain. One pass
+function wordEnd(text, i, powershell) {
+  const open = []; // what each open quote or bracket waits for
+  if ((text[i] === '<' || text[i] === '>') && text[i + 1] === '(') { open.push(')'); i += 2; }
+  for (; i < text.length; i++) {
+    const c = text[i], want = open[open.length - 1];
+    if (want === "'") { if (c === "'") open.pop(); continue; }
+    if (c === (powershell ? '`' : '\\')) { i++; continue; }
+    if (want === "$'") { if (c === "'") open.pop(); continue; }
+    if (c === '`' && !powershell) { if (want === '`') open.pop(); else open.push('`'); continue; }
+    if (c === '$') {
+      const next = text[i + 1];
+      if (next === '(') { open.push(')'); i++; } else if (next === '{') { open.push('}'); i++; } else if (next === "'" && want !== '"') { open.push("$'"); i++; }
+      continue;
+    }
+    if (c === '"') { if (want === '"') open.pop(); else open.push('"'); continue; }
+    if (want === '"') continue;
+    if (c === "'") { open.push("'"); continue; }
+    if (want === ')') {
+      CASE_WORD.lastIndex = i;
+      if ((c === '#' && /[\s;&|()]/.test(text[i - 1])) || (c === '<' && text[i + 1] === '<') || CASE_WORD.test(text)) return -2;
+      if (c === ')') open.pop(); else if (c === '(') open.push(')');
+      continue;
+    }
+    if (want === '}') { if (c === '}') open.pop(); else if (c === '{') open.push('}'); continue; }
+    if (want === '`') continue;
+    if (/[\s;&|<>()]/.test(c)) break;
+  }
+  return open.length ? -1 : Math.min(i, text.length);
+}
+// a string handed to a shell, as the text just before its quote shows: the shell (or its .exe), any unquoted words, the
+// option holding c and any options after it; or eval. The c option splits at its first c, so a long one is read once
+const SHELL_STRING = /(?<![\w-])(?:(?:ba|da|z|k)?sh(?:\.[eE][xX][eE])?["']?(?:[ \t]+[^\s"';&|<>()]+)*?[ \t]+-[abd-zA-Z0-9_]*c\w*(?:[ \t]+-[^\s"';&|<>()]*)*|eval(?:[ \t]+--)?)[ \t]+$/;
+const SHELL_STRING_REACH = 300; // how far back the shell's name is looked for
+// as bash counts quotes: each redirect goes with its whole target. A quoted piece that is no target is read the same way
+// inside, a few deep: a command string's own redirects go too. At a target that does not end the reading stops and, for
+// shell text (this command's, or a string handed to a shell), says so (lost.found). A target that does not close under
+// bash's count is read with PowerShell's, switching at most once, so it stays linear
+function shellUnredirected(text, left, depth = 0, lost = {}) {
+  const next = new RegExp(SHELL_NEXT, 'g');
+  let out = '', done = 0, powershell = false;
+  for (let m = next.exec(text); m; m = next.exec(text)) {
+    const [match, quoted] = m;
+    let swap = match, end = next.lastIndex;
+    if (quoted !== undefined) {
+      if (depth < 3 && /[<>]/.test(quoted)) {
+        const handed = SHELL_STRING.test(text.slice(Math.max(0, m.index - SHELL_STRING_REACH), m.index));
+        swap = quoted[0] + shellUnredirected(quoted.slice(1, -1), left, depth + 1, handed ? lost : {}) + quoted[0];
+      }
+    } else if (!match.startsWith('\\')) {
+      let to = wordEnd(text, end, powershell);
+      if (to === -1 && !powershell) { powershell = true; to = wordEnd(text, end, true); }
+      if (to < 0) {
+        lost.found = true;
+        break;
+      }
+      if (to > end) { swap = left(text.slice(m.index, to), m.index, text); end = to; }
+    }
+    if (swap !== match || end !== next.lastIndex) {
+      out += text.slice(done, m.index) + swap;
+      done = end;
+      next.lastIndex = end;
+    }
+  }
+  return done === 0 ? text : out + text.slice(done);
+}
+// bash takes a heredoc header before the command word too (<<x cmd), and reads the same with it at the line's end
+const HEREDOC_ANY = /(?<!<)<<(?!<)-?[ \t]*(?:'[^'\n]*'|"[^"\n]*"|\\.|[^\s"'\\;&|<>()])+/g;
+function headersLast(line) {
+  const headers = line.includes('<<') ? line.match(HEREDOC_ANY) : null;
+  if (!headers) return line;
+  const after = line.slice(line.indexOf(headers[0])).replace(HEREDOC_ANY, ' ');
+  return /^[ \t]*[^ \t;&|<>()#]/.test(after) ? `${line.replace(HEREDOC_ANY, ' ')} ${headers.join(' ')}` : line;
+}
+// a redirect of this shell's whose target does not end: the command behind it cannot be found. Heredoc bodies are another
+// program's text, and comments are none
+function unplacedRedirect(text) {
+  if (!/[<>]/.test(text)) return false;
+  const lost = {};
+  shellUnredirected(blankComments(replaceHeredocs(stripMessages(text), (_all, line, id) => `${line}\n${id}`)), () => ' ', 0, lost);
+  return lost.found === true;
+}
+// a shell's script by its #! line, or with none by its name: .sh and the like, or no extension at all
+const shellScript = (path, text) => (text.startsWith('#!') ? /^#![^\n]*[/ \t](?:ba|da|z|k)?sh(?=\s|$)/.test(text) : /(?:\.(?:sh|bash|zsh|ksh)|(?:^|[\\/])[^\\/.]+)$/i.test(path));
+const UNPLACED = 'the guard cannot find where a redirect\'s target ends, so it cannot see the command behind it: split the command, or give the target a plain name';
+// cat >file <<WORD at a line's start, with nothing after the header, hides nothing: left as written, so the usual huge
+// command, a file written from a heredoc, is judged once. Each test reads a bounded piece
+const catToFile = (redirect, at, text) => /^>>?[ \t]*[A-Za-z0-9_./-]+$/.test(redirect) && /(?:^|\n)[ \t]*cat[ \t]+$/.test(text.slice(Math.max(0, at - 40), at))
+  && /^[ \t]*<<-?[ \t]*(["']?)\w{1,40}\1[ \t]*(?:\n|$)/.test(text.slice(at + redirect.length, at + redirect.length + 80));
+function unredirected(text, left = (redirect, at, all) => (catToFile(redirect, at, all) ? redirect : ' ')) {
+  if (!/[<>]/.test(text)) return [text];
+  const kept = stripMessages(text), forms = new Set([text]);
+  for (const source of new Set([kept, joinLines(kept)])) {
+    const lost = {};
+    let counted = shellUnredirected(source, left, 0, lost);
+    if (lost.found) counted = shellUnredirected(blankComments(source), left); // a comment may be what did not end
+    for (const read of [source.replace(REDIRECT, left), counted]) {
+      const bare = read.split('\n').map(headersLast).join('\n');
+      if (bare !== source) forms.add(bare);
+    }
+  }
+  return [...forms];
+}
+// for the stdin-session rule only output redirects are left out: an input one is what gives the command its input
+const outputOnly = (redirect) => (/^(?:\d+|\*|&|\{\w+\})?>/.test(redirect) ? ' ' : redirect);
+// the scripts a text calls, read with and without its redirects; a call both readings show is listed once
+function calledIn(text, cwd, deployHost) {
+  const calls = scriptCalls(text, cwd, deployHost), [, ...bare] = unredirected(text);
+  if (bare.length === 0) return calls;
+  const key = (c) => `${c.cwd}\n${c.path}\n${c.deployHost}`, listed = new Set(calls.map(key));
+  for (const call of bare.flatMap((b) => scriptCalls(b, cwd, deployHost))) {
+    if (listed.has(key(call))) continue;
+    listed.add(key(call));
+    calls.push(call);
+  }
+  return calls;
+}
+
 export function evaluate(req) {
   const block = (kind, reason) => ({ allow: false, kind, reason });
   try {
@@ -3059,7 +3196,8 @@ export function evaluate(req) {
     }
     if (tool === 'shell') {
       if (typeof command !== 'string') return block('input', 'guard could not read hook input (the command is not a string)');
-      for (const written of readings(command)) {
+      const spellings = readings(command).flatMap((r) => unredirected(r)); // #4776, #4803
+      for (const written of spellings) {
         // #4737: judged as written, then with split and built names read out (only when that changes something)
         const shown = revealed(written);
         for (const text of shown === written ? [written] : [written, shown]) {
@@ -3071,8 +3209,10 @@ export function evaluate(req) {
           if (byRole) return block('role', byRole);
         }
       }
+      if (readings(command).some(unplacedRedirect)) return block('input', UNPLACED);
       // #4626: only where the tool keeps a stdin open (Codex's exec_command) and only in a role seat
-      const session = stdin === true && role ? readings(command).map((text) => stdinSession(text)).find(Boolean) : null;
+      const typed = stdin === true && role ? readings(command).flatMap((r) => unredirected(r, outputOnly)) : [];
+      const session = typed.map((text) => stdinSession(text)).find(Boolean) ?? null;
       return session ? block('role', SESSION(session)) : { allow: true };
     }
     // a plan update (Codex update_plan) changes nothing outside the session, like Claude's own plan tool
