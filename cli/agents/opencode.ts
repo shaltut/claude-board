@@ -10,6 +10,7 @@ import { seatKey } from '../bridge.ts';
 import { stripClaudeOnly, withNoPrompt } from './env.ts';
 import { checkedEffort } from './effort.ts';
 import type { AgentAdapter, AgentState, LaunchInput, QuotaSignal, SeatHandle } from './types.ts';
+import { atBannerSpot } from './screen.ts';
 
 export type OpencodeEndpoint = { port: number; password: string; username?: string; updatedAt: number };
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
@@ -126,6 +127,8 @@ const TAIL_LINES = 8;
 const QUOTA = /FreeUsageLimitError|insufficient[_ ]quota|(?:usage|free) limit (?:reached|exceeded)|quota (?:exceeded|exhausted)|out of credits|credit balance is too low/i;
 const RATE = /rate[ _-]?limit(?:ed| reached| exceeded| error)|(?:http|status|error|code)[ :=]{0,3}429\b|\b429[ :]{1,3}too many requests|too many requests|retrying in \d+/i;
 const RETRY = /(?:retry(?:ing)?|try again) (?:in|after) (\d+)\s*(s|sec|seconds|m|min|minutes)\b/i;
+// #4787: the limit message at the start of its line, alone or behind the error's name
+const BANNER = /^[ \t]*(?:(?:Error|AI_APICallError):[ \t]*)?(?:FreeUsageLimitError|you exceeded your current quota|insufficient[_ ]quota|(?:usage|free) limit (?:reached|exceeded)|quota (?:exceeded|exhausted)|out of credits|(?:your )?credit balance is too low)/i;
 
 const auth = (ep: OpencodeEndpoint) => 'Basic ' + Buffer.from(`${ep.username || 'opencode'}:${ep.password}`).toString('base64');
 const base = (ep: OpencodeEndpoint) => `http://127.0.0.1:${ep.port}`;
@@ -220,6 +223,8 @@ export function makeOpencodeAdapter(f: Fetch = (u, i) => fetch(u, i), readEp: ty
       const r = run(seat.herdr ?? null, ['agent', 'prompt', seat.herdrName, '/exit'], 30_000);
       return r.status === 0 && !r.error ? 'sent' : 'failed';
     },
+
+    atQuotaBanner: (paneTail) => atBannerSpot(paneTail, BANNER),
 
     detectQuotaStop(_seat, _herdrAgent, paneTail): QuotaSignal | null {
       if (!paneTail) return null;

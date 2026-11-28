@@ -382,6 +382,7 @@ test('the server: only Ahmed saves project settings; another admin reads them an
     ['github_watch_add', { repo: 'acme/one', project: 'demo', tell: 'orch@pc' }],
     ['github_mute', { login: 'someone' }],
     ['github_watch_remove', { repo: 'acme/one' }],
+    ['project_auto_backup', { project: 'demo', enabled: true }], // #4787 (Q3157): Ahmed's alone
   ];
   for (const [fn, body] of writes) {
     const r = await web(`/api/rpc/${fn}`, { cookie: cai, body });

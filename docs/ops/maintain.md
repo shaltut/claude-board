@@ -613,10 +613,25 @@ The squad `count` per role is then the most the supervisor keeps up. Every 60 s 
   not working (`idle`, `done`, `blocked`), it reads the last lines of its screen (`herdr pane read`) and asks the
   agent's adapter. A quota stop is a `quota` board event (`quota <seat> (herdr pane <id>)`, also a digest line), and
   the lead is told once: again only after the seat has done something on the board, or bound anew, and stopped again.
-  A stopped lead is only in the digest. A rate limit the CLI retries is ignored, and no pane text goes to the board.
-  Nothing is closed or switched. The words can also be ordinary output at the bottom of an idle screen, so look at the
+  A stopped lead is not told: the stop is a board event, and a digest line where the project has a digest. A rate
+  limit the CLI retries is ignored, and no pane text goes to the board. Unless automatic backup is on (next point),
+  nothing is closed or switched. The words can also be ordinary output at the bottom of an idle screen, so look at the
   pane before acting. `--dry-run` reads the screens too and prints `would say ...`; a screen it cannot read is said
   once in its log (`cannot check <seat> for a quota stop`);
+- switches a stopped seat to its squad's backup, only where the owner turned **Automatic backup** on for the project
+  (settings page, off by default: a switch can send the project's code to the backup's provider) and the squad is
+  supervised. The words must also stand where the CLI prints its own limit message (at the start of a line, the input
+  area right below, nothing the agent printed after it); elsewhere the lead is only told. A seat, never the lead, seen
+  stopped like that at two checks in a row with nothing done on the board in between is
+  closed with its cards, which stay its own, and started under its name on the first later entry of its `fallback`
+  list that this machine can start; at most 2 a tick, each taking one of the 3 starts. The lead is told at the first
+  sighting what will happen, and after the switch. Each is a `switch` board event (`switch <seat> (sonnet to haiku)`).
+  A stop on the backup goes to the next entry; with none left the seat stays (`no_backup`, said once). A seat herdr
+  shows `blocked` that its agent adapter will not close is not switched: its log says `skip closing` each tick. If the
+  start on the backup fails, the seat is restored on that backup, not moved to the next. **There is no automatic way
+  back**: a seat stays on its backup until a save that changes the squad, until the switch is turned off (which ends
+  every backup in the project), or until `cb squad primary <project> <seat>` (the lead or the owner). It then changes
+  at its next start or idle restart. `cb squad up` does not apply backups;
 - restarts the PC runner (herdr tab `runner`, `cb runner`) when `runner.json` exists and the runner has not beaten
   for 3 minutes, at most once per 10 minutes (first closing the runner tab it opened before, that pane only). A start that does not beat, or a log port still held by an old
   runner, is told to each supervised project's lead once an hour.

@@ -849,7 +849,11 @@ ${body}`, json: pg };
       return { out: resumeText(r), json: r };
     }
     case 'squad': {
-      if (!['show', 'set', 'up', 'trust'].includes(args[0] ?? '') || args.length !== 2) throw new Error('usage: cb squad show <project> [--json]  |  cb squad set <project> -f <file|-> [--overwrite]  |  cb squad up <project> [--dry-run]  |  cb squad trust <project> [--machine <m>] [--dry-run]');
+      if (!['show', 'set', 'up', 'trust', 'primary'].includes(args[0] ?? '') || args.length !== (args[0] === 'primary' ? 3 : 2)) throw new Error('usage: cb squad show <project> [--json]  |  cb squad set <project> -f <file|-> [--overwrite]  |  cb squad up <project> [--dry-run]  |  cb squad trust <project> [--machine <m>] [--dry-run]  |  cb squad primary <project> <seat>');
+      if (args[0] === 'primary') { // #4787: ends a seat's backup; there is no automatic way back
+        const ended = (await sql`select cb.seat_backup_clear(${args[1]}, ${args[2]}, ${actor}) as r`)[0].r;
+        return { out: ended ? `${args[2]} is back on its squad setting: it changes at its next start, or the supervisor restarts it once idle` : `${args[2]} is on no backup`, json: { project: args[1], seat: args[2], ended } };
+      }
       // #4575: Ahmed's one step per machine; it writes only this machine's agent config files, never the board
       if (args[0] === 'trust') { const out = await squadTrust(args[1], { machine: o.machine, dryRun: !!o['dry-run'], callFn }); return { out, json: { project: args[1], lines: out.split('\n') } }; }
       if (args[0] === 'up') { const out = await squadUp(args[1], !!o['dry-run'], callFn); return { out, json: { project: args[1], dry_run: !!o['dry-run'], lines: out.split('\n') } }; }

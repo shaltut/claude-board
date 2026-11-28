@@ -146,7 +146,7 @@ function SeatRows({ role, squad, options, edit, modelsOf }: {
   )
 }
 
-/** Backups a seat moves to if its agent stops (nothing switches to one yet: it is carried on each start). */
+/** Backups a seat moves to if its agent stops: the supervisor moves it only where automatic backup is on (#4787). */
 function Backups({ list, onChange, own, options, label, modelsOf, machine }: {
   list: Fallback[]; onChange: (l: Fallback[] | undefined) => void; own: Fallback; options: SquadOptions; label: string
   modelsOf: (agent: string) => ModelList | null
@@ -160,7 +160,7 @@ function Backups({ list, onChange, own, options, label, modelsOf, machine }: {
   const dup = list.some((f) => f.agent === agent && f.model === model) || (own.agent === agent && own.model === model)
   return (
     <div className="space-y-1.5">
-      <div className="text-xs text-muted-foreground">Backup if it stops <span className="text-muted-foreground/80">(nothing switches to a backup yet)</span></div>
+      <div className="text-xs text-muted-foreground">Backup if it stops <span className="text-muted-foreground/80">(used only while Automatic backup is on, under Switches)</span></div>
       {list.length === 0 && <div className="text-sm text-muted-foreground">None.</div>}
       <ol className="space-y-1">
         {list.map((f, i) => (

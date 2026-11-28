@@ -4,6 +4,7 @@
 // Design note: docs/superpowers/specs/2026-11-26-agy-adapter-design.md (what is verified on agy 1.5.17 and what is not).
 import { classifyAgentGet, realRun, type Runner } from '../squad-up.ts';
 import type { AgentAdapter, AgentState, DisableAskSpec, LaunchInput, QuotaSignal, SeatHandle } from './types.ts';
+import { atBannerSpot } from './screen.ts';
 import { stripClaudeOnly, withNoPrompt } from './env.ts';
 import { agyPreseed } from './trust.ts';
 import { join } from 'node:path';
@@ -28,6 +29,9 @@ export function checkAgyModel(model: string): void {
 const TAIL_LINES = 6;
 const QUOTA = /exhausted your quota on this model|third-party\s+quota\s+reached\.\s+please\s+switch\s+to\s+gemini\s+models|^\W*(?:AI:\s*)?out of credits\b|prepaid balance is insufficient|spend(?:ing)? cap (?:reached|exceeded|hit)/im;
 const RATE = /rate limit active for [^\s;.,]+|^\W*(?:error:?\s*)?(?:429\b|RESOURCE_EXHAUSTED\b)/im;
+// #4787: the limit message as agy prints it, at the start of its line; the third-party one may follow its transport
+// error and wrap over lines
+const BANNER = /^[ \t]*(?:AI:[ \t]*)?(?:(?:you have |you['’]ve )?exhausted your quota on this model|(?:(?:generating and executing:[ \t]*)?(?:transport error[ \t]*)?\(ResourceExhausted[^)\n]*\):\s*)?third-party\s+quota\s+reached\.\s+please\s+switch\s+to\s+gemini\s+models|out of credits\b|(?:your organization['’]s )?prepaid balance is insufficient|spend(?:ing)? cap (?:reached|exceeded|hit))/i;
 const RETRY = /retry in (\d+)\s*s/i;
 
 // The footer: "<mode> · <model's display name> · <effort>", the whole line (reported from a seat on agy 1.5.19)
@@ -93,6 +97,8 @@ export function createAgyAdapter(run: Runner): AgentAdapter {
       if (!seat.herdrName) return 'failed';
       return ok(r(seat.herdr ?? null, ['agent', 'prompt', seat.herdrName, '/exit'], 30_000)) ? 'sent' : 'failed';
     },
+
+    atQuotaBanner: (paneTail) => atBannerSpot(paneTail, BANNER),
 
     detectQuotaStop(_seat, _herdrAgent, paneTail?: string): QuotaSignal | null {
       if (!paneTail) return null;

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { seatKey } from '../bridge.ts';
 import type { AgentAdapter, AgentState, QuotaSignal, SeatHandle } from './types.ts';
+import { atBannerSpot } from './screen.ts';
 import { claudePreseed } from './trust.ts';
 import { checkedEffort } from './effort.ts';
 
@@ -112,6 +113,9 @@ export function probeSocket(path: string): Promise<boolean> {
 const STATES = new Set<string>(['idle', 'working', 'blocked', 'done']);
 const QUOTA = /usage limit reached|you['’]ve hit your (?:usage )?limit|(?:5-hour|weekly|session) limit reached|out of extra usage/i;
 const RATE = /rate[ _-]?limit|\b429\b|overloaded_error/i;
+// #4787: the limit message as the CLI prints it: under ⎿, or at the first column (indented with no mark is a wrapped
+// line of the agent's own answer)
+const BANNER = /^(?:[ \t]*⎿[ \t]*)?(?:Claude (?:AI )?usage limit reached|you['’]ve hit your (?:usage )?limit|(?:5-hour|weekly|session) limit reached|(?:you['’]re )?out of extra usage)/i;
 
 // #4346 review I1: a seat runs with bypassPermissions, so its --settings file is the whole fence. A missing role file,
 // truncated JSON or a deny list without the fence would start a seat with no fence, so the launch is refused instead.
@@ -187,6 +191,8 @@ export const claudeAdapter: AgentAdapter = {
     const r = run(seat.herdr ?? null, ['agent', 'prompt', seat.herdrName, '/exit'], 30_000);
     return r.status === 0 && !r.error ? 'sent' : 'failed';
   },
+
+  atQuotaBanner: (paneTail) => atBannerSpot(paneTail, BANNER),
 
   detectQuotaStop(_seat, _herdrAgent, paneTail): QuotaSignal | null {
     if (!paneTail) return null;

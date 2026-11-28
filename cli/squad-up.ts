@@ -11,7 +11,7 @@ import { homeTrust, type TrustCheck } from './squad-trust.ts';
 type Machine = { herdr: string | null; repo?: string; board: string; workspace?: string };
 // #4002: a role's agent (absent: claude, never stored), its ranked fallback, and per-seat overrides of either; #4763: an
 // effort on each (absent: the agent's own default). A seat's
-// key is Want.seatKey. Nothing switches to a fallback yet: it rides on the launch for the agent switch to come.
+// key is Want.seatKey. The supervisor moves a quota-stopped seat down its fallback where automatic backup is on (#4787).
 type Fallback = { agent: AgentKind; model: string; effort?: string }[];
 export type SeatOverride = { agent?: AgentKind; model?: string; effort?: string; fallback?: Fallback };
 type Role = { count?: number | Record<string, number>; model: string; machine: string; agent?: AgentKind; effort?: string; fallback?: Fallback; seats?: Record<string, SeatOverride> };

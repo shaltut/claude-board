@@ -1,5 +1,6 @@
 // The supervisor's pure planner: from the board's facts and herdr's, decide this tick's restores, starts, closes and notes.
-import { herdrName, launchFor, runsOn, seatSpec, wantList, type Launch, type Squad } from './squad-up.ts';
+import { herdrName, launchFor, runsOn, seatSpec, wantList, type Launch, type Squad, type Want } from './squad-up.ts';
+import type { AgentKind } from './agents/index.ts';
 
 export type Session = { actor: string; role: string; area: string | null; repo: string; machine: string | null; pane: string | null; live: boolean;
   holds: number; questions: number; jobs: number; asks: number; last_event: string | null; closing: boolean; last_restore: string | null;
@@ -8,8 +9,12 @@ export type Session = { actor: string; role: string; area: string | null; repo: 
   last_restore_failed: boolean; down_again_logged: boolean; down_again_since_bind: boolean;
   agent?: string | null; // the agent the session runs (#4002); null or absent (a holder with no session row): claude
   quota_told?: boolean; // #4787: its quota stop is already on the board, and it has done nothing there since
+  no_backup_told?: boolean; // #4787: that it has no backup left is on the board, the same way
+  backup?: Backup | null; // #4787: the squad backup it was moved to; null or absent: it runs its own setting
   model?: string | null }; // the model it bound with (cb iam --model, #4332); null or absent: unknown, never judged
+export type Backup = { n: number; agent: AgentKind; model: string; effort?: string };
 export type State = { project: string; squad: Squad; supervised: boolean;
+  auto_backup?: boolean; // #4787: Ahmed's per-project switch
   // #4559 slice 3: a supervised squad's project that gets no work (disabled, archived), and since when
   winding_down?: boolean; state_at?: string | null;
   state?: string; // the project's own: enabled, disabled or archived; absent (an older board): enabled
@@ -96,6 +101,34 @@ export function quotaChecks(state: State, herdrStatus: Record<string, string>, h
     return (mine.has(s.actor) || s.role === 'lead') && (!s.bound || s.bound === state.project) && !s.closing
       && !herdrDown.has(s.actor.split('@')[1]!) && (READY.has(status) || status === 'blocked');
   });
+}
+
+type Runs = { agent: AgentKind; model: string; effort?: string };
+// a squad with one seat set to run a pick; the seat's own fallback list, if it has one, stays
+function withSeat(squad: Squad, w: Want, { agent, model, effort }: Runs): Squad {
+  const role = squad.roles[w.role]!;
+  return { ...squad, roles: { ...squad.roles, [w.role]: { ...role, seats: { ...role.seats, [w.seatKey]: { ...role.seats?.[w.seatKey], agent, model, effort } } } } };
+}
+
+/** #4787: the state as the supervisor acts on it: each seat moved to a backup is set to that in the squad, so a start, a
+ *  restore or an idle restart runs the backup and never moves the seat back. */
+export function onBackups(state: State): State {
+  const moved = new Map(state.sessions.filter((s) => s.backup).map((s) => [s.actor, s.backup!]));
+  if (!moved.size) return state;
+  let squad = state.squad;
+  for (const w of wantList(state.project, state.squad)) if (moved.has(w.name)) squad = withSeat(squad, w, moved.get(w.name)!);
+  return { ...state, squad };
+}
+
+/** #4787: where a stopped seat goes next: the first backup its saved squad names after the one it is on that differs
+ *  from what it runs and that this machine can start. Null when none is left. */
+export function nextBackup(project: string, squad: Squad, w: Want, s: Pick<Session, 'backup'>, startProblem: (l: Launch) => string | null): { n: number; launch: Launch } | null {
+  const own = seatSpec(squad, w), list = own.fallback ?? [], runs = runsOn(s.backup ?? own);
+  for (let n = (s.backup?.n ?? 0) + 1; n <= list.length; n++) {
+    const launch = launchFor(project, withSeat(squad, w, list[n - 1]!), w, 'resume');
+    if (runsOn(launch) !== runs && !startProblem(launch)) return { n, launch };
+  }
+  return null;
 }
 
 export function planTick(i: TickInput): TickPlan {

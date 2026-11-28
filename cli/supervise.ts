@@ -1,6 +1,7 @@
 // The supervisor (#3601): `node cli/supervise.ts`, started with `cb supervise` in herdr tab `supervisor` on the PC.
 // Every 60 s one tick: per supervised project it starts, restores and closes squad sessions through herdr as planTick
-// says; for every project with a squad that gets work it tells the lead of a seat stopped by its model's quota (#4787);
+// says; for every project with a squad that gets work it tells the lead of a seat stopped by its model's quota, and where
+// Ahmed turned automatic backup on it moves a seat still stopped at the next check to its squad's backup (#4787);
 // then it restarts the PC runner if it stopped beating. One supervisor anywhere: a Postgres advisory lock.
 import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs';
@@ -10,7 +11,7 @@ import { join } from 'node:path';
 import { connect, machine } from '../server/db.ts';
 import { loadConfig } from './recipes.ts';
 import { classifyAgentGet, find, herdrJson, herdrName, launchSpec, promptCommand, realRun, runsOn, seatSpec, startOne, wantList, type Launch, type Runner } from './squad-up.ts';
-import { mayBeLeaving, pastSeatNames, planTick, quotaChecks, quotaWatched, windDownQuiet, type Leaving, type Session, type State, type TickPlan } from './supervise-plan.ts';
+import { mayBeLeaving, nextBackup, onBackups, pastSeatNames, planTick, quotaChecks, quotaWatched, windDownQuiet, type Leaving, type Session, type State, type TickPlan } from './supervise-plan.ts';
 import { getAdapter } from './agents/index.ts';
 import { DeadlineError, withDeadline } from './deadline.ts';
 import type { AgentAdapter, QuotaSignal, SeatHandle } from './agents/types.ts';
@@ -38,6 +39,9 @@ export type Deps = {
 // #4559: a project winding down closes at most this many seats a tick: each close waits up to a minute for herdr, and
 // the tick has a deadline
 const WIND_DOWN_CLOSES = 2;
+// #4787: at most this many seats move to a backup per project a tick; each also takes one of the tick's starts
+const SWITCHES = 2;
+type Switch = { n: number; from: string; launch: Launch; lead?: string };
 const msg = (e: unknown) => ((e as Error)?.message ?? String(e)).trim();
 
 /** One tick. Returns the lines to print. Dry run: herdr is only read (the agent list, and the screens a quota check
@@ -103,19 +107,28 @@ export async function tick(d: Deps): Promise<string[]> {
   for (const state of states) {
     d.signal?.throwIfAborted();
     try {
-      await quotaStops(d, state, { status: herdrStatus, pane: herdrPane, down: herdrDown }, out); // before act: a start can take minutes
+      // before act: a start can take minutes. The switches it returns are carried out by act
+      const switches = await quotaStops(d, state, { status: herdrStatus, pane: herdrPane, down: herdrDown }, startsLeft, out);
       if (!state.supervised && !state.winding_down) continue; // nothing below is for a squad the supervisor does not run
+      const asRun = onBackups(state); // #4787: a seat on a backup is started, restored and restarted on it
       const safeToClose = await safeToCloseOf(state, herdrStatus);
       // #3770: the names earlier saved versions of the squad generated (cb.squad_set's 'squad updated' events, the last
       // 20), read only when a live or holding session is one the squad does not want now (events has no project index)
       const pastSeats = mayBeLeaving(state, herdrLive) ? pastSeatNames(state.project, (await sql`select e.data -> 'squad' as squad from cb.events e
         where e.project = ${state.project} and e.kind = 'updated' and e.summary = 'squad updated' order by e.id desc limit 20`).map((r: any) => r.squad)) : new Set<string>();
-      const plan = planTick({ state, herdrLive, herdrStatus, herdrDown, launched: memory.launched, macLive, startsLeft, failedAt: memory.failedAt, now, safeToClose, pastSeats,
+      startsLeft -= switches.length;
+      const plan = planTick({ state: asRun, herdrLive, herdrStatus, herdrDown, launched: memory.launched, macLive, startsLeft, failedAt: memory.failedAt, now, safeToClose, pastSeats,
         restartTried: memory.restartTried, startProblem });
+      // a seat being switched is closed and started by the switch alone
+      const moving = new Set(switches.map((x) => x.launch.name));
+      plan.close = plan.close.filter((n) => !moving.has(n));
+      plan.restart = plan.restart.filter((x) => !moving.has(x.launch.name));
+      plan.restore = plan.restore.filter((l) => !moving.has(l.name));
+      plan.start = plan.start.filter((l) => !moving.has(l.name));
       const launches = [...plan.restore, ...plan.start];
       startsLeft -= launches.length + plan.restart.length; // a restart's close frees its own Mac slot: macLive stays
       macLive += launches.filter((l) => l.herdr === MAC || l.machine === MAC).length;
-      await act(d, state, plan, out, log);
+      await act(d, asRun, plan, switches, out, log);
     } catch (e) {
       out.push(`${state.project}: tick failed: ${msg(e)}`);
     }
@@ -151,9 +164,13 @@ const READ_LINES = 40, TAIL_LINES = 15;
 export const paneTail = (text: string) => text.split(/\r?\n/).filter((l) => l.trim()).slice(-TAIL_LINES).join('\n');
 
 /** #4787: reads the screen of each seat that is not working and asks its agent's adapter whether a quota stopped it (a
- *  rate limit the CLI retries is no stop). A stop is put on the board once, until the seat acts there again or binds
- *  anew, and the lead is told; the digest carries it too. Nothing is closed or switched. No pane text reaches the board. */
-async function quotaStops(d: Deps, state: State, herdr: { status: Record<string, string>; pane: Record<string, string>; down: Set<string> }, out: string[]) {
+ *  rate limit the CLI retries is no stop). A stop is put on the board once, until the seat acts there again, binds anew
+ *  or is switched, and the lead is told; the digest carries it too. Where automatic backup is on (a supervised squad,
+ *  never the lead), a stop already on the board is a second sighting with nothing done there in between: it is returned
+ *  as a switch, at most SWITCHES and no more than the tick has starts for; with no backup left that is said once
+ *  instead. No pane text reaches the board. */
+async function quotaStops(d: Deps, state: State, herdr: { status: Record<string, string>; pane: Record<string, string>; down: Set<string> }, room: number, out: string[]) {
+  const switches: Switch[] = [];
   for (const s of quotaChecks(state, herdr.status, herdr.down)) {
     d.signal?.throwIfAborted();
     const m = state.squad.machines[s.actor.split('@')[1]!]?.herdr ?? null, hn = herdrName(s.actor), pane = herdr.pane[hn];
@@ -162,27 +179,51 @@ async function quotaStops(d: Deps, state: State, herdr: { status: Record<string,
       if (!pane) throw new Error('herdr lists it with no pane');
       const r = d.run(m, ['pane', 'read', pane, '--source', 'recent-unwrapped', '--lines', String(READ_LINES), '--format', 'text'], 15_000);
       if (r.status !== 0) throw new Error((r.error?.message || r.stderr || 'herdr failed').trim().slice(0, 200));
-      const stop: QuotaSignal | null = a.detectQuotaStop(seatOf(state, s.actor, a.kind, pane, s.machine), { agent_status: herdr.status[hn] }, paneTail(r.stdout ?? ''));
+      const tail = paneTail(r.stdout ?? '');
+      const stop: QuotaSignal | null = a.detectQuotaStop(seatOf(state, s.actor, a.kind, pane, s.machine), { agent_status: herdr.status[hn] }, tail);
       d.memory.unreadTold.delete(s.actor);
-      if (stop?.kind !== 'quota' || s.quota_told) continue;
-      if (d.dryRun) { out.push(`would say ${s.actor} looks stopped by its quota`); continue; }
-      // on the board first: if that fails nothing is said, and the next tick tries again; if the tell fails, the digest has it
-      await d.sql`select cb.supervise_log(${state.project}, 'quota', ${s.actor}, ${`herdr pane ${pane}`})`;
-      const lead = leadOf(state), isLead = s.role === 'lead' || s.actor === lead;
-      out.push(`${s.actor} looks stopped by its quota (herdr pane ${pane}${m ? ` on ${m}` : ''})${isLead || !lead ? ': no other lead to tell, it is in the digest' : ''}`);
-      if (isLead || !lead) continue;
-      const seat = wantList(state.project, state.squad).find((w) => w.name === s.actor);
-      const backups = (seat ? seatSpec(state.squad, seat).fallback : undefined)?.map(runsOn).join(', ');
-      await tell(d, lead, `supervisor: ${s.actor} looks stopped by its model's quota: herdr pane ${pane}${m ? ` on ${m}` : ''} shows the CLI's limit message. It holds ${s.holds} card(s).`
+      if (stop?.kind !== 'quota') continue;
+      const lead = leadOf(state), isLead = s.role === 'lead' || s.actor === lead, toTell = isLead ? undefined : lead;
+      const want = wantList(state.project, state.squad).find((w) => w.name === s.actor);
+      // the seat that may be switched: the switch applies, and the words stand where the CLI prints its own limit message
+      // (a seat whose own output quotes them is only told of)
+      const applies = state.supervised && !!state.auto_backup && !isLead, banner = a.atQuotaBanner(tail);
+      const seat = applies && banner ? want : undefined;
+      const next = seat ? nextBackup(state.project, state.squad, seat, s, startProblem) : null;
+      if (s.quota_told) {
+        if (!seat) continue;
+        if (next) {
+          if (switches.length < Math.min(SWITCHES, room)) switches.push({ ...next, from: runsOn(s.backup ?? seatSpec(state.squad, seat)), lead: toTell });
+          continue;
+        }
+        if (s.no_backup_told) continue;
+      }
+      const what = s.quota_told ? 'no_backup' : 'quota';
+      const found = what === 'quota' ? 'looks stopped by its quota' : 'has no backup that can start';
+      if (d.dryRun) { out.push(`would say ${s.actor} ${found}`); continue; }
+      // on the board first: if that fails nothing is said, and the next tick tries again; if the tell fails, the board has it
+      await d.sql`select cb.supervise_log(${state.project}, ${what}, ${s.actor}, ${`herdr pane ${pane}`})`;
+      const where = `herdr pane ${pane}${m ? ` on ${m}` : ''}`;
+      out.push(`${s.actor} ${found} (${where})${toTell ? '' : ': no other live lead to tell; it is on the board'}`);
+      if (!toTell) continue;
+      if (what === 'no_backup') {
+        await tell(d, toTell, `supervisor: ${s.actor} is still stopped by its model's quota and has no backup that can start, so it is left as it is (${where}). It holds ${s.holds} card(s): restart it on another model or hand them over.`, out);
+        continue;
+      }
+      const backups = (want ? seatSpec(state.squad, want).fallback : undefined)?.map(runsOn).join(', ');
+      await tell(d, toTell, `supervisor: ${s.actor} looks stopped by its model's quota: ${where} shows the CLI's limit message. It holds ${s.holds} card(s).`
         + (stop.retryAfterSec ? ` The CLI says to retry in about ${Math.ceil(stop.retryAfterSec / 60)} min.` : '')
         + (backups ? ` Backups named for the seat: ${backups}.` : '')
-        + ' Nothing was switched or closed: check the pane, then restart it on another model or hand its cards over.', out);
+        + (applies && !banner ? " Automatic backup will not switch it: the words are not where the CLI prints its own limit message." : '')
+        + (next ? ` If the next check still sees it, with nothing done on the board in between, the supervisor switches it to ${runsOn(next.launch)}: it is closed and started there, and keeps its cards.`
+          : ' Nothing was switched or closed: check the pane, then restart it on another model or hand its cards over.'), out);
     } catch (e) {
       if (d.memory.unreadTold.has(s.actor)) continue;
       d.memory.unreadTold.add(s.actor);
       out.push(`cannot check ${s.actor} for a quota stop: ${msg(e)}`);
     }
   }
+  return switches;
 }
 // #4332: why this machine cannot start a launch, as startOne would refuse it before any pane; null when it can
 const startProblem = (l: Launch) => { try { launchSpec(l); return null; } catch (e) { return msg(e); } };
@@ -191,12 +232,13 @@ const shortWhy = (why: string) => why.split(/[:(]/)[0]!.trim().slice(0, 100);
 // the live session bound to the project in the lead role, whatever its name
 const leadOf = (s: State) => s.sessions.find((x) => x.role === 'lead' && x.live)?.actor;
 
-async function act(d: Deps, state: State, plan: TickPlan, out: string[], log: Log) {
+async function act(d: Deps, state: State, plan: TickPlan, switches: Switch[], out: string[], log: Log) {
   const { run, dryRun, now, memory } = d, project = state.project;
   const tabs: Record<string, { pane: string; panes: number }> = {};
+  // true: the agent started and has its first prompt
   const launch = async (what: 'restore' | 'start', l: Launch) => {
     const seen = classifyAgentGet(run(l.herdr, ['agent', 'get', herdrName(l.name)], 30_000));
-    if (seen !== 'absent') { out.push(`skip ${l.name}: ${seen === 'live' ? 'running in herdr' : `could not check herdr on ${l.machine}`}`); return; }
+    if (seen !== 'absent') { out.push(`skip ${l.name}: ${seen === 'live' ? 'running in herdr' : `could not check herdr on ${l.machine}`}`); return false; }
     const r = startOne(l, run, tabs);
     out.push(what === 'restore' ? r.line.replace(/^started /, 'restored ') : r.line);
     if (r.ok || r.pane) memory.launched.add(l.name); // the agent exists (up, on a dialog, or its prompt not sent)
@@ -212,7 +254,25 @@ async function act(d: Deps, state: State, plan: TickPlan, out: string[], log: Lo
     }
     // a restore is logged however it ended, so its 30-minute limit holds across failures and supervisor restarts
     if (!kind || what === 'restore') await log(project, what, l.name, kind ?? l.role);
+    return r.ok;
   };
+  // #4787 (Q3157): a seat still stopped by its quota moves to its backup: closed with its cards, which stay its own,
+  // then started under its name on the backup
+  for (const { n, from, launch: l, lead } of switches) {
+    d.signal?.throwIfAborted();
+    const to = runsOn(l);
+    if (dryRun) { out.push(`would switch ${l.name} (${from} to ${to})`); continue; }
+    const c = await closeOne(d, state, l.name, log, true);
+    out.push(c.line);
+    if (!c.gone) continue;
+    // on the board before the start: from here on the seat runs its backup, and a start that fails is restored on it
+    try { await d.sql`select cb.seat_switch(${project}, ${l.name}, ${n})`; }
+    catch (e) { out.push(`closed ${l.name} but could not record its backup, so it was not started on it: ${msg(e)}`); continue; }
+    await log(project, 'switch', l.name, `${from} to ${to}`);
+    d.signal?.throwIfAborted();
+    const up = await launch('start', l);
+    if (lead) await tell(d, lead, `supervisor: switched ${l.name} from ${from} to ${to} after its quota stop. ${up ? 'It was started there and keeps its cards.' : 'It was closed, and its start there did not finish: see the supervisor log.'} It stays on the backup until the squad is saved or you run cb squad primary ${project} ${l.name}.`, out);
+  }
   for (const [what, list] of [['restore', plan.restore], ['start', plan.start]] as const) {
     for (const l of list) {
       d.signal?.throwIfAborted();
@@ -296,7 +356,7 @@ async function tell(d: Deps, to: string, text: string, out: string[]) {
 
 // Mark closing, find its pane, re-check on a fresh statement, /exit (its agent adapter's close), wait for herdr to drop
 // the agent, close its pane. gone: the agent left herdr (#4332: only then does a restart start it again)
-async function closeOne(d: Deps, state: State, name: string, log: Log): Promise<{ line: string; gone?: true; sent?: true }> {
+async function closeOne(d: Deps, state: State, name: string, log: Log, switching = false): Promise<{ line: string; gone?: true; sent?: true }> {
   const { sql, run } = d, sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))), clock = d.clock ?? Date.now;
   const unmark = () => sql`select cb.supervise_mark(${name}, false)`.catch(() => {});
   const windDown = !!state.winding_down;
@@ -315,6 +375,8 @@ async function closeOne(d: Deps, state: State, name: string, log: Log): Promise<
     if (windDown) { // #4559: it may keep cards, but only while the project still gets no work and it is still quiet
       if (!fresh.winding_down) { await unmark(); return { line: `skip closing ${name}: ${state.project} is enabled again` }; }
       if (!s || s.jobs_running || (s.bound && s.bound !== fresh.project) || !windDownQuiet(s, fresh.state_at, d.now)) { await unmark(); return { line: `skip closing ${name}: it is working again` }; }
+    } else if (switching) { // #4787: it keeps its cards, but only while the switch is on and the same stop still stands
+      if (!s || !fresh.supervised || !fresh.auto_backup || !s.quota_told) { await unmark(); return { line: `skip closing ${name}: it acted since its quota stop, or automatic backup is off` }; }
     } else if (!s || s.holds || s.questions || s.jobs || s.asks) { await unmark(); return { line: `skip closing ${name}: it took work` }; }
     // the agent running there now judges and closes it (#4002); one with no adapter yet is never closed
     let adapter: AgentAdapter;
@@ -329,7 +391,7 @@ async function closeOne(d: Deps, state: State, name: string, log: Log): Promise<
     d.signal?.throwIfAborted();
     if (classifyAgentGet(run(m, ['agent', 'get', hn], 30_000)) !== 'absent') continue;
     const closed = run(m, ['pane', 'close', pane], 30_000).status === 0;
-    await log(state.project, 'close', name, windDown ? 'project disabled' : s.role); // the mark stays until it lapses; cb.iam clears it if the name binds again
+    await log(state.project, 'close', name, windDown ? 'project disabled' : switching ? 'quota switch' : s!.role); // the mark stays until it lapses; cb.iam clears it if the name binds again
     return { line: closed ? `closed ${name}` : `closed ${name}; its pane ${pane} did not close`, gone: true, sent: true };
   }
   // /exit was sent and it may still be exiting: the mark stays and lapses in 5 minutes, so no card lands on it meanwhile
@@ -411,7 +473,7 @@ export const locked = async (lock: any) => (await lock`select pg_try_advisory_lo
 
 if (import.meta.main) {
   const dryRun = process.argv.includes('--dry-run'), once = process.argv.includes('--once');
-  const version = createHash('sha256').update(['supervise.ts', 'supervise-plan.ts', 'squad-up.ts', 'agents/index.ts', 'agents/claude.ts', 'agents/codex.ts', 'agents/agy.ts', 'agents/opencode.ts']
+  const version = createHash('sha256').update(['supervise.ts', 'supervise-plan.ts', 'squad-up.ts', 'agents/index.ts', 'agents/screen.ts', 'agents/claude.ts', 'agents/codex.ts', 'agents/agy.ts', 'agents/opencode.ts']
     .map((f) => readFileSync(join(import.meta.dirname, f), 'utf8')).join('\0')).digest('hex').slice(0, 7);
   const app = `cb-supervisor/${version}`;
   let sql = connect(undefined, { app, max: 1 });

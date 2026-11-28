@@ -41,6 +41,9 @@ export interface AgentAdapter {
   readStatus(seat: SeatHandle, herdrAgent: { agent_status?: string } | null): Promise<AgentStatus>;
   close(seat: SeatHandle, run: Runner): Promise<'sent' | 'failed'>;
   detectQuotaStop(seat: SeatHandle, herdrAgent: { agent_status?: string } | null, paneTail?: string): QuotaSignal | null;
+  /** #4787: whether the quota words stand where this CLI prints its own limit message (cli/agents/screen.ts). Only then
+   *  may the supervisor switch the seat to a backup. */
+  atQuotaBanner(paneTail: string): boolean;
   /** #4786: the model the agent's own screen says it runs now, as a model id; null: the screen does not say. Absent: not
    *  read from the screen (Claude's comes from its usage hook; the others report none yet). */
   runningModel?(screen: string): string | null;

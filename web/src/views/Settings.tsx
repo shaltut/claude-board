@@ -218,6 +218,17 @@ function Switches({ project, page, squad, edit }: { project: string; page: Squad
             </span>
           </span>
         </label>
+        <label className="flex items-start gap-3 rounded-lg border bg-card p-3">
+          <input type="checkbox" className="mt-0.5 size-4" checked={page.auto_backup} disabled={busy}
+            onChange={(e) => run('project_auto_backup', { enabled: e.target.checked }, () => (e.target.checked ? 'Automatic backup on' : 'Automatic backup off'), 'The automatic backup switch did not change. Try again.')} />
+          <span className="text-sm">
+            <span className="font-medium">Automatic backup</span> <span className="rounded-full bg-lamp-soft px-2 py-0.5 text-xs text-lamp-ink">Only Ahmed changes this</span>
+            <span className="block text-muted-foreground">
+              A seat stopped by its model's quota, seen at two checks in a row, restarts on the next backup its squad names. This can send the project's code to that backup's provider.
+              It needs the pipeline and the supervisor on. The lead is never switched, and nothing switches a seat back. Turning this off ends every backup in use.
+            </span>
+          </span>
+        </label>
         <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-3 text-sm">
           <span className="min-w-0 flex-1">
             <span className="font-medium">Reminders</span>

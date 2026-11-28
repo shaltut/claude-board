@@ -39,6 +39,21 @@ alter table cb.projects add column if not exists state_by text;
 alter table cb.projects add column if not exists state_at timestamptz;
 select cb._ensure_check('cb.projects', 'projects_state_check', $c$state in ('enabled', 'disabled', 'archived')$c$);
 
+-- #4787 (Q3157): automatic backup, off until Ahmed turns it on for the project (cb.project_auto_backup); and the seats
+-- the supervisor has moved to one of their squad's backups: the n-th (from 1) of the seat's fallback list. A seat with a
+-- row here runs that, until the squad changes, cb.seat_backup_clear or the switch is turned off.
+alter table cb.projects add column if not exists auto_backup boolean not null default false;
+create table if not exists cb.seat_backups (
+  project     text not null references cb.projects(slug) on delete cascade,
+  actor       text not null,
+  n           int not null,
+  agent       text not null,
+  model       text not null,
+  effort      text,
+  since       timestamptz not null default now(),
+  primary key (project, actor)
+);
+
 -- #4763: the model names one machine's agent CLI listed when it last sent them (cb models report). The settings page
 -- offers the chosen machine's list; squad_set does not depend on it, so a model typed by hand still saves.
 create table if not exists cb.machine_models (
@@ -4600,8 +4615,11 @@ $$;
 -- (bound with --agent codex in a claude seat, say) runs that agent's model: null, not judged.
 create function cb._expected_model(project text, actor text, role text, area text, repo text, agent text) returns text language plpgsql stable as $$
 #variable_conflict use_variable
-declare sq jsonb := (select pr.squad from cb.projects pr where pr.slug = project); k text;
+declare sq jsonb := (select pr.squad from cb.projects pr where pr.slug = project); k text; bk record;
 begin
+  -- #4787: a seat moved to a backup is meant to run that
+  select b.agent, b.model into bk from cb.seat_backups b where b.project = project and b.actor = actor;
+  if found then return case when coalesce(agent, 'claude') = bk.agent then bk.model end; end if;
   if role = 'lead' then k := '1';
   elsif role = 'owner' then k := area;
   else
@@ -4772,9 +4790,10 @@ begin
       from cb.events e where e.project = p and e.kind = 'supervisor' and e.at > since having count(*) > 0
     union all
     select 12, false, e.id, (e.data ->> 'session') || case e.data ->> 'what' when 'down_again' then ' down again' when 'failed' then ' failed to start'
-                                                        when 'quota' then ' stopped by its quota' else ' blocked' end
+                                                        when 'quota' then ' stopped by its quota' when 'switch' then ' switched to a backup'
+                                                        when 'no_backup' then ' has no backup that can start' else ' blocked' end
                             || coalesce(': ' || (e.data ->> 'note'), '')
-      from cb.events e where e.project = p and e.kind = 'supervisor' and e.at > since and e.data ->> 'what' in ('down_again', 'blocked', 'failed', 'quota')
+      from cb.events e where e.project = p and e.kind = 'supervisor' and e.at > since and e.data ->> 'what' in ('down_again', 'blocked', 'failed', 'quota', 'switch', 'no_backup')
     union all
     -- 13: a staged card no builder or reviewer takes because it names no repo, in a project of several (#3703)
     -- (several repos open parts only at build: at review the lead names one)
@@ -4829,7 +4848,7 @@ begin
     -- #3221: a digest with a new P0 or a session the supervisor could not keep up is never held by the lead's relay
     urgent := newp0 or exists (select 1 from cb.events e where e.project = r.slug and e.kind = 'supervisor'
                                   and e.at > coalesce(last_at, now() - interval '15 minutes')
-                                  and e.data ->> 'what' in ('down_again', 'blocked', 'failed', 'quota'));
+                                  and e.data ->> 'what' in ('down_again', 'blocked', 'failed', 'quota', 'switch', 'no_backup'));
     -- the body without its stage line: a byte-identical one is not sent again (a new P0 always is)
     select string_agg(x.v, E'\n' order by x.n) into txt from jsonb_array_elements_text(lines) with ordinality x(v, n) where x.n > 1;
     h := md5(coalesce(txt, ''));
@@ -5367,7 +5386,8 @@ begin
     end if;
     a := spec->>'agent';
     -- only an agent cb can start: a seat saved for another would be refused by squad up and retried by the supervisor
-    -- every 10 minutes. A fallback may name any agent: nothing switches to it yet.
+    -- every 10 minutes. A fallback may name any agent: the supervisor moves a seat to it only where Ahmed turned
+    -- automatic backup on (#4787, cb.seat_switch).
     if a <> all(cb._agents_main()) then
       raise exception '% agent "%" cannot be assigned as a primary seat yet (the board starts % only; other agents are allowed in fallback)', label, a, array_to_string(cb._agents_main(), ', ');
     end if;
@@ -5701,6 +5721,7 @@ begin
     return ns || case when with_version then jsonb_build_object('version', ver, 'changed', false) else '{}'::jsonb end;
   end if;
   update cb.projects pr set squad = ns, squad_version = ver + 1 where pr.slug = p;
+  delete from cb.seat_backups b where b.project = p; -- #4787: a changed squad starts again from its own settings
   -- 'edited' is not an allowed event kind (events_kind_check); 'updated' is. via: the dashboard (page) or a session (cli)
   insert into cb.events (actor, project, kind, summary, data) values (a, p, 'updated', 'squad updated',
     jsonb_build_object('squad', ns, 'version', ver + 1, 'via', case when cb._is_dashboard() then 'page' else 'cli' end));
@@ -5725,7 +5746,7 @@ drop function if exists cb.github_watches cascade;
 -- answers for any agent, so the page can say "should be Codex" when a seat runs Claude.
 create function cb._seat_want(project text, actor text, role text, area text, repo text) returns jsonb language plpgsql stable as $$
 #variable_conflict use_variable
-declare sq jsonb := (select pr.squad from cb.projects pr where pr.slug = project); k text; ag text;
+declare sq jsonb := (select pr.squad from cb.projects pr where pr.slug = project); k text; ag text; bk record;
 begin
   if role is null then return null; end if;
   if role = 'lead' then k := '1';
@@ -5736,6 +5757,8 @@ begin
       k := coalesce(nullif(repo, ''), (select h.key from jsonb_each(sq->'repos') h where h.value->>'home' = 'true' limit 1)) || ':' || k;
     end if;
   end if;
+  select b.agent, b.model into bk from cb.seat_backups b where b.project = project and b.actor = actor; -- #4787
+  if found then return jsonb_build_object('seat', k, 'agent', bk.agent, 'model', bk.model); end if;
   ag := coalesce(sq->'roles'->role->'seats'->k->>'agent', sq->'roles'->role->>'agent', 'claude');
   return jsonb_build_object('seat', k, 'agent', ag,
     'model', coalesce(sq->'roles'->role->'seats'->k->>'model', sq->'roles'->role->>'model', cb._role_model(role, ag)));
@@ -5783,6 +5806,7 @@ begin
     'project', p, 'squad', sq, 'version', v,
     'pipeline', cb._pipeline(p),
     'supervise', coalesce(sq->>'supervise' = 'true', false),
+    'auto_backup', coalesce((select pr.auto_backup from cb.projects pr where pr.slug = p), false), -- #4787
     'seats', coalesce((select jsonb_agg(jsonb_build_object(
         'actor', s.actor, 'machine', s.machine, 'role', s.role, 'area', s.area, 'repo', s.repo,
         'agent', s.agent, 'model', s.model,
@@ -6551,6 +6575,50 @@ drop function if exists cb._supervisor_only cascade;
 drop function if exists cb.supervise_state cascade;
 drop function if exists cb.supervise_mark cascade;
 drop function if exists cb.supervise_log cascade;
+drop function if exists cb._quota_noted cascade;
+drop function if exists cb._switching cascade;
+drop function if exists cb._may_switch cascade;
+drop function if exists cb.project_auto_backup cascade;
+drop function if exists cb.seat_switch cascade;
+drop function if exists cb.seat_backup_clear cascade;
+
+-- #4787: whether the supervisor's quota or no_backup note on a session still stands: it has neither bound anew (bound),
+-- acted on the board nor been switched since. A standing note is not said again.
+create function cb._quota_noted(who text, what text, bound timestamptz) returns boolean language sql stable as $$
+  select exists (select 1 from cb.events e where e.actor = 'supervisor' and e.data ->> 'what' = what and e.data ->> 'session' = who
+     and e.at > greatest(coalesce(bound, '-infinity'),
+                         coalesce((select max(x.at) from cb.events x where x.actor = who), '-infinity'),
+                         coalesce((select max(x.at) from cb.events x where x.actor = 'supervisor' and x.data ->> 'what' = 'switch'
+                                     and x.data ->> 'session' = who), '-infinity')))
+$$;
+-- #4787: whether a project's stopped seats are moved to their backups: Ahmed's switch on, in a squad the supervisor runs
+create function cb._switching(p text) returns boolean language sql stable as $$
+  select coalesce((select pr.auto_backup and pr.squad ->> 'supervise' = 'true' from cb.projects pr where pr.slug = p), false)
+     and coalesce(cb._pipeline(p) and cb._live(p), false)
+$$;
+-- #4787: whether a seat may be closed with the cards it holds, to start again on its backup: its quota stop stands
+create function cb._may_switch(who text) returns boolean language sql stable as $$
+  select coalesce((select cb._switching(s.project) and cb._quota_noted(who, 'quota', s.started_at)
+                     from cb.sessions s where s.actor = who order by s.last_seen desc limit 1), false)
+$$;
+
+-- #4787 (Q3157): Ahmed turns automatic backup on or off for a project, from its settings page. Off also ends every
+-- backup in use there: each such seat is back on its own setting at its next start (or idle restart).
+create function cb.project_auto_backup(project text, enabled boolean, actor text default null) returns boolean language plpgsql as $$
+#variable_conflict use_variable
+declare a text; p text := cb.read_project(project);
+begin
+  perform cb.dashboard_only('Project settings');
+  a := cb.set_actor(coalesce(actor, 'ahmed'));
+  if not cb._is_owner(a) then raise exception 'only Ahmed turns automatic backup on or off: it can send the project''s code to the backup''s provider'; end if;
+  if enabled is null then raise exception 'say whether automatic backup is on or off'; end if;
+  update cb.projects pr set auto_backup = enabled where pr.slug = p;
+  if not found then raise exception 'no project %', p; end if;
+  if not enabled then delete from cb.seat_backups b where b.project = p; end if;
+  insert into cb.events (actor, project, kind, summary)
+  values (a, p, 'note', format('automatic backup %s for %s', case when enabled then 'on' else 'off' end, p));
+  return enabled;
+end $$;
 
 create function cb._is_supervisor() returns boolean language sql stable as $$ select current_setting('application_name') like 'cb-supervisor%' $$;
 create function cb._supervisor_only() returns void language plpgsql stable as $$
@@ -6589,6 +6657,7 @@ begin
     'winding_down', coalesce(cb._pipeline(p) and sq ->> 'supervise' = 'true' and not cb._live(p), false),
     'state', (select pr.state from cb.projects pr where pr.slug = p),
     'state_at', (select pr.state_at from cb.projects pr where pr.slug = p),
+    'auto_backup', coalesce((select pr.auto_backup from cb.projects pr where pr.slug = p), false), -- #4787
     'waiting', jsonb_build_object(
       'builder', (select jsonb_object_agg(r, (select count(*) from repo_work w where w.stage = 'build' and w.repo = r)) from unnest(rs) r),
       'reviewer', (select jsonb_object_agg(r, (select count(*) from repo_work w where w.stage = 'review' and w.repo = r)) from unnest(rs) r),
@@ -6625,10 +6694,11 @@ begin
         'last_restore_failed', coalesce(r.failed, false),
         'down_again_logged', exists (select 1 from cb.events e where e.actor = 'supervisor' and e.data ->> 'what' = 'down_again'
                                         and e.data ->> 'session' = a.actor and e.at > coalesce(r.at, '-infinity')),
-        -- #4787: its quota stop is on the board, and it has neither bound anew nor done anything there since: said once
-        'quota_told', exists (select 1 from cb.events e where e.actor = 'supervisor' and e.data ->> 'what' = 'quota' and e.data ->> 'session' = a.actor
-                                and e.at > greatest(coalesce(s.started_at, '-infinity'),
-                                                    coalesce((select max(x.at) from cb.events x where x.actor = a.actor), '-infinity'))),
+        -- #4787: its quota stop, or that it has no backup left, is on the board and still stands: said once
+        'quota_told', cb._quota_noted(a.actor, 'quota', s.started_at),
+        'no_backup_told', cb._quota_noted(a.actor, 'no_backup', s.started_at),
+        'backup', (select jsonb_strip_nulls(jsonb_build_object('n', b.n, 'agent', b.agent, 'model', b.model, 'effort', b.effort))
+                     from cb.seat_backups b where b.project = p and b.actor = a.actor),
         -- a down_again since the name last bound: no automatic restore until it binds again (no crash loop)
         'down_again_since_bind', exists (select 1 from cb.events e where e.actor = 'supervisor' and e.data ->> 'what' = 'down_again'
                                             and e.data ->> 'session' = a.actor and e.at > coalesce(s.started_at, '-infinity'))
@@ -6656,7 +6726,7 @@ begin
   perform cb._supervisor_only();
   update cb.sessions s set closing_at = case when closing then now() end where s.actor = actor;
   if not found then return false; end if;
-  if closing and exists (
+  if closing and not cb._may_switch(actor) and exists ( -- #4787: a switch restarts the seat, which keeps its cards
        select 1 from (select t.project from cb.tasks t where t.assignee = actor and t.status not in ('done', 'cancelled')
                       union all
                       select t.project from cb._held_parts() h join cb.tasks t on t.id = h.task_id where h.assignee = actor) w
@@ -6679,14 +6749,54 @@ begin
   note := nullif(left(trim(note), 200), '');
   hit := cb._sensitive(note);
   if hit is not null then raise exception 'the note looks like %; the board keeps no such text', hit; end if;
-  if what is null or what not in ('start', 'close', 'restore', 'blocked', 'failed', 'runner', 'down_again', 'restart', 'quota') then
-    raise exception 'what must be one of start, close, restore, blocked, failed, runner, down_again, restart, quota';
+  if what is null or what not in ('start', 'close', 'restore', 'blocked', 'failed', 'runner', 'down_again', 'restart', 'quota', 'switch', 'no_backup') then
+    raise exception 'what must be one of start, close, restore, blocked, failed, runner, down_again, restart, quota, switch, no_backup';
   end if;
   insert into cb.events (actor, project, kind, summary, data)
   values ('supervisor', case when project is null then null else cb.read_project(project) end, 'supervisor',
           what || ' ' || session || coalesce(' (' || note || ')', ''), jsonb_build_object('what', what, 'session', session) || case when note is null then '{}'::jsonb else jsonb_build_object('note', note) end)
   returning events.id into id;
   return id;
+end $$;
+
+-- #4787: the supervisor records that a seat now runs the n-th backup (from 1) its squad names for it (the seat's own
+-- list, else its role's), before it starts it there. Never the lead.
+create function cb.seat_switch(project text, actor text, n int) returns jsonb language plpgsql as $$
+#variable_conflict use_variable
+declare p text := cb.read_project(project); s record; sq jsonb; k text; list jsonb; b jsonb;
+begin
+  perform cb._supervisor_only();
+  if not cb._switching(p) then
+    raise exception 'automatic backup is off for %: Ahmed turns it on in its settings, for a squad the supervisor runs', p;
+  end if;
+  select x.role, x.area, x.repo into s from cb.sessions x where x.actor = actor and x.project = p order by x.last_seen desc limit 1;
+  if not found then raise exception 'no session % in %', actor, p; end if;
+  if cb._role(actor) = 'lead' then raise exception 'the lead is never switched: restart it by hand'; end if;
+  select pr.squad into sq from cb.projects pr where pr.slug = p;
+  k := cb._seat_want(p, actor, s.role, s.area, s.repo) ->> 'seat';
+  list := coalesce(sq -> 'roles' -> s.role -> 'seats' -> k -> 'fallback', sq -> 'roles' -> s.role -> 'fallback');
+  if n >= 1 then b := list -> (n - 1); end if; -- below 1: -> would count from the end
+  if b is null then raise exception 'the squad names no backup % for %', n, actor; end if;
+  insert into cb.seat_backups (project, actor, n, agent, model, effort)
+  values (p, actor, n, b ->> 'agent', b ->> 'model', b ->> 'effort')
+  on conflict on constraint seat_backups_pkey do update set n = excluded.n, agent = excluded.agent, model = excluded.model,
+    effort = excluded.effort, since = now();
+  return jsonb_strip_nulls(jsonb_build_object('n', n, 'agent', b ->> 'agent', 'model', b ->> 'model', 'effort', b ->> 'effort'));
+end $$;
+
+-- #4787: ends a seat's backup, by the project's lead or Ahmed: it is back on its own setting at its next start, or at
+-- the supervisor's idle restart. False when it was on none. There is no automatic way back.
+create function cb.seat_backup_clear(project text, seat text, actor text default null) returns boolean language plpgsql as $$
+#variable_conflict use_variable
+declare a text := cb.set_actor(actor); p text := cb.read_project(project);
+begin
+  if not coalesce(cb._is_lead(a, p) or cb._is_owner(a), false) then
+    raise exception 'only the project''s lead or Ahmed ends a seat''s backup';
+  end if;
+  delete from cb.seat_backups b where b.project = p and b.actor = seat;
+  if not found then return false; end if;
+  insert into cb.events (actor, project, kind, summary) values (a, p, 'note', format('backup ended for %s', seat));
+  return true;
 end $$;
 
 -- ---------------------------------------------------------------- Card search (#4339)

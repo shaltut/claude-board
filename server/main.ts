@@ -217,7 +217,7 @@ async function signInRule(admin: Who, fn: string, args: Record<string, unknown>)
 // call them. The pipeline switch and the reminders keep their guard (any admin, as on Board and Backlog).
 // #4559: a project's state (enabled, disabled, archived) is Ahmed's alone too
 const OWNER_ONLY = new Set(['squad_set', 'role_text_set', 'role_text_import', 'project_role_set', 'github_watch_add', 'github_watch_remove', 'github_mute',
-  'project_state']);
+  'project_state', 'project_auto_backup']);
 // The Runners page (#4527) is for every admin to read (Q2978); managing the queue is Ahmed's and each project's lead's
 // (Q2982), and a lead is a session (cb job ...), never a signed-in admin. The SQL checks the same (cb._is_owner: exactly
 // ahmed on the dashboard; cb._is_lead); this refuses another admin before the database is asked.
