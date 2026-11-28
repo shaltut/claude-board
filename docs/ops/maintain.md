@@ -714,6 +714,12 @@ denied by the role permission files. Card #3746.
 - The block says what to do instead: push your own branch and open a PR; the lead merges it.
 - While the list is set, a push whose remote or branch the shell fills in (`$B`, `$(git branch --show-current)`,
   backticks) is blocked too, since the hook cannot see the branch: name it literally.
+- A command word the shell fills in (`$G`, `"$GIT"`, `%GIT%`, `& $git`) is read as `git` when what follows can push
+  (`push`, `send-pack`, `http-push`, `subtree`, an alias set for the call or in git config, a subcommand that is filled
+  in too), by this list and by every role's rules against a push (#4815): write `git` by its name. A variable that holds
+  another tool with a `push` command (`$DOCKER push <image>`) is refused the same way: write that tool's name.
+- In a seat, a command and its first argument both filled in (`$G $SUB`, also `$CC $CFLAGS`) are refused whatever they
+  hold: write the command's name (#4815).
 - While the list is set, a wildcard destination (`refs/heads/*:refs/heads/*`, `develop*`) is blocked too: it can write
   a protected branch. Push one branch by name.
 - Sessions already running have no such variable: the fence holds only after each is restarted (closed, then started
