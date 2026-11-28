@@ -203,6 +203,27 @@ function passes(role: string, cmds: string[]) {
   for (const c of cmds) assert.deepEqual(shell(c, { CB_ROLE: role }), {}, `${role} must pass: ${c}`);
 }
 
+// #4622 (PR 77 round 6, m1): a quoted phrase ("$A log", "$C d") names no git command. It is let through only where the
+// whole command is one plain echo or printf line: an allow list, so nothing can run or pass on what the line prints
+test('#4622: only a lone echo or printf line may hold a quoted phrase after a variable', () => {
+  passes('builder', ['echo "$A b" "$C d" opencode.json', "  echo '$A b' \"$C d\" opencode.json",
+    'printf "%s" "${A} b" "$C d" opencode.json', 'printf "%s\n" "$A b" "$C d" opencode.json',
+    'echo "$USER said" "$A hello there" opencode.json', 'echo %A% "%C% d" opencode.json']);
+  const line = 'echo "$A b" "$C d" opencode.json';
+  blocksByRole('builder', [
+    // any other command word, or a word before the echo
+    'caffeinate "$A log" "$A log" opencode.json', `nice ${line}`, `VAR=1 ${line}`,
+    // anything beside the line: a pipe, another command, a second line, a group
+    `${line} | cat`, `${line}; true`, `${line} && true`, `true || ${line}`, `${line} &`, `${line}\ntrue`, `(${line})`, `{ ${line}; }`,
+    // anything in it that is not plain text or a plain variable
+    'echo "$(true) b" "$C d" opencode.json', 'echo "${A:-b} c" "$C d" opencode.json',
+    'echo $A x$B opencode.json',
+    // m2, kept: two whole variables may be git and a writing command
+    'python3 tools/check.py $A $B opencode.json',
+    // PR 172 review (R2), as written there: what echo prints is parsed again by sh; ssh behind another word reads its
+    // words again
+    'G=$(which git); X=eckout; echo $G "ch$X --" opencode.json | sh', 'caffeinate ssh host $GIT "$X now" opencode.json']);
+});
 // #4768, #4770: the guard drops a heredoc body only where bash reads one. In each of these bash 5.2 runs the line the
 // guard dropped as file text (checked in a shell with a harmless echo in its place)
 const hiddenByHeredoc: [string, (c: string) => string][] = [
@@ -251,7 +272,7 @@ const hiddenByHeredoc: [string, (c: string) => string][] = [
   ['after a # inside $(( ))', (c) => `echo $(( 1 # )) '\n' ; #' ; cat > a <<'EOF'\n${c}\nEOF`],
   ['after a # inside (( ))', (c) => `(( 1 # )); echo '\n' ; #' ; cat > a <<'EOF'\n${c}\nEOF`],
   ['after a # inside $[ ]', (c) => `echo $[ 1 # ] '\n' ; #' ; cat > a <<'EOF'\n${c}\nEOF`],
-  ['after a # inside a [[ =\ ]] pattern', (c) => `[[ a =\ ( #) ]]; echo '\n' ; #' ; cat > a <<'EOF'\n${c}\nEOF`],
+  ['after a # inside a [[ =~ ]] pattern', (c) => `[[ a =~ ( #) ]]; echo '\n' ; #' ; cat > a <<'EOF'\n${c}\nEOF`],
   ['after a $( split by a lone CR', (c) => `echo "$\r(echo '"')"; #' ; cat > a <<'EOF'\n${c}\nEOF`],
   // PR 161 review (R2): PowerShell refuses a << only where it starts a token. Glued to a word it is part of that word
   ...['cat > a', 'cat', 'cb log 1 -b -', 'cb log 1 0', 'git commit -F -', 'cat =', 'cat > a -'].map((head): [string, (c: string) => string] =>
@@ -1310,6 +1331,7 @@ test('long commands stay fast', () => {
     ['git settings, 200 KB of ANSI-C quote starts and escapes', asBuilder(kb200(String.raw`$'\x48\U0000`) + '; git -c core.sshCommand="ssh -i $HOME/k" fetch')],
     ['git settings, one 200 KB word of side-by-side braces', asBuilder('a' + kb200('}{') + '; git -c core.sshCommand="ssh -i $HOME/k" fetch')],
     ['git settings, 200 KB of setters and wildcard starts',asBuilder(kb200('sv x ') + kb200("'hom ") + '; git -c core.sshCommand="ssh -i $HOME/k" fetch')],
+    ['#4622, a 200 KB echo line that a pipe disqualifies, as a builder', asBuilder('echo ' + kb200('"a b" ') + '$X opencode.json | cat')],
     ['kill scan, 200 KB of win32_process', () => check(kb200('win32_process '))],
     ['kill scan, 200 KB of wmic process', () => check(kb200('wmic process '))],
     ['kill scan, 200 KB of by-name lookups after a stop', () => check('kill $x; ' + kb200('gps '))],

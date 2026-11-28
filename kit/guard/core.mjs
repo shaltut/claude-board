@@ -1349,11 +1349,23 @@ const GIT_GLOBAL_OPTS = new Set(['-v', '--version', '-h', '--help', '-C', '-c', 
 // position is judged whole by the command-position rule, so its later words are arguments too
 const NO_RUN = new Set(['cat', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'cmp', 'diff', 'stat', 'sha256sum', 'md5sum',
   'get-content', 'gc', 'select-string', 'sls', 'test-path', 'get-item', 'gi']);
+// #4622: in one plain echo or printf line, a word with a space of its own and nothing filled in but plain variables
+// ("$A log", "$C d") is only printed. An allow list for the whole command: no pipe, redirect, second command or line,
+// group, substitution or other backslash, so nothing can run or pass on what the line prints. Anything else is judged
+// as before.
+const PLAIN_VAR = /\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})|%[A-Za-z_]\w*%/g;
+const LONE_PRINT = /^[ \t]*(?:echo|printf)(?:[ \t]+(?:"[\w ./:=,%+@-]*(?:\\[nt][\w ./:=,%+@-]*)*"|\x27[\w ./:=,%+@-]*\x27|[\w./:=,%+@-]+))*[ \t]*$/;
+const lonePrint = (command) => LONE_PRINT.test(command.replace(PLAIN_VAR, 'v'));
+const isPhrase = (v) => {
+  const own = v.replace(PLAIN_VAR, '');
+  return /[ \t]/.test(own) && !/[$\x60]/.test(own);
+};
 // a filled word at raw[k] (any position): true when it is a git call that writes. Its options are judged as git's, not
 // skipped (round 4, I2: -c alias.x=checkout, --config-env, --exec-path=, --attr-source <v>). The subcommand slot holds a
 // git command, a bare $VAR / ${VAR} / %VAR%, or a ${...} / $(...) / backtick group; a path ($HOME/.codex/...) is not one
-// (round 4, I1). judge(words, atCommand) is the segment's budgeted gitCallWrites (round 4, I5).
-function filledWrites(raw, k, judge) {
+// (round 4, I1). judge(words, atCommand) is the segment's budgeted gitCallWrites (round 4, I5). printed: the command is
+// a lone echo or printf line (lonePrint), where a phrase is no subcommand.
+function filledWrites(raw, k, judge, printed) {
   const after = filledEnd(raw, k);
   for (let j = after, opts = 0; j < raw.length; j++) {
     const x = raw[j];
@@ -1368,13 +1380,13 @@ function filledWrites(raw, k, judge) {
       if (GIT_OPT_ARG.has(v)) j++;
       continue;
     }
-    const filledSub = x === '`' || (x === '$' && /^[({]$/.test(raw[j + 1] ?? '')) || /^(?:\$\{?[A-Za-z_]\w*\}?|%[A-Za-z_]\w*%)$/.test(v) || (/\$|%[A-Za-z_]\w*%/.test(v) && !/[\\/]/.test(v));
+    const filledSub = x === '`' || (x === '$' && /^[({]$/.test(raw[j + 1] ?? '')) || /^(?:\$\{?[A-Za-z_]\w*\}?|%[A-Za-z_]\w*%)$/.test(v) || (/\$|%[A-Za-z_]\w*%/.test(v) && !/[\\/]/.test(v) && !(printed && isPhrase(v)));
     if (!filledSub && !GIT_COMMANDS.has(v.toLowerCase())) return false;
     return judge(() => ['git', ...raw.slice(after).filter((y) => !GIT_OPENER.test(y)).map(unquote)], true);
   }
   return false;
 }
-const gitWrites = (seg, inQuote = false) => {
+const gitWrites = (seg, inQuote = false, printed = false) => {
   const raw = seg.match(GIT_TOKEN) ?? [];
   let start = true, runsEnv = false, launched = false, noRun = false, afterClose = false, ticks = 0;
   const rest = (k) => raw.slice(k).filter((x) => !GIT_OPENER.test(x)).map(unquote);
@@ -1387,7 +1399,7 @@ const gitWrites = (seg, inQuote = false) => {
     if (GIT_OPENER.test(t)) {
       // a backtick in command position runs what it prints: an unknown program whose first word is the subcommand slot
       if (t === '`' && start && !inQuote && judge(() => ['`', ...rest(k + 1)], true)) return true;
-      if (t === '`' && ticks++ % 2 === 0 && filledWrites(raw, k, judge)) return true; // anywhere: caffeinate `which git` checkout
+      if (t === '`' && ticks++ % 2 === 0 && filledWrites(raw, k, judge, printed)) return true; // anywhere: caffeinate `which git` checkout
       start = true;
       noRun = false;
       afterClose = t === ')' || t === '}' || (t === '`' && ticks % 2 === 0);
@@ -1414,11 +1426,11 @@ const gitWrites = (seg, inQuote = false) => {
     // a $( or ${ group in command position: the subcommand slot is the word after the whole group (round 4, I4); inside
     // a quoted line ("$(git rev-parse --show-toplevel)/x", "$USER reading x") a filled first word takes the filledWrites test
     const words = () => (u === '$' && /^[({]$/.test(raw[k + 1] ?? '') ? ['$', ...rest(filledEnd(raw, k))] : rest(k));
-    if (filled && start && inQuote) { if (filledWrites(raw, k, judge)) return true; }
+    if (filled && start && inQuote) { if (filledWrites(raw, k, judge, printed)) return true; }
     else if ((isGit || filled) && judge(words, start && isGit)) return true;
     // a shell-filled word in ANY position (caffeinate $GIT, arch -arm64 $GIT, time -p $GIT, . $GIT: no wrapper list to fall
     // behind), judged by the word after it (GIT_COMMANDS)
-    if (isFilled(u) && !noRun && filledWrites(raw, k, judge)) return true;
+    if (isFilled(u) && !noRun && filledWrites(raw, k, judge, printed)) return true;
     if (start && !SHELL_KEYWORD.has(u.toLowerCase())) {
       start = false;
       if (LAUNCHERS.has(cmdName(t))) launched = true;
@@ -1429,7 +1441,7 @@ const gitWrites = (seg, inQuote = false) => {
   return false;
 };
 const FORMAT_WRITE = /(?<![\w.\\/-])(?:prettier|eslint|biome|dprint|oxlint)(?![\w.\\/-])[^;&|]*[ \t](?:--write|-w|--fix|--apply)(?![\w-])/i;
-const writes = (seg) => FENCE_WRITER.test(seg) || gitWrites(seg) || FORMAT_WRITE.test(seg) || IN_PLACE.test(seg) || (INTERPRETER.test(seg) && WRITE_CALL.test(seg));
+const writes = (seg, printed) => FENCE_WRITER.test(seg) || gitWrites(seg, false, printed) || FORMAT_WRITE.test(seg) || IN_PLACE.test(seg) || (INTERPRETER.test(seg) && WRITE_CALL.test(seg));
 // an interpreter writes only when its code says so (review I3: node x.mjs ~/.claude/settings.json is a read)
 const INTERPRETER = /(?<![\w.\\/-])(?:python3?|py|node|deno|bun|ruby|perl|awk|gawk|sh|bash|zsh|pwsh|powershell)(?![\w.\\/-])/i;
 const WRITE_CALL = /write|append|unlink|rename|copy|move|remove|delete|rmdir|rmsync|truncate|chmod|replace|dump|mkdir|\bopen\s*\([^),]{0,300},\s*["'][wax+]|-i\b|--in-place/i;
@@ -2238,6 +2250,7 @@ function fenceWriteOne(command) {
   // }; f .claude/settings.json; alias c=cp; c x opencode.json), so a line that names a fence path and defines one writes
   if (DEFINES_FN.test(blankQuoted(text))) return FENCE;
   let inFence = false;
+  const printed = lonePrint(command);
   for (const seg of text.match(SEGMENTS) ?? []) {
     // #4590: a cd's own redirect is opened by the shell before cd runs, so it is judged by its own target, never skipped
     if (CD.test(seg)) {
@@ -2248,7 +2261,7 @@ function fenceWriteOne(command) {
     const names = fencePath(seg);
     if (!names && !inFence) continue;
     if (redirects(seg, inFence && !names)) return FENCE;
-    if (writes(seg)) return FENCE;
+    if (writes(seg, printed)) return FENCE;
   }
   return null;
 }
