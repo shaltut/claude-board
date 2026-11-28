@@ -1370,6 +1370,14 @@ test('long commands stay fast', () => {
     ['#4768, 200 KB of heredoc markers in comments, as a builder', asBuilder("cat > a # <<'EOF'\n".repeat(12000) + 'EOF')],
     ['#4768, 200 KB of comment lines before a heredoc, as a builder', asBuilder('#\n'.repeat(100000) + "cat > a <<'EOF'\nx\nEOF")],
     ['#4768, 200 KB of # on one line before a heredoc, as a builder', asBuilder('#'.repeat(200000) + "\ncat > a <<'EOF'\nx\nEOF")],
+    ['#4802, 200 KB of closed $(a;) words, then a fence path', asBuilder(kb200('$(a;) ') + 'opencode.json')],
+    ['#4802, 200 KB of $(a; left open, then a fence path', asBuilder(kb200('$(a;') + ' opencode.json')],
+    // spaced, so this pins the joining pass: unspaced nesting is slow in fencePath's .. fold, on its own card
+    ['#4802, 200 KB of nested closed substitutions, then a fence path', asBuilder('$( '.repeat(40000) + ';' + ' )'.repeat(40000) + ' opencode.json')],
+    ["#4802, 200 KB of $' starts with no end, then a fence path", asBuilder(kb200("$'\\' ") + 'opencode.json')],
+    ['#4802, 200 KB of case words inside $( ), then a fence path', asBuilder('echo $(' + kb200('case ') + ') opencode.json')],
+    // spaced for the same reason: this pins slashOutside
+    ['#4798, a filled word then a 200 KB quoted word of $( starts, before a fence path', asBuilder('caffeinate $GIT "' + kb200('$( ') + '" opencode.json')],
     ['a 200 KB ordinary command', () => check(big)],
     ['a 200 KB ordinary command, as a builder with protected branches',
       () => evaluate({ tool: 'shell', command: big, role: 'builder', protectedBranches: ['development'] })],

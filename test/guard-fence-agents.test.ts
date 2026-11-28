@@ -294,6 +294,82 @@ test('the fence judges a shell-filled word before a writing git subcommand as gi
 
 // PR 77 round 3: after a shell-filled word, the next word that is not an option decides: any git command (or a filled
 // one) is judged with the command-position rule, so merge-file, stage, a read's --output and $SUB write.
+// #4795, B2's note: a quoted word that starts with a backtick substitution is a filled word in the git-name place too,
+// as one that starts with $( ) is
+test('the fence reads a quoted word that starts with a backtick substitution as a filled word', () => {
+  const lines = (w: string) => [`${w} checkout -- opencode.json`, `caffeinate ${w} checkout -- opencode.json`, `echo ${w} "$S checkout" opencode.json`,
+    `echo ${w} checkout -- opencode.json | sh`, `nice -n 5 ${w} restore .claude/settings.json`];
+  for (const role of ['builder', 'reviewer', 'lead']) {
+    for (const [dollar, tick] of [['"$(which git)"', '"`which git`"'], ['"$(echo gi)t"', '"`echo gi`t"']]) {
+      for (const [i, c] of lines(tick).entries()) {
+        assert.equal(shell(lines(dollar)[i], role), false, `${role}: ${lines(dollar)[i]}`);
+        assert.equal(shell(c, role), false, `${role}: ${c}`);
+      }
+    }
+    for (const c of ['"`which git`" log -- opencode.json', 'echo "`date`" opencode.json', 'grep "`cat pattern`" "$F" opencode.json', 'cat "`pwd`/opencode.json"'])
+      assert.equal(shell(c, role), true, `${role}: ${c}`);
+  }
+});
+
+// #4802: ; & | and a newline inside a substitution end no command, so they must not cut the filled git word off from the
+// path it writes
+test('the fence keeps a substitution whole across the separators inside it', () => {
+  const words = ['"$(true; echo checkout)x"', '$(true; echo checkout)', '"`true; echo checkout`"', '`true; echo checkout`',
+    '"$(true && echo checkout)"', '"$(false || echo checkout)"', '"$(echo checkou | cat)t"', '"$(true & echo checkout)"', '"$(true\necho checkout)x"',
+    '"$(case a in a) echo checkout;; esac)x"', '"$(echo \')\'; echo checkout)x"', '"$(: $(true; true); echo checkout)"',
+    '"$(echo case; echo checkout)x"', '"$(case a in (a) echo checkout;; esac)x"'];
+  // a stray quote or a quoted $( earlier in the line miscounts one way of reading it, never both
+  const before = ['', '# don\'t\n', 'true # don\'t\n', 'echo \'$(\'; ', 'echo "\\""; ', 'echo $\'a\\\'b\'; '];
+  const reads = ['caffeinate $GIT log -- "$(true; echo opencode.json)"', 'echo "$(cp a b; cat opencode.json)"', 'x="$(git log --oneline | head -1)"; cat opencode.json',
+    'cat "$(git rev-parse --show-toplevel || pwd)/opencode.json"', 'for f in $(ls; echo x); do cat $f; done; cat opencode.json',
+    'echo "$(git status; git diff opencode.json)"', '# don\'t\ncat opencode.json; git add src/x.ts', 'echo "$(unclosed; git add a"; cat opencode.json'];
+  for (const role of ['builder', 'reviewer', 'lead']) {
+    for (const w of words) for (const pre of before) {
+      const c = `${pre}caffeinate $GIT ${w} -- opencode.json`;
+      assert.equal(shell(c, role), false, `${role}: ${JSON.stringify(c)}`);
+    }
+    for (const c of reads) assert.equal(shell(c, role), true, `${role}: ${JSON.stringify(c)}`);
+  }
+});
+
+// #4798: only a slash OUTSIDE every substitution and ${...} makes a filled word a path. One inside (a redirect, a
+// ${v/a/b} replacement) says nothing about what the word comes out as
+test('the fence does not read a slash inside a substitution as a path', () => {
+  const hidden = ['"$(echo checkout </dev/null)x"', '"`echo checkout </dev/null`x"', '"$(echo checkou 2>/dev/null)t"', 'x"$(echo checkout </dev/null)"',
+    '"$(echo $(echo checkout </dev/null))x"', '"${S/q/checkout}"', '"$(echo checkout \')\' </dev/null)x"', '"$( (echo checkout) </dev/null)x"',
+    '"$(echo checkout </dev/null"'];
+  const paths = ['"${A}/${B}"', '"$(pwd)/$(date)"', '"`pwd`/`date`"', '"$(echo \')\')/x"', '"$(pwd)\\opencode.json"', '"$(cat /tmp/dir)/x"',
+    '"${HOME:-/root}/.codex"', '"$ROOT/$NAME"'];
+  for (const role of ['builder', 'reviewer', 'lead']) {
+    for (const w of hidden) {
+      const c = `caffeinate $GIT ${w} -- opencode.json`;
+      assert.equal(shell(c, role), false, `${role}: ${c}`);
+    }
+    for (const w of paths) {
+      const c = `ls $HOME ${w} opencode.json`;
+      assert.equal(shell(c, role), true, `${role}: ${c}`);
+    }
+  }
+});
+
+// #4795: after a git name held in a variable, a quoted word with a backtick substitution fills the subcommand place as
+// one with $( ) does. Each shape is pinned in both spellings: the $( ) one blocked before, the backtick one did not
+test('the fence reads a backtick substitution in a quoted subcommand place as it reads the $( ) one', () => {
+  const places: [string, string][] = [['`echo checkout`', '$(echo checkout)'], ['`echo checkou`t', '$(echo checkou)t'], ['check`echo out`', 'check$(echo out)'],
+    ['`echo che``echo ckout`', '$(echo che)$(echo ckout)'], ['`echo checkout`x', '$(echo checkout)x'], ['x`echo checkout`', 'x$(echo checkout)'],
+    ['`echo checkoutx`', '$(echo checkoutx)'], ['`echo checkout x`', '$(echo checkout x)']];
+  const before = ['caffeinate $GIT', 'arch -arm64 ${GIT}', 'time -p $GIT --no-pager', 'caffeinate $(which git)', 'caffeinate $GIT -C .'];
+  for (const role of ['builder', 'reviewer', 'lead']) {
+    for (const b of before) for (const [tick, dollar] of places) for (const place of [`"${dollar}"`, `"${tick}"`]) {
+      const c = `${b} ${place} -- opencode.json`;
+      assert.equal(shell(c, role), false, `${role}: ${c}`);
+    }
+    // a read stays a read, and a path beside a substitution is no subcommand, as with $( )
+    for (const c of ['caffeinate $GIT log -- "`echo opencode.json`"', 'cat "`pwd`/opencode.json"', 'cat "$(pwd)/opencode.json"', 'cat $HOME/.codex/config.toml "`pwd`/x"',
+      'echo "`date`" opencode.json']) assert.equal(shell(c, role), true, `${role}: ${c}`);
+  }
+});
+
 test('the fence judges a filled word followed by any git command with the command-position rule', () => {
   const writes = ['caffeinate $GIT merge-file opencode.json a b', 'caffeinate $GIT diff --output=opencode.json',
     'caffeinate $GIT log --output=opencode.json', 'caffeinate $GIT show --output=opencode.json HEAD', 'caffeinate $GIT $SUB -- opencode.json',
