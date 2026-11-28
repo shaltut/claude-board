@@ -1867,3 +1867,105 @@ test('#4773: a text-only edit by an interpreter heredoc stays refused, and the r
     assert.match(r.reason!, /Only changing the text of a file\? Use your file editing tool/, text);
   }
 });
+
+// #4789: what PR 142's review left (#4741), and the exec forms the walk did not follow
+const verdict = (command: string) => evaluate({ tool: 'shell', command, role: 'builder' });
+const refused = (list: string[]) => { for (const c of list) assert.match(verdict(c).reason ?? '', /fresh environment/, c); };
+const letThrough = (list: string[]) => { for (const c of list) assert.deepEqual(verdict(c), { allow: true }, c); };
+test('#4789: after text that throws the quote count off, fish --command= is read to its end', () => {
+  // every prefix: the old walk missed these after the heredoc and the backslash-quote ones only
+  for (const off of thrownOff) {
+    refused(["fish --command='ssh localhost uptime; true'", 'fish --command="at now; true"', "fish --command='herdr pane run w1:p2 codex && true'",
+      "fish --command='env sudo codex | cat'"].map((c) => off + c));
+    letThrough([off + "fish --command='ls -la; true'"]);
+  }
+});
+
+test('#4789: find -exec, -execdir, -ok and -okdir start a command of their own', () => {
+  refused(['find . -exec sudo codex \\;', 'find . -exec sh -c su \\;', "find . -exec bash -c 'su' {} +", 'find . -name x -execdir at now +',
+    "find . -ok sh -c su '{}' ';'", 'find . -okdir eval sudo codex \\;', 'find . -exec env -S "sudo codex" +', 'find . -exec grep x {} \\; -exec sh -c su \\;',
+    'timeout 5 find /tmp -type f "-exec" sudo codex {} +', 'busybox sh -c su']); // busybox was read already: pinned
+  letThrough(['find . -name "*.ts" -exec grep -l sudo {} +', 'find . -exec sh -c "ls -la" \\;', 'find . -name sudo', 'echo -exec sudo codex',
+    'grep -rn -e -exec sudo.md', 'busybox sh -c "ls -la"', 'busybox ls -la']);
+  // a second action after {}: the walk splits at braces, and its second reading at the ; of the end mark too. After text
+  // that throws the quote count off only that reading is left
+  const chains = ['find . -exec grep x {} \\; -exec sudo codex \\;', 'find . -exec ls {} + -exec sudo codex +', 'find . -exec grep x {} ";" -exec sh -c su ";"',
+    "find . -exec grep x {} ';' -exec sudo codex ';'", 'find . -name x -exec ls {} \\; -name y -exec eval sudo codex \\;'];
+  // find ends at a real separator: what follows is not one of its actions
+  const ended = ['find . -exec grep x {} \\; -exec ls -la {} \\;', 'find . -exec ls {} \\; ; grep -e -exec sudo.md', 'find . -name x | grep -e -exec sudo.md',
+    'find . -name x; grep -e -exec sudo.md'];
+  for (const off of ['', ...thrownOff]) {
+    refused(chains.map((c) => off + c));
+    letThrough(ended.map((c) => off + c));
+  }
+});
+
+// PR 173 review (R1)
+test('#4789: a find or an action spelled with quotes or a backslash is still one', () => {
+  const split = ['f\\ind . -exec ls {} + -exec sh -c su \\;', "f''ind . -exec ls {} + -exec sh -c su \\;", 'fi""nd . -exec ls {} \\; -exec sudo codex \\;',
+    "find . -exec ls {} + -ex''ec sh -c su \\;", 'find . -exec ls {} + -ex\\ec sudo codex \\;', "find . -ex''ec sudo codex \\;", "f''ind . -exec sudo codex \\;"];
+  for (const off of ['', ...thrownOff]) refused(split.map((c) => off + c));
+  letThrough(["f''ind . -name sudo", 'f\\ind . -exec ls {} + -exec ls -la \\;']);
+});
+
+test('#4789: a long run of find actions is read in linear time', () => {
+  const budget = machineBudget();
+  for (const action of ['true', 'eval true', 'env -S true', 'sh -c true', 'powershell x', 'rg x']) {
+    const command = 'find .' + ` -exec ${action} \\;`.repeat(1600);
+    const t = performance.now();
+    assert.deepEqual(verdict(command), { allow: true }, action);
+    const ms = performance.now() - t;
+    assert.ok(ms < budget, `1600 actions of ${action} took ${Math.round(ms)} ms (this machine's budget: ${budget} ms)`);
+  }
+  // an action ends at find's end mark only: an -exec or a + among its words is one of its arguments
+  refused(['find . -exec rg -e -exec --pre sudo x \\;', 'find . -exec rg -e + --pre sudo x \\;']);
+  // with no end mark between them each action's words run to the end of the segment, so past a handful it is refused unread
+  letThrough(['find .' + ' -exec grep -e x'.repeat(5)]);
+  refused(['find .' + ' -exec eval true'.repeat(40)]);
+});
+
+test('#4789: Windows PowerShell runs its bare words as the command', () => {
+  refused(['powershell Start-ScheduledTask -TaskName x', 'powershell -NoProfile schtasks /run /tn x', 'powershell.exe wsl codex',
+    'powershell -ExecutionPolicy Bypass -NoLogo Start-ScheduledTask x', 'powershell -ep bypass -w hidden Start-ScheduledTask x',
+    'powershell Write-Output hi -c "Start-ScheduledTask x"']);
+  letThrough(['powershell Get-ScheduledTask', 'powershell -NoProfile -File x.ps1', 'powershell -ExecutionPolicy Bypass -File x.ps1 -Name sudo',
+    'powershell -NoProfile -Command "Get-Date"', 'powershell -ExecutionPolicy Bypass Get-Date', 'pwsh x.ps1', 'pwsh -NoProfile x.ps1 sudo']);
+});
+
+test('#4789: after the end of rg\'s options nothing is its pre-processor option', () => {
+  letThrough(["rg -n -- '--pre=sudo' src", 'rg -- --pre=sudo f', 'rg --fixed-strings -- --pre=sudo f', "rg -in -- '--pre' sudo", 'rg -t js src -- --pre=sudo']);
+  // a -- that may be the value of the option before it ends nothing, and a real pre-processor before the mark still counts
+  refused(['rg -e -- --pre sudo x', 'rg --regexp -- --pre=sudo x', 'rg -ne -- --pre sudo x', 'rg --pre sudo -- x f', 'rg $FLAGS -- --pre sudo x',
+    'rg x f > -- --pre sudo']);
+  // PR 173 review (R1): a word the shell expands (a glob, a splat) may turn into -e, and a redirect's target is no
+  // argument at all, so the word before it may take the --
+  const maybeValue = ['rg * -- --pre sudo input.txt', 'rg @argv -- --pre sudo input.txt', 'rg ? -- --pre sudo x', 'rg [-]e -- --pre sudo x', 'rg a,-e -- --pre sudo x',
+    'rg -e > out -- --pre sudo x', 'rg -e 2> err -- --pre sudo x', 'rg -e 2>/dev/null -- --pre sudo x', 'rg -e <<< w -- --pre sudo x', 'rg -e < in -- --pre sudo x',
+    'rg %F% -- --pre sudo x', 'rg "$F" -- --pre sudo x',
+    // PR 173 second review (R1): Windows PowerShell drops an empty argument, so the -- is -e's value
+    'rg -e "" -- --pre sudo x', "rg -e '' -- --pre sudo x", `rg -e ""'' -- --pre sudo x`, "rg --regexp '''' -- --pre sudo x", 'rg -e "" "" -- --pre sudo x'];
+  for (const off of ['', ...thrownOff]) refused(maybeValue.map((c) => off + c));
+  letThrough(["rg 'a*b' -- --pre=sudo f", "rg --glob='*.ts' -- --pre=sudo", 'rg "TODO" src -- --pre=sudo', 'rg -F src/a.ts -- --pre=sudo']);
+});
+
+// what the empty-word refusals above rest on, read from the shell itself: the native program here only prints the
+// arguments it is given
+test('#4789: Windows PowerShell hands a native program no empty argument', { skip: process.platform !== 'win32' && 'Windows PowerShell only' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cb-guard-argv-'));
+  try {
+    const script = join(dir, 'argv.mjs');
+    writeFileSync(script, 'console.log(JSON.stringify(process.argv.slice(2)));\n');
+    const quoted = (s: string) => `'${s.replaceAll("'", "''")}'`;
+    const argv = (words: string) => {
+      const command = `& ${quoted(process.execPath)} ${quoted(script)} ${words}`;
+      const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', timeout: 60_000 });
+      assert.equal(r.status, 0, `${words}: ${r.error?.message ?? r.stderr}`);
+      return JSON.parse(r.stdout.trim());
+    };
+    // the control: an argument with text arrives, so a missing one below is the empty one
+    assert.deepEqual(argv('-e "a" -- --pre harmless x'), ['-e', 'a', '--', '--pre', 'harmless', 'x']);
+    for (const empty of ['""', "''", `""''`]) assert.deepEqual(argv(`-e ${empty} -- --pre harmless x`), ['-e', '--', '--pre', 'harmless', 'x'], empty);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
